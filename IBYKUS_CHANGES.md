@@ -68,4 +68,4 @@ Dieses Werk ist lizenziert unter der GNU Affero General Public License v3.0.
 Siehe [LICENSE-AGPL.txt](LICENSE-AGPL.txt) für den vollständigen Lizenztext.
 
 Der Quellcode dieser modifizierten Version ist verfügbar unter:
-`git@ibkgit02.win.ibykus.de:rstreib/metabase-ibykus.git`
+`https://github.com/fwibyk/metabase`
