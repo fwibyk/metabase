@@ -2,10 +2,7 @@ import { c, t } from "ttag";
 
 import { CollapseSection } from "metabase/common/components/CollapseSection";
 import { useUserSetting } from "metabase/common/hooks";
-import { getEntityTypes } from "metabase/redux/embedding-data-picker";
-import { getIsEmbeddingIframe } from "metabase/selectors/embed";
 import { ActionIcon, Icon, Tooltip } from "metabase/ui";
-import { useSelector } from "metabase/utils/redux";
 
 import { PaddedSidebarLink, SidebarHeading } from "../MainNavbar.styled";
 import { trackAddDataModalOpened } from "../analytics";
@@ -33,10 +30,10 @@ export const BrowseNavSection = ({
   );
 
   const { canPerformMeaningfulActions } = useAddDataPermissions();
-  const entityTypes = useSelector(getEntityTypes);
-  const isEmbeddingIframe = useSelector(getIsEmbeddingIframe);
 
-  const showAddDataButton = canPerformMeaningfulActions && !isEmbeddingIframe;
+  // ibykus: im eingebetteten iframe die Browse-/Add-Data-Einstiege NICHT verstecken —
+  // Erstellen/Navigieren soll wie in einer nicht-eingebetteten Instanz möglich sein.
+  const showAddDataButton = canPerformMeaningfulActions;
 
   return (
     <CollapseSection
@@ -68,42 +65,37 @@ export const BrowseNavSection = ({
       role="section"
       aria-label={t`Data`}
     >
-      {hasDataAccess &&
-        (!isEmbeddingIframe || entityTypes.includes("table")) && (
-          <PaddedSidebarLink
-            icon="database"
-            url={BROWSE_DATA_URL}
-            isSelected={nonEntityItem?.url?.startsWith(BROWSE_DATA_URL)}
-            onClick={onItemSelect}
-            aria-label={t`Browse databases`}
-          >
-            {t`Databases`}
-          </PaddedSidebarLink>
-        )}
-
-      {(!isEmbeddingIframe || entityTypes.includes("model")) && (
+      {hasDataAccess && (
         <PaddedSidebarLink
-          icon="model"
-          url={BROWSE_MODELS_URL}
-          isSelected={nonEntityItem?.url?.startsWith(BROWSE_MODELS_URL)}
+          icon="database"
+          url={BROWSE_DATA_URL}
+          isSelected={nonEntityItem?.url?.startsWith(BROWSE_DATA_URL)}
           onClick={onItemSelect}
-          aria-label={t`Browse models`}
+          aria-label={t`Browse databases`}
         >
-          {t`Models`}
+          {t`Databases`}
         </PaddedSidebarLink>
       )}
 
-      {!isEmbeddingIframe && (
-        <PaddedSidebarLink
-          icon="metric"
-          url={BROWSE_METRICS_URL}
-          isSelected={nonEntityItem?.url?.startsWith(BROWSE_METRICS_URL)}
-          onClick={onItemSelect}
-          aria-label={t`Browse metrics`}
-        >
-          {t`Metrics`}
-        </PaddedSidebarLink>
-      )}
+      <PaddedSidebarLink
+        icon="model"
+        url={BROWSE_MODELS_URL}
+        isSelected={nonEntityItem?.url?.startsWith(BROWSE_MODELS_URL)}
+        onClick={onItemSelect}
+        aria-label={t`Browse models`}
+      >
+        {t`Models`}
+      </PaddedSidebarLink>
+
+      <PaddedSidebarLink
+        icon="metric"
+        url={BROWSE_METRICS_URL}
+        isSelected={nonEntityItem?.url?.startsWith(BROWSE_METRICS_URL)}
+        onClick={onItemSelect}
+        aria-label={t`Browse metrics`}
+      >
+        {t`Metrics`}
+      </PaddedSidebarLink>
     </CollapseSection>
   );
 };

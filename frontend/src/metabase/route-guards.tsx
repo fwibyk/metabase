@@ -10,7 +10,6 @@ import { isSameOrSiteUrlOrigin } from "metabase/utils/dom";
 import { MetabaseReduxContext } from "metabase/utils/redux";
 
 import { getCanAccessOnboardingPage } from "./home/selectors";
-import { getIsEmbeddingIframe } from "./selectors/embed";
 import { canAccessTransforms } from "./transforms/selectors";
 
 type Props = { children: React.ReactElement };
@@ -36,15 +35,6 @@ const MetabaseIsSetup = connectedReduxRedirect<Props, State>({
   redirectPath: "/setup",
   allowRedirectBack: false,
   authenticatedSelector: (state) => getSetting(state, "has-user-setup"),
-  redirectAction: routerActions.replace,
-  context: MetabaseReduxContext,
-});
-
-const AvailableInEmbedding = connectedReduxRedirect<Props, State>({
-  wrapperDisplayName: "AvailableInEmbedding",
-  redirectPath: "/unauthorized",
-  allowRedirectBack: false,
-  authenticatedSelector: (state) => !getIsEmbeddingIframe(state),
   redirectAction: routerActions.replace,
   context: MetabaseReduxContext,
 });
@@ -158,7 +148,7 @@ export const CanAccessOnboarding = UserCanAccessOnboarding(
 // Must be in sync with canAccessDataStudio in frontend/src/metabase/data-studio/selectors.ts
 export const CanAccessDataStudio = MetabaseIsSetup(
   UserIsAuthenticated(
-    UserCanAccessDataStudio(AvailableInEmbedding(({ children }) => children)),
+    UserCanAccessDataStudio(({ children }) => children),
   ),
 );
 

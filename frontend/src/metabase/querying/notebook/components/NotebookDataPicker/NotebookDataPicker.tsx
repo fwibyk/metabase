@@ -13,7 +13,6 @@ import type {
   MiniPickerItem,
   MiniPickerPickableItem,
 } from "metabase/common/components/Pickers/MiniPicker/types";
-import { isEmbedding } from "metabase/embedding/config";
 import { loadMetadataForTable } from "metabase/questions/actions";
 import { getMetadata } from "metabase/selectors/metadata";
 import { getIsTenantUser } from "metabase/selectors/user";
@@ -75,7 +74,6 @@ export function NotebookDataPicker({
   const store = useStore();
   const dispatch = useDispatch();
   const onChangeRef = useLatest(onChange);
-  const isEmbed = isEmbedding();
   const isTenantUser = useSelector(getIsTenantUser);
 
   const handleChange = async (tableId: TableId) => {
@@ -97,7 +95,10 @@ export function NotebookDataPicker({
 
   // EMB-1144: force the embedding picker if user is a tenant user.
   //           this is to support the sidecar use-case where tenant users are given instance logins.
-  if (isEmbed || isTenantUser) {
+  // ibykus: NICHT für iframe-Embedding erzwingen — der EmbeddingDataPicker delegiert an
+  // PLUGIN_EMBEDDING.* (SimpleDataPicker/DataSourceSelector), die in OSS null liefern
+  // (leerer Picker → keine Tabellen). Unser Full-App-Embed nutzt den normalen ModernDataPicker.
+  if (isTenantUser) {
     const canSelectTableColumns = table && isRaw && !isDisabled;
     return (
       <NotebookCellItem

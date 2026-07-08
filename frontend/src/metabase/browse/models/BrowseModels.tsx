@@ -12,7 +12,6 @@ import {
   PLUGIN_COLLECTIONS,
   PLUGIN_CONTENT_VERIFICATION,
 } from "metabase/plugins";
-import { getIsEmbeddingIframe } from "metabase/selectors/embed";
 import {
   canUserCreateNativeQueries,
   canUserCreateQueries,
@@ -59,10 +58,10 @@ export const BrowseModels = () => {
 
   const hasDataAccess = useSelector(canUserCreateQueries);
   const hasNativeWrite = useSelector(canUserCreateNativeQueries);
-  const isEmbeddingIframe = useSelector(getIsEmbeddingIframe);
 
-  const canCreateNewModel =
-    !isEmbeddingIframe && hasDataAccess && hasNativeWrite;
+  // ibykus: Modell-Anlegen auch im eingebetteten iframe erlauben (Full-App-Embedding
+  // über unser SSO) — konsistent mit new_button:true in getEmbedOptions.
+  const canCreateNewModel = hasDataAccess && hasNativeWrite;
 
   return (
     <Flex

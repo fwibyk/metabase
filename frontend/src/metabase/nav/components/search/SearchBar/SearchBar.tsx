@@ -26,7 +26,6 @@ import {
 import { getSetting } from "metabase/selectors/settings";
 import { Icon } from "metabase/ui";
 import { isSmallScreen } from "metabase/utils/dom";
-import { isWithinIframe } from "metabase/utils/iframe";
 import { useDispatch, useSelector } from "metabase/utils/redux";
 import { modelToUrl } from "metabase/utils/urls";
 
@@ -210,7 +209,7 @@ function SearchBarView({ location, onSearchActive, onSearchInactive }: Props) {
             <Icon name="close" />
           </CloseSearchButton>
         )}
-        {!isSmallScreen() && !isWithinIframe() && isActive && (
+        {!isSmallScreen() && isActive && (
           <CommandPaletteTrigger onClick={handleCommandPaletteTriggerClick} />
         )}
       </SearchInputContainer>

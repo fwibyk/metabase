@@ -7,7 +7,6 @@ import { t } from "ttag";
 import { useOnClickOutside } from "metabase/common/hooks/use-on-click-outside";
 import { getUser } from "metabase/selectors/user";
 import { Box, Card, Center, Icon, Overlay, Stack, rem } from "metabase/ui";
-import { isWithinIframe } from "metabase/utils/iframe";
 import { useSelector } from "metabase/utils/redux";
 
 import { useCommandPalette } from "../hooks/useCommandPalette";
@@ -28,8 +27,8 @@ export const Palette = withRouter((props) => {
   useCommandPaletteBasicActions({ ...props, isLoggedIn });
 
   const { query } = useKBar();
-  const disabled =
-    isWithinIframe() || !isLoggedIn || disableCommandPaletteForRoute;
+  // ibykus: Command-Palette (Suche/Navigation/Aktionen) auch im Full-App-Embed aktiv.
+  const disabled = !isLoggedIn || disableCommandPaletteForRoute;
   useEffect(() => {
     query.disable(disabled);
   }, [disabled, query]);

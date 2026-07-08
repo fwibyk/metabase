@@ -11,7 +11,6 @@ import { useDocsUrl } from "metabase/common/hooks";
 import { useFetchMetrics } from "metabase/common/hooks/use-fetch-metrics";
 import { trackMetricCreateStarted } from "metabase/data-studio/analytics";
 import { PLUGIN_CONTENT_VERIFICATION, PLUGIN_LIBRARY } from "metabase/plugins";
-import { getIsEmbeddingIframe } from "metabase/selectors/embed";
 import { canUserCreateQueries } from "metabase/selectors/user";
 import {
   ActionIcon,
@@ -58,9 +57,9 @@ export function BrowseMetrics() {
   });
 
   const hasDataAccess = useSelector(canUserCreateQueries);
-  const isEmbeddingIframe = useSelector(getIsEmbeddingIframe);
 
-  const canCreateMetric = !isEmbeddingIframe && hasDataAccess;
+  // ibykus: Metrik-Anlegen auch im eingebetteten iframe erlauben (analog Modelle).
+  const canCreateMetric = hasDataAccess;
 
   return (
     <Flex
