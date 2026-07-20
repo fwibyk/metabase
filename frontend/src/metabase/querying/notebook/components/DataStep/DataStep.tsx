@@ -2,7 +2,6 @@ import { type CSSProperties, useMemo, useState } from "react";
 import { t } from "ttag";
 
 import { IconButtonWrapper } from "metabase/common/components/IconButtonWrapper";
-import { isEmbedding } from "metabase/embedding/config";
 import { Icon, Popover, Tooltip } from "metabase/ui";
 import { METAKEY } from "metabase/utils/browser";
 import * as Lib from "metabase-lib";
@@ -41,7 +40,6 @@ export const DataStep = ({
   }, [query, stageIndex]);
 
   const canSelectTableColumns = table && isRaw && !readOnly;
-  const isEmbed = isEmbedding();
 
   const handleTableChange = async (
     table: Lib.TableMetadata | Lib.CardMetadata,
@@ -58,7 +56,14 @@ export const DataStep = ({
 
   return (
     <NotebookCell color={color}>
-      {isOpened || !table || isEmbed ? (
+      {/*
+        ibykus: KEIN "|| isEmbed" mehr — sonst wird im iframe auch im Ruhezustand
+        (Tabelle gewaehlt, Step geschlossen) der NotebookDataPicker erzwungen. Da unser
+        Full-App-Embed dort ueber ModernDataPicker laeuft (s. NotebookDataPicker, cb8405ab)
+        und der nur die Such-TextInput bei isOpened||!table rendert, blieb die "Daten"-Leiste
+        leer. Ohne den Zwang nutzt Embed dieselbe Ruhe-Pille (DataPickerTarget) wie normal.
+      */}
+      {isOpened || !table ? (
         <NotebookDataPicker
           query={query}
           stageIndex={stageIndex}

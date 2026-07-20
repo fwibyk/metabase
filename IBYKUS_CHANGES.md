@@ -42,6 +42,14 @@ Gemäß AGPL-3.0 werden alle Änderungen gegenüber dem Upstream hier dokumentie
 #### `frontend/src/metabase/utils/iframe.ts`
 - **Änderung**: Keine inhaltliche Änderung gegenüber Upstream (Kommentar angepasst)
 
+#### `frontend/src/metabase/querying/notebook/components/NotebookDataPicker/NotebookDataPicker.tsx`
+- **Änderung**: Der Embedding-Picker (`EmbeddingDataPicker` → `PLUGIN_EMBEDDING.*`) wird nicht mehr allein wegen iframe-Kontext erzwungen; die Bedingung ist auf `isTenantUser` verengt
+- **Grund**: `PLUGIN_EMBEDDING.SimpleDataPicker`/`DataSourceSelector` sind in der OSS-Edition `null`; im iframe blieb der Datenquellen-Picker dadurch leer. Full-App-Embed nutzt jetzt den normalen `ModernDataPicker`
+
+#### `frontend/src/metabase/querying/notebook/components/DataStep/DataStep.tsx`
+- **Änderung**: Das erzwungene Rendern des `NotebookDataPicker` im iframe-Kontext (`|| isEmbed`) wurde entfernt
+- **Grund**: Im Ruhezustand (Tabelle gewählt, Schritt geschlossen) rendert der `ModernDataPicker` keine sichtbare Pille → die „Daten"-Leiste blieb leer. Ohne den Zwang nutzt das Embedding dieselbe Ruhe-Pille (`DataPickerTarget`) wie der Normalbetrieb; ein Klick öffnet den Picker
+
 ## Neue Dateien
 
 | Datei | Beschreibung |
@@ -59,7 +67,7 @@ Gemäß AGPL-3.0 werden alle Änderungen gegenüber dem Upstream hier dokumentie
 ## Build
 
 ```bash
-docker build -t metabase-ibykus:latest --build-arg VERSION=v0.59.5.1 .
+docker build -t metabase-ibykus:latest --build-arg VERSION=v0.59.5.3-ibykus .
 ```
 
 ## Lizenz
