@@ -27,6 +27,19 @@ interface AppColorSchemeProviderProps {
 const getNextScheme = (scheme: "light" | "dark") =>
   scheme === "dark" ? "light" : "dark";
 
+// Vom Einbettungs-Host (Analytics Studio) via /auth/sso-local gesetztes Cookie.
+// Erlaubt es, das eingebettete Metabase zentral hell/dunkel zu schalten, ohne die
+// persoenliche color-scheme-Praeferenz des Nutzers zu ueberschreiben.
+const getEmbedColorSchemeCookie = (): "light" | "dark" | null => {
+  if (typeof document === "undefined") {
+    return null;
+  }
+  const match = document.cookie.match(
+    /(?:^|;\s*)mb-embed-color-scheme=(light|dark)\b/,
+  );
+  return match ? (match[1] as "light" | "dark") : null;
+};
+
 export function AppColorSchemeProvider({
   children,
   defaultColorScheme = "auto",
@@ -57,7 +70,8 @@ export function AppColorSchemeProvider({
       return forceColorScheme;
     }
     if (getIsEmbeddingIframe()) {
-      return "light";
+      // Vom Host gesetztes Cookie respektieren; sonst wie bisher hell.
+      return getEmbedColorSchemeCookie() ?? "light";
     }
     return colorScheme === "auto" ? systemColorScheme : colorScheme;
   }, [colorScheme, forceColorScheme, systemColorScheme]);

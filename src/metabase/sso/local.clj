@@ -82,6 +82,15 @@
         (t2/insert! :permissions_group_membership
                     {:user_id user-id :group_id id})))))
 
+;;; ---- Color scheme cookie (embedded light/dark) ----------------------------
+;; Der Einbettungs-Host (Analytics Studio) steuert Hell/Dunkel zentral ueber den
+;; &scheme=-Param. Wir persistieren bewusst NICHT das user-local color-scheme (das
+;; wuerde die persoenliche Standalone-Praeferenz ueberschreiben), sondern setzen ein
+;; von JS lesbares Cookie, das der eingebettete Client (AppColorSchemeProvider)
+;; auswertet, um im iframe nicht hart auf hell zu erzwingen.
+(def ^:private embed-scheme-cookie "mb-embed-color-scheme")
+(def ^:private allowed-schemes #{"light" "dark"})
+
 ;;; ---- Session creation -----------------------------------------------------
 
 (defn- create-session! [user-id]
@@ -103,6 +112,7 @@
 (defn- handle-sso-local [request]
   (let [token     (get-in request [:params :token])
         return-to (safe-return-to (get-in request [:params :return_to]))
+        scheme    (get-in request [:params :scheme])
         secret    (env/env :mb-sso-local-secret)]
     (if-let [claims (validate-jwt token secret)]
       (let [email      (get claims "email")
@@ -114,12 +124,16 @@
           (try
             (let [user    (find-or-create-user! email first-name last-name)
                   _       (sync-groups! (:id user) groups)
-                  session (create-session! (:id user))]
-              (cookies/set-session-cookies
-               request
-               (response/redirect return-to)
-               session
-               (t/zoned-date-time (t/zone-id "GMT"))))
+                  session (create-session! (:id user))
+                  resp    (cookies/set-session-cookies
+                           request
+                           (response/redirect return-to)
+                           session
+                           (t/zoned-date-time (t/zone-id "GMT")))]
+              (if (contains? allowed-schemes scheme)
+                (assoc-in resp [:cookies embed-scheme-cookie]
+                          {:value scheme :path "/" :http-only false :same-site :lax})
+                resp))
             (catch Exception e
               (log/error e "SSO local: error creating session")
               {:status 500 :body "SSO error" :headers {"Content-Type" "text/plain"}}))))
