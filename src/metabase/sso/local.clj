@@ -105,7 +105,13 @@
 ;;; ---- Handler --------------------------------------------------------------
 
 (defn- safe-return-to [rt]
-  (if (and (string? rt) (str/starts-with? rt "/"))
+  ;; Nur echte lokale Pfade zulassen. `str/starts-with? "/"` allein reicht NICHT:
+  ;; protokoll-relative Ziele wie "//evil.com" (bzw. "/\evil.com", das manche
+  ;; Browser zu "//" normalisieren) beginnen ebenfalls mit "/" -> Open Redirect.
+  (if (and (string? rt)
+           (str/starts-with? rt "/")
+           (not (str/starts-with? rt "//"))
+           (not (str/starts-with? rt "/\\")))
     rt
     "/"))
 
