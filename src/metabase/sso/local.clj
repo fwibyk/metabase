@@ -104,16 +104,32 @@
 
 ;;; ---- Handler --------------------------------------------------------------
 
-(defn- safe-return-to [rt]
-  ;; Nur echte lokale Pfade zulassen. `str/starts-with? "/"` allein reicht NICHT:
-  ;; protokoll-relative Ziele wie "//evil.com" (bzw. "/\evil.com", das manche
-  ;; Browser zu "//" normalisieren) beginnen ebenfalls mit "/" -> Open Redirect.
-  (if (and (string? rt)
-           (str/starts-with? rt "/")
-           (not (str/starts-with? rt "//"))
-           (not (str/starts-with? rt "/\\")))
-    rt
-    "/"))
+(defn- safe-return-to
+  "Nur echte lokale Pfade als Redirect-Ziel zulassen, sonst die Startseite.
+
+  Zwei Dinge, die einzeln jeweils nicht reichen:
+
+  1. `starts-with \"/\"` allein laesst protokoll-relative Ziele durch: \"//evil.com\" und
+     \"/\\evil.com\" beginnen ebenfalls mit \"/\", fuehren aber auf eine fremde Domain
+     (CWE-601).
+
+  2. Der Wert muss VOR der Pruefung so gelesen werden, wie ein Browser ihn liest. Browser
+     entfernen beim Parsen einer URL Tabulator, LF und CR (WHATWG URL Standard, \"remove all
+     ASCII tab or newline\"). \"/<TAB>/evil.com\" besteht damit eine Pruefung auf \"//\", der
+     Browser sieht danach aber \"//evil.com\" -> die Pruefung bewertet einen anderen Wert als
+     den, der wirkt. Am laufenden System nachgewiesen (30.07.): `return_to=/%09/evil.example`
+     erzeugte `Location: /<TAB>/evil.example`.
+
+  Deshalb werden diese Zeichen zuerst entfernt und anschliessend wird der *bereinigte* Wert
+  geprueft und zurueckgegeben — nie der Rohwert, sonst normalisiert der Browser erneut."
+  [rt]
+  (let [seen (when (string? rt) (str/replace rt #"[\t\n\r]" ""))]
+    (if (and seen
+             (str/starts-with? seen "/")
+             (not (str/starts-with? seen "//"))
+             (not (str/starts-with? seen "/\\")))
+      seen
+      "/")))
 
 (defn- handle-sso-local [request]
   (let [token     (get-in request [:params :token])
