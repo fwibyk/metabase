@@ -91,6 +91,38 @@
 (def ^:private embed-scheme-cookie "mb-embed-color-scheme")
 (def ^:private allowed-schemes #{"light" "dark"})
 
+;;; ---- Token-Uebergabe per Cookie -------------------------------------------
+;;
+;; Bis zum 30.07.2026 kam der SSO-Token als Query-Parameter (?token=...). Fuer ein Geheimnis
+;; ist die URL der falsche Ort: der Reverse-Proxy protokolliert die vollstaendige Request-Zeile
+;; (nginx-Standardformat "combined"), damit stand ein gueltiger Sitzungs-Erzeuger im
+;; Zugriffsprotokoll. Wer es lesen konnte, konnte sich innerhalb der Gueltigkeit eine
+;; Metabase-Sitzung IM NAMEN DIESES NUTZERS ausstellen — ohne dessen Passwort und ohne Keycloak
+;; (BSI CON.10.A7: keine vertraulichen Daten in URLs).
+;;
+;; Stattdessen setzt der einbettende Host (Analytics Studio) den Token als HttpOnly-Cookie und
+;; laedt den iframe OHNE Parameter. Das geht, weil Cookies den PORT nicht unterscheiden: die
+;; Webapp auf :443 und Metabase auf :8443 sind derselbe Host, also dieselbe Cookie-Domain.
+;; `Path=/auth/sso-local` sorgt dafuer, dass das Cookie ausschliesslich an diesen Endpunkt geht
+;; und nicht an jede Metabase-Anfrage.
+;;
+;; VORAUSSETZUNG, die bewusst nicht abgefedert wird: Metabase muss unter demselben Hostnamen
+;; erreichbar sein wie die einbettende Anwendung. Ist das nicht so, kommt kein Cookie an und der
+;; Login schlaegt mit 401 fehl — laut und sofort. Ein Rueckfall auf den Parameter waere die
+;; schlechtere Wahl: er wuerde die Luecke stillschweigend wieder oeffnen.
+(def ^:private sso-token-cookie "mb-sso-token")
+
+(defn- clear-sso-token-cookie
+  "Loescht das Uebergabe-Cookie — und zwar in JEDEM Fall, auch bei Fehlern.
+
+  Damit ist die Uebergabe einmalig: ein Neu-Laden erzeugt keine zweite Sitzung aus demselben
+  Token, und eine abgefangene Kopie ist wertlos, sobald der rechtmaessige Aufruf durch ist.
+  Auch der Fehlerfall wird geloescht, sonst laeuft ein ungueltiges Cookie bei jedem Aufruf
+  erneut ins 401 und die Ursache bleibt im Verborgenen."
+  [resp]
+  (assoc-in resp [:cookies sso-token-cookie]
+            {:value "" :path "/auth/sso-local" :http-only true :same-site :lax :max-age 0}))
+
 ;;; ---- Session creation -----------------------------------------------------
 
 (defn- create-session! [user-id]
@@ -132,36 +164,41 @@
       "/")))
 
 (defn- handle-sso-local [request]
-  (let [token     (get-in request [:params :token])
+  ;; Der Token kommt aus dem Cookie, NICHT aus den Parametern (siehe oben). `return_to` und
+  ;; `scheme` bleiben Parameter — beides ist kein Geheimnis.
+  (let [token     (get-in request [:cookies sso-token-cookie :value])
         return-to (safe-return-to (get-in request [:params :return_to]))
         scheme    (get-in request [:params :scheme])
         secret    (env/env :mb-sso-local-secret)]
-    (if-let [claims (validate-jwt token secret)]
-      (let [email      (get claims "email")
-            first-name (get claims "first_name")
-            last-name  (get claims "last_name")
-            groups     (get claims "groups" [])]
-        (if (str/blank? email)
-          {:status 400 :body "Missing email in SSO token" :headers {"Content-Type" "text/plain"}}
-          (try
-            (let [user    (find-or-create-user! email first-name last-name)
-                  _       (sync-groups! (:id user) groups)
-                  session (create-session! (:id user))
-                  resp    (cookies/set-session-cookies
-                           request
-                           (response/redirect return-to)
-                           session
-                           (t/zoned-date-time (t/zone-id "GMT")))]
-              (if (contains? allowed-schemes scheme)
-                (assoc-in resp [:cookies embed-scheme-cookie]
-                          {:value scheme :path "/" :http-only false :same-site :lax})
-                resp))
-            (catch Exception e
-              (log/error e "SSO local: error creating session")
-              {:status 500 :body "SSO error" :headers {"Content-Type" "text/plain"}}))))
-      (do
-        (log/warn "SSO local: invalid or expired token")
-        {:status 401 :body "Invalid or expired SSO token" :headers {"Content-Type" "text/plain"}}))))
+    (clear-sso-token-cookie
+     (if-let [claims (validate-jwt token secret)]
+       (let [email      (get claims "email")
+             first-name (get claims "first_name")
+             last-name  (get claims "last_name")
+             groups     (get claims "groups" [])]
+         (if (str/blank? email)
+           {:status 400 :body "Missing email in SSO token" :headers {"Content-Type" "text/plain"}}
+           (try
+             (let [user    (find-or-create-user! email first-name last-name)
+                   _       (sync-groups! (:id user) groups)
+                   session (create-session! (:id user))
+                   resp    (cookies/set-session-cookies
+                            request
+                            (response/redirect return-to)
+                            session
+                            (t/zoned-date-time (t/zone-id "GMT")))]
+               (if (contains? allowed-schemes scheme)
+                 (assoc-in resp [:cookies embed-scheme-cookie]
+                           {:value scheme :path "/" :http-only false :same-site :lax})
+                 resp))
+             (catch Exception e
+               (log/error e "SSO local: error creating session")
+               {:status 500 :body "SSO error" :headers {"Content-Type" "text/plain"}}))))
+       (do
+         (log/warn "SSO local: kein, ungueltiges oder abgelaufenes Uebergabe-Cookie")
+         {:status 401
+          :body "Invalid or expired SSO token"
+          :headers {"Content-Type" "text/plain"}})))))
 
 (def routes
   (GET "/" request (handle-sso-local request)))

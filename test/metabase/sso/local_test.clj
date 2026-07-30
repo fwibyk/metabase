@@ -10,6 +10,35 @@
    [metabase.sso.local :as sso.local]))
 
 (def ^:private safe-return-to #'sso.local/safe-return-to)
+(def ^:private handle-sso-local #'sso.local/handle-sso-local)
+(def ^:private sso-token-cookie @#'sso.local/sso-token-cookie)
+
+;;; ---- Token-Uebergabe ------------------------------------------------------
+;;
+;; Diese beiden Tests halten fest, dass der Token NICHT mehr aus der URL gelesen wird. Beide
+;; kommen ohne Datenbank aus, weil sie den Fehlerpfad pruefen — und genau der ist die
+;; Sicherheitsaussage: ein Token in den Parametern darf keine Sitzung erzeugen.
+
+(deftest token-aus-parametern-wird-ignoriert-test
+  (testing "ein Token als Query-Parameter erzeugt keine Sitzung mehr — sonst waere der
+           Standardpfad wieder die URL, und damit stuende das Geheimnis im Zugriffsprotokoll
+           des Proxys (CON.10.A7)"
+    (let [resp (handle-sso-local {:params  {:token "beliebig.nicht.gueltig" :return_to "/"}
+                                  :cookies {}})]
+      (is (= 401 (:status resp))))))
+
+(deftest uebergabe-cookie-wird-immer-geloescht-test
+  (testing "auch im Fehlerfall — ein liegengebliebenes Cookie liefe bei jedem Aufruf erneut
+           ins 401, und ein erfolgreich eingeloester Token darf sich nicht wiederverwenden
+           lassen"
+    (let [resp (handle-sso-local {:params  {:return_to "/"}
+                                  :cookies {sso-token-cookie {:value "abgelaufen"}}})
+          ck   (get-in resp [:cookies sso-token-cookie])]
+      (is (= 401 (:status resp)))
+      (is (= "" (:value ck)))
+      (is (= 0 (:max-age ck)))
+      (is (= "/auth/sso-local" (:path ck))
+          "Der Loesch-Pfad muss dem Setz-Pfad entsprechen, sonst bleibt das Cookie liegen"))))
 
 (deftest safe-return-to-erlaubt-lokale-pfade-test
   (testing "gewoehnliche Ziele bleiben unveraendert"
