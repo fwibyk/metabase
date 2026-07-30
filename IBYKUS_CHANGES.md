@@ -66,9 +66,28 @@ Gemäß AGPL-3.0 werden alle Änderungen gegenüber dem Upstream hier dokumentie
 
 ## Build
 
+**Reihenfolge einhalten: erst das Git-Tag, dann bauen — mit genau diesem Namen.**
+
 ```bash
-docker build -t metabase-ibykus:latest --build-arg VERSION=v0.59.5.3-ibykus .
+git tag v0.59.5.5-ibykus                      # 1. Tag auf den zu bauenden Commit
+docker build -t metabase-ibykus:v0.59.5.5-ibykus \
+  --build-arg VERSION=v0.59.5.5-ibykus .      # 2. derselbe Name als Build-Argument
 ```
+
+Die Version kommt **ausschließlich** aus `--build-arg VERSION` und wird nicht aus Git abgeleitet.
+Sie kann deshalb von dem abweichen, was tatsächlich im Image steckt — und genau das ist passiert:
+
+> **Stolperstein (aufgefallen am 30.07.).** Die laufende Instanz meldete unter
+> `/api/session/properties` den Tag `v0.59.5.4-ibykus` und den Hash `197a0b2`. In Git gab es
+> weder diesen Tag noch enthielt der Commit `197a0b2` den damals schon committeten
+> Open-Redirect-Fix. Der Schluss „der Fix ist nicht im Image" war naheliegend — und **falsch**:
+> ein Funktionstest am laufenden Stand zeigte, dass `//evil.example` bereits abgewiesen wurde.
+> Gebaut worden war also ein neuerer Stand, nur trugen Tag und Hash im Image das nicht.
+>
+> **Lehre:** Die Versionsangabe im Image ist ein *Vorsatz*, kein Beweis. Für die Frage „steckt
+> Änderung X drin?" gilt der Funktionstest gegen die laufende Instanz — nicht die
+> Selbstauskunft. Und damit die Angabe künftig doch trägt: Tag zuerst, Name identisch,
+> nichts Uncommittetes im Baum.
 
 ## Lizenz
 
