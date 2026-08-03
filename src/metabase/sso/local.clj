@@ -110,18 +110,52 @@
 ;; erreichbar sein wie die einbettende Anwendung. Ist das nicht so, kommt kein Cookie an und der
 ;; Login schlaegt mit 401 fehl — laut und sofort. Ein Rueckfall auf den Parameter waere die
 ;; schlechtere Wahl: er wuerde die Luecke stillschweigend wieder oeffnen.
-(def ^:private sso-token-cookie "mb-sso-token")
+;; ZWEI NAMEN, EINE UEBERGABE — `__Secure-`-Praefix ueber HTTPS (ASVS V3.3.1, 03.08.2026).
+;;
+;; Der Praefix ist keine Namenskonvention, sondern eine Regel, die der BROWSER durchsetzt: ein
+;; Cookie mit diesem Namen wird nur angenommen, wenn es `Secure` traegt und ueber eine sichere
+;; Verbindung gesetzt wurde. Das schliesst eine Luecke, die `Secure` allein offen laesst — ein
+;; Angreifer in der Leitung kann ueber eine UNVERSCHLUESSELTE Verbindung zum selben Host ein
+;; Cookie SETZEN (Cookies unterscheiden das Protokoll nicht) und damit die Uebergabe ueberschreiben.
+;;
+;; `__Host-` waere hier falsch: dieser Praefix verlangt `Path=/` und wuerde die Pfadbindung auf
+;; /auth/sso-local unmoeglich machen — also genau die Eigenschaft, die verhindert, dass der Token
+;; an jede Metabase-Anfrage mitgeht.
+;;
+;; GELESEN WERDEN BEIDE NAMEN, und zwar dauerhaft, nicht als Uebergangsloesung: der einbettende
+;; Host waehlt den Namen nach Protokoll (ueber HTTPS mit Praefix, bei lokaler Entwicklung ohne),
+;; weil ein `__Secure-`-Cookie ohne HTTPS verworfen wuerde. Der Praefix-Name hat Vorrang; steht er,
+;; wird der unpraefixierte gar nicht mehr betrachtet. Sonst koennte ein ueber HTTP gesetztes
+;; `mb-sso-token` das ueber HTTPS gesetzte aushebeln — der Schutz waere umgehbar, indem man ihn
+;; weglaesst.
+(def ^:private sso-token-cookie-secure "__Secure-mb-sso-token")
+(def ^:private sso-token-cookie-plain "mb-sso-token")
+
+(defn- sso-token
+  "Der Uebergabe-Token aus dem Cookie. Praefix-Name zuerst — siehe Begruendung oben."
+  [request]
+  (let [mit-praefix (get-in request [:cookies sso-token-cookie-secure :value])]
+    (if (not (str/blank? mit-praefix))
+      mit-praefix
+      (get-in request [:cookies sso-token-cookie-plain :value]))))
 
 (defn- clear-sso-token-cookie
-  "Loescht das Uebergabe-Cookie — und zwar in JEDEM Fall, auch bei Fehlern.
+  "Loescht das Uebergabe-Cookie — und zwar in JEDEM Fall, auch bei Fehlern, und unter BEIDEN Namen.
 
   Damit ist die Uebergabe einmalig: ein Neu-Laden erzeugt keine zweite Sitzung aus demselben
   Token, und eine abgefangene Kopie ist wertlos, sobald der rechtmaessige Aufruf durch ist.
   Auch der Fehlerfall wird geloescht, sonst laeuft ein ungueltiges Cookie bei jedem Aufruf
-  erneut ins 401 und die Ursache bleibt im Verborgenen."
+  erneut ins 401 und die Ursache bleibt im Verborgenen.
+
+  Beide Namen, weil sonst nach der Umstellung ein Cookie unter dem alten Namen im Browser
+  liegenbleibt: es wuerde bei jedem Aufruf dieses Endpunkts mitgesendet und beim naechsten Fehler
+  des praefixierten Namens still eingelesen. Ein Rest, der nur deshalb unauffaellig ist, weil er
+  gerade nicht dran kommt."
   [resp]
-  (assoc-in resp [:cookies sso-token-cookie]
-            {:value "" :path "/auth/sso-local" :http-only true :same-site :lax :max-age 0}))
+  (let [attrs {:value "" :path "/auth/sso-local" :http-only true :same-site :lax :max-age 0}]
+    (-> resp
+        (assoc-in [:cookies sso-token-cookie-secure] (assoc attrs :secure true))
+        (assoc-in [:cookies sso-token-cookie-plain] attrs))))
 
 ;;; ---- Session creation -----------------------------------------------------
 
@@ -166,7 +200,7 @@
 (defn- handle-sso-local [request]
   ;; Der Token kommt aus dem Cookie, NICHT aus den Parametern (siehe oben). `return_to` und
   ;; `scheme` bleiben Parameter — beides ist kein Geheimnis.
-  (let [token     (get-in request [:cookies sso-token-cookie :value])
+  (let [token     (sso-token request)
         return-to (safe-return-to (get-in request [:params :return_to]))
         scheme    (get-in request [:params :scheme])
         secret    (env/env :mb-sso-local-secret)]

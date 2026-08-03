@@ -20,6 +20,19 @@ Gemäß AGPL-3.0 werden alle Änderungen gegenüber dem Upstream hier dokumentie
   - Legt Metabase-User automatisch an (per E-Mail aus JWT)
   - Synchronisiert Keycloak-Rollen → Metabase-Gruppen
   - Setzt Session-Cookie und leitet weiter
+- **Übergabe per Cookie, nicht über die URL** (BSI CON.10.A7): der einbettende Host setzt den Token
+  als `HttpOnly`-Cookie mit `Path=/auth/sso-local`; beim Einlösen wird es gelöscht, die Übergabe ist
+  damit einmalig. Vorher stand der Token als `?token=…` in der iframe-Adresse und damit im
+  Zugriffsprotokoll des Reverse-Proxys.
+- **Zwei Cookie-Namen, präfixierter zuerst** *(ab `v0.59.5.7-ibykus`, ASVS V3.3.1)*: gelesen werden
+  `__Secure-mb-sso-token` **und** `mb-sso-token`. Der einbettende Host wählt den Namen nach
+  Protokoll — über HTTPS mit Präfix, bei lokaler Entwicklung ohne, weil der Browser ein
+  `__Secure-`-Cookie ohne HTTPS verwirft. Der präfixierte Name hat **Vorrang**; sonst könnte ein
+  über HTTP gesetztes `mb-sso-token` das über HTTPS gesetzte aushebeln, und der Schutz wäre
+  umgehbar, indem man ihn wegläßt. Gelöscht wird unter **beiden** Namen, damit nach der Umstellung
+  kein Cookie unter dem alten Namen liegenbleibt. `__Host-` wäre hier falsch: dieser Präfix verlangt
+  `Path=/` und würde die Pfadbindung aufheben, die verhindert, dass der Token an jede
+  Metabase-Anfrage mitgeht.
 
 #### `src/metabase/server/middleware/security.clj`
 - **Änderung**: `X-Frame-Options`-Header wird unterdrückt wenn `MB_EMBEDDING_APP_ORIGIN` gesetzt ist

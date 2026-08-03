@@ -11,7 +11,9 @@
 
 (def ^:private safe-return-to #'sso.local/safe-return-to)
 (def ^:private handle-sso-local #'sso.local/handle-sso-local)
-(def ^:private sso-token-cookie @#'sso.local/sso-token-cookie)
+(def ^:private sso-token #'sso.local/sso-token)
+(def ^:private cookie-secure @#'sso.local/sso-token-cookie-secure)
+(def ^:private cookie-plain @#'sso.local/sso-token-cookie-plain)
 
 ;;; ---- Token-Uebergabe ------------------------------------------------------
 ;;
@@ -30,15 +32,49 @@
 (deftest uebergabe-cookie-wird-immer-geloescht-test
   (testing "auch im Fehlerfall — ein liegengebliebenes Cookie liefe bei jedem Aufruf erneut
            ins 401, und ein erfolgreich eingeloester Token darf sich nicht wiederverwenden
-           lassen"
+           lassen. Geloescht wird unter BEIDEN Namen, sonst bleibt nach der Umstellung ein
+           Cookie unter dem alten Namen liegen (ASVS V3.3.1)"
     (let [resp (handle-sso-local {:params  {:return_to "/"}
-                                  :cookies {sso-token-cookie {:value "abgelaufen"}}})
-          ck   (get-in resp [:cookies sso-token-cookie])]
+                                  :cookies {cookie-plain {:value "abgelaufen"}}})]
       (is (= 401 (:status resp)))
-      (is (= "" (:value ck)))
-      (is (= 0 (:max-age ck)))
-      (is (= "/auth/sso-local" (:path ck))
-          "Der Loesch-Pfad muss dem Setz-Pfad entsprechen, sonst bleibt das Cookie liegen"))))
+      (doseq [name [cookie-secure cookie-plain]]
+        (let [ck (get-in resp [:cookies name])]
+          (is (= "" (:value ck)) (str "Wert nicht geleert: " name))
+          (is (= 0 (:max-age ck)) (str "max-age nicht 0: " name))
+          (is (= "/auth/sso-local" (:path ck))
+              (str "Der Loesch-Pfad muss dem Setz-Pfad entsprechen, sonst bleibt das Cookie"
+                   " liegen: " name)))))))
+
+;;; ---- Welcher Cookie-Name gilt? --------------------------------------------
+;;
+;; Der einbettende Host waehlt den Namen nach Protokoll: ueber HTTPS mit `__Secure-`-Praefix, bei
+;; lokaler Entwicklung ohne (ein `__Secure-`-Cookie ohne HTTPS wuerde der Browser verwerfen).
+;; Diese Seite muss beide lesen — und die Vorrangregel ist die Sicherheitsaussage.
+
+(deftest praefix-name-wird-gelesen-test
+  (testing "ueber HTTPS setzt der einbettende Host den praefixierten Namen"
+    (is (= "abc" (sso-token {:cookies {cookie-secure {:value "abc"}}})))))
+
+(deftest unpraefixierter-name-bleibt-lesbar-test
+  (testing "lokale Entwicklung ohne HTTPS — sonst zeigt sie keine Analysen mehr an"
+    (is (= "abc" (sso-token {:cookies {cookie-plain {:value "abc"}}})))))
+
+(deftest praefix-name-hat-vorrang-test
+  (testing "liegen beide vor, gilt der praefixierte. Andernfalls koennte ein ueber HTTP
+           gesetztes `mb-sso-token` das ueber HTTPS gesetzte aushebeln — der Schutz waere
+           umgehbar, indem man ihn weglaesst"
+    (is (= "echt" (sso-token {:cookies {cookie-secure {:value "echt"}
+                                        cookie-plain  {:value "untergeschoben"}}})))))
+
+(deftest leerer-praefix-name-verdeckt-den-anderen-nicht-test
+  (testing "ein vorhandenes, aber leeres Praefix-Cookie darf den gueltigen Wert nicht verdecken —
+           genau das entsteht durch das Loeschen unter beiden Namen"
+    (is (= "abc" (sso-token {:cookies {cookie-secure {:value ""}
+                                       cookie-plain  {:value "abc"}}})))))
+
+(deftest ohne-cookie-kein-token-test
+  (testing "ohne Cookie gibt es keinen Token — und damit keine Sitzung"
+    (is (nil? (sso-token {:cookies {}})))))
 
 (deftest safe-return-to-erlaubt-lokale-pfade-test
   (testing "gewoehnliche Ziele bleiben unveraendert"
