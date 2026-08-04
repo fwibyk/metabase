@@ -6,8 +6,10 @@
    [compojure.core :refer [GET]]
    [java-time.api :as t]
    [environ.core :as env]
+   [metabase.permissions.core :as perms]
    [metabase.request.cookies :as cookies]
    [metabase.session.models.session :as session.model]
+   [metabase.util :as u]
    [metabase.util.json :as json]
    [metabase.util.log :as log]
    [ring.util.response :as response]
@@ -68,19 +70,44 @@
   (or (t2/select-one :permissions_group :name group-name)
       (t2/insert-returning-instance! :permissions_group {:name group-name})))
 
-(defn- sync-groups! [user-id groups]
-  (let [magic-ids (t2/select-fn-set :id :permissions_group
-                                    :name [:in ["All Users" "Administrators"]])]
-    (when (seq magic-ids)
-      (t2/delete! :permissions_group_membership
-                  :user_id user-id
-                  :group_id [:not-in magic-ids])))
-  (doseq [group-name groups]
-    (let [{:keys [id]} (ensure-group! group-name)]
-      (when (and id (not (t2/exists? :permissions_group_membership
-                                     :user_id user-id :group_id id)))
-        (t2/insert! :permissions_group_membership
-                    {:user_id user-id :group_id id})))))
+;; Gruppen, die aus einem Token NIE ansprechbar sind (Audit 04.08.2026).
+;;
+;; `ensure-group!` sucht per Namen — bei "Administrators" fand es die EINGEBAUTE Gruppe, und die
+;; Mitgliedschaft wurde angelegt. Diese Gruppe haelt die Berechtigung "/" (Voll-Lese/Schreibzugriff
+;; auf alle Inhalte, auch ohne `is_superuser`). Gleichzeitig schuetzt der Abgleich unten genau diese
+;; Gruppe vor dem Entfernen — eine einmal so entstandene Mitgliedschaft blieb also dauerhaft, auch
+;; nachdem die Rolle in Keycloak entzogen war.
+;;
+;; Ein Nutzer kann sich die Rolle nicht selbst geben (der Claim ist signiert und stammt aus
+;; Keycloak). Aber eine Keycloak-Rolle, die zufaellig so heisst, oder eine einmalige Fehlzuweisung
+;; haette dauerhaft gewirkt. Rechte auf dieser Ebene gehoeren nicht an einen Rollennamen.
+(def ^:private gesperrte-gruppennamen #{"administrators" "all users"})
+
+(defn- sync-groups!
+  "Bringt die Metabase-Gruppen des Nutzers auf die Rollen aus dem Token.
+
+  UEBER DIE MODELL-FUNKTIONEN, nicht ueber die Rohtabelle (Audit 04.08.2026). Vorher schrieb dies
+  direkt auf `:permissions_group_membership` — genau das verbietet der Upstream ausdruecklich
+  (siehe `permissions_group_membership.clj`), weil dort die Synchronisation der Kennzeichen haengt:
+  `is_superuser` und `is_data_analyst` werden beim Anlegen/Entfernen einer Mitgliedschaft
+  mitgefuehrt. Folge des Rohzugriffs: ein Nutzer, der regulaer in \"Data Analysts\" war, verlor beim
+  naechsten SSO-Login die Mitgliedschaft, behielt aber das Kennzeichen `true` — ein erhoehtes Recht
+  ohne sichtbare Gruppe, ueber die Oberflaeche nicht mehr entziehbar."
+  [user-id groups]
+  (let [erlaubte   (remove #(contains? gesperrte-gruppennamen (str/lower-case (str %))) groups)
+        magic-ids  (t2/select-fn-set :id :permissions_group
+                                     :name [:in ["All Users" "Administrators"]])
+        ist-jetzt  (t2/select-fn-set :group_id :model/PermissionsGroupMembership :user_id user-id)
+        soll-ids   (into #{} (keep (fn [name] (:id (ensure-group! name))) erlaubte))
+        zu-viel    (remove #(contains? (or magic-ids #{}) %) (remove soll-ids ist-jetzt))
+        fehlend    (remove ist-jetzt soll-ids)]
+    (when-let [abgelehnt (seq (remove (set erlaubte) groups))]
+      (log/warnf "SSO local: Gruppen aus dem Token abgelehnt (nicht ueber Rollen setzbar): %s"
+                 (pr-str abgelehnt)))
+    (doseq [gid zu-viel]
+      (perms/remove-user-from-group! user-id gid))
+    (when (seq fehlend)
+      (perms/add-users-to-groups! (map (fn [gid] {:user user-id :group gid}) fehlend)))))
 
 ;;; ---- Color scheme cookie (embedded light/dark) ----------------------------
 ;; Der Einbettungs-Host (Analytics Studio) steuert Hell/Dunkel zentral ueber den
@@ -122,22 +149,35 @@
 ;; /auth/sso-local unmoeglich machen — also genau die Eigenschaft, die verhindert, dass der Token
 ;; an jede Metabase-Anfrage mitgeht.
 ;;
-;; GELESEN WERDEN BEIDE NAMEN, und zwar dauerhaft, nicht als Uebergangsloesung: der einbettende
-;; Host waehlt den Namen nach Protokoll (ueber HTTPS mit Praefix, bei lokaler Entwicklung ohne),
-;; weil ein `__Secure-`-Cookie ohne HTTPS verworfen wuerde. Der Praefix-Name hat Vorrang; steht er,
-;; wird der unpraefixierte gar nicht mehr betrachtet. Sonst koennte ein ueber HTTP gesetztes
-;; `mb-sso-token` das ueber HTTPS gesetzte aushebeln — der Schutz waere umgehbar, indem man ihn
-;; weglaesst.
+;; UEBER HTTPS GILT NUR DER PRAEFIXIERTE NAME. Hier stand bis zum 04.08.2026, beide Namen wuerden
+;; "dauerhaft" gelesen und der praefixierte habe Vorrang. Das war zu schwach: ein Vorrang wirkt nur,
+;; solange BEIDE Cookies vorliegen — und das Uebergabe-Cookie lebt rund eine Sekunde. In jedem
+;; anderen Moment wurde ein untergeschobenes `mb-sso-token` genommen (Sitzungsuebernahme, CWE-384).
+;; Der unpraefixierte Name bleibt ausschliesslich fuer die lokale Entwicklung ohne TLS.
 (def ^:private sso-token-cookie-secure "__Secure-mb-sso-token")
 (def ^:private sso-token-cookie-plain "mb-sso-token")
 
 (defn- sso-token
-  "Der Uebergabe-Token aus dem Cookie. Praefix-Name zuerst — siehe Begruendung oben."
+  "Der Uebergabe-Token aus dem Cookie.
+
+  UEBER HTTPS GILT NUR DER PRAEFIXIERTE NAME (Audit 04.08.2026). Die erste Fassung las beide
+  gleichrangig, mit dem praefixierten als Vorrang. Das schuetzt nur, solange BEIDE vorliegen — und
+  das ist fast nie der Fall: das Uebergabe-Cookie lebt rund eine Sekunde (60 s Laufzeit, Loeschung
+  beim Einloesen). In jedem anderen Moment wurde ein untergeschobenes `mb-sso-token` genommen.
+
+  Damit war eine Sitzungsuebernahme moeglich (CWE-384): wer ueber `http://<host>` oder eine
+  Nachbar-Subdomaene ein `mb-sso-token` mit dem Token SEINES Kontos setzt, laesst das Opfer in
+  seiner Sitzung arbeiten — der Pruefpfad schreibt die Handlungen dann dem falschen Nutzer zu.
+
+  Der unpraefixierte Name bleibt ausschliesslich fuer die lokale Entwicklung ohne TLS, wo der
+  Browser ein `__Secure-`-Cookie verwirft. `u/https?` wertet dafuer `X-Forwarded-Proto` aus — genau
+  die Kopfzeile, die der Proxy ueberschreibend setzt."
   [request]
   (let [mit-praefix (get-in request [:cookies sso-token-cookie-secure :value])]
-    (if (not (str/blank? mit-praefix))
-      mit-praefix
-      (get-in request [:cookies sso-token-cookie-plain :value]))))
+    (cond
+      (not (str/blank? mit-praefix)) mit-praefix
+      (u/https? request)             nil
+      :else                          (get-in request [:cookies sso-token-cookie-plain :value]))))
 
 (defn- clear-sso-token-cookie
   "Loescht das Uebergabe-Cookie — und zwar in JEDEM Fall, auch bei Fehlern, und unter BEIDEN Namen.

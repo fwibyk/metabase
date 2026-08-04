@@ -57,19 +57,32 @@
 
 (deftest unpraefixierter-name-bleibt-lesbar-test
   (testing "lokale Entwicklung ohne HTTPS — sonst zeigt sie keine Analysen mehr an"
-    (is (= "abc" (sso-token {:cookies {cookie-plain {:value "abc"}}})))))
+    (is (= "abc" (sso-token {:scheme :http :cookies {cookie-plain {:value "abc"}}})))))
 
 (deftest praefix-name-hat-vorrang-test
-  (testing "liegen beide vor, gilt der praefixierte. Andernfalls koennte ein ueber HTTP
-           gesetztes `mb-sso-token` das ueber HTTPS gesetzte aushebeln — der Schutz waere
-           umgehbar, indem man ihn weglaesst"
+  (testing "liegen beide vor, gilt der praefixierte"
     (is (= "echt" (sso-token {:cookies {cookie-secure {:value "echt"}
                                         cookie-plain  {:value "untergeschoben"}}})))))
 
+(deftest ueber-https-gilt-nur-der-praefixierte-name-test
+  (testing "Der Vorrang allein genuegt nicht: er wirkt nur, solange BEIDE Cookies vorliegen — und
+           das Uebergabe-Cookie lebt rund eine Sekunde. In jedem anderen Moment wurde ein
+           untergeschobenes mb-sso-token genommen (Sitzungsuebernahme, CWE-384). Ueber HTTPS gilt
+           deshalb nur der praefixierte Name."
+    (is (nil? (sso-token {:headers {"x-forwarded-proto" "https"}
+                          :cookies {cookie-plain {:value "untergeschoben"}}}))))
+  (testing "ohne TLS bleibt der alte Name lesbar — sonst gaebe es lokal keine Anmeldung"
+    (is (= "abc" (sso-token {:scheme :http
+                             :cookies {cookie-plain {:value "abc"}}}))))
+  (testing "der praefixierte Name wirkt auch ueber HTTPS"
+    (is (= "abc" (sso-token {:headers {"x-forwarded-proto" "https"}
+                             :cookies {cookie-secure {:value "abc"}}})))))
+
 (deftest leerer-praefix-name-verdeckt-den-anderen-nicht-test
   (testing "ein vorhandenes, aber leeres Praefix-Cookie darf den gueltigen Wert nicht verdecken —
-           genau das entsteht durch das Loeschen unter beiden Namen"
-    (is (= "abc" (sso-token {:cookies {cookie-secure {:value ""}
+           genau das entsteht durch das Loeschen unter beiden Namen (ohne TLS, s.o.)"
+    (is (= "abc" (sso-token {:scheme :http
+                             :cookies {cookie-secure {:value ""}
                                        cookie-plain  {:value "abc"}}})))))
 
 (deftest ohne-cookie-kein-token-test
@@ -121,3 +134,19 @@
       nil
       42
       {})))
+
+;;; ---- Gruppen aus dem Token ------------------------------------------------
+;;
+;; `ensure-group!` sucht per Namen; bei "Administrators" fand es die EINGEBAUTE Gruppe, und die
+;; Mitgliedschaft blieb dauerhaft, weil der Abgleich genau diese Gruppe vor dem Entfernen schuetzt.
+;; Rechte auf dieser Ebene gehoeren nicht an einen Rollennamen.
+
+(def ^:private gesperrte @#'sso.local/gesperrte-gruppennamen)
+
+(deftest magische-gruppennamen-sind-gesperrt-test
+  (testing "Administrators und All Users sind aus einem Token nicht ansprechbar"
+    (is (contains? gesperrte "administrators"))
+    (is (contains? gesperrte "all users")))
+  (testing "gewoehnliche Rollennamen sind es sehr wohl"
+    (is (not (contains? gesperrte "analyst")))
+    (is (not (contains? gesperrte "pruefer")))))
