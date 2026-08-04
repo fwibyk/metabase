@@ -16,6 +16,20 @@ vom 23.04.2026.** Verankert als Tag **`upstream-base-2026-04-23`**. Der vollstä
 git diff upstream-base-2026-04-23 master
 ```
 
+Ohne Klonen geht es auch im Browser, weil dieses Repository ein GitHub-Fork von
+`metabase/metabase` ist und beide denselben Objektspeicher teilen:
+<https://github.com/metabase/metabase/compare/dd6c1e01cba86231ccdae3e6ae8d84c077e7198b...fwibyk:master>
+
+Der Anker-Commit trägt **absichtlich keinen Vorgänger**; er enthält ausschließlich den
+unveränderten Upstream-Quellbaum. Dass dabei kein veränderter Baum untergeschoben wurde, ist ohne
+Vertrauen in uns prüfbar — Git-Bäume sind inhaltsadressiert:
+
+```
+git rev-parse upstream-base-2026-04-23^{tree}   # 103d8f2e74a311e891d86434c98524c6a82eb658
+```
+
+Dieselbe Kennung liefert der Baum von `dd6c1e01` im Upstream-Repository.
+
 **Korrektur einer früheren Falschangabe (04.08.2026):** Bis hierher stand in diesem Dokument
 und im Wurzel-Commit `4c02fe37` („import Metabase v0.59.5.1 upstream source"), die Basis sei
 **v0.59.5.1**. Das ist falsch, und zwar um eine ganze Minor-Version: `v0.59.5.1` wurde upstream
