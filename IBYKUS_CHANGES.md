@@ -1,9 +1,48 @@
 # ibykus Metabase Fork — Änderungsprotokoll
 
-Dieses Repository ist ein Fork von [Metabase](https://github.com/metabase/metabase) v0.59.5.1,
+Dieses Repository ist ein Fork von [Metabase](https://github.com/metabase/metabase),
 lizenziert unter der [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE.txt).
 
 Gemäß AGPL-3.0 werden alle Änderungen gegenüber dem Upstream hier dokumentiert.
+
+## Basis — und wie man unsere Änderungen selbst nachrechnet
+
+**Basis ist `metabase/metabase` auf `master`, Commit
+[`dd6c1e01`](https://github.com/metabase/metabase/commit/dd6c1e01cba86231ccdae3e6ae8d84c077e7198b)
+vom 23.04.2026.** Verankert als Tag **`upstream-base-2026-04-23`**. Der vollständige
+Änderungssatz ist damit bildbar:
+
+```
+git diff upstream-base-2026-04-23 master
+```
+
+**Korrektur einer früheren Falschangabe (04.08.2026):** Bis hierher stand in diesem Dokument
+und im Wurzel-Commit `4c02fe37` („import Metabase v0.59.5.1 upstream source"), die Basis sei
+**v0.59.5.1**. Das ist falsch, und zwar um eine ganze Minor-Version: `v0.59.5.1` wurde upstream
+am 30.03.2026 getaggt und enthält `src/metabase/agent_lib`/`agent_api` **nicht**, unser Baum
+enthält beides; `v0.60.1` wurde am 15.04. getaggt, `v0.60.2` am 21.04. Unsere Basis liegt also
+im 0.60er-Entwicklungszweig **nach** `v0.60.2`. Sie entspricht keinem Release-Tag, weil es ein
+`master`-Stand ist — deshalb wird sie hier über den Commit benannt und nicht über eine
+Versionsnummer.
+
+Ermittelt wurde sie durch Blob-für-Blob-Vergleich unseres Import-Baums gegen die
+Upstream-Historie: **18231 von 18263 Blobs identisch (99,82 %)**, das Maximum über alle
+geprüften Stände. Die 32 verbleibenden Abweichungen sind genau drei Gruppen:
+
+1. **unsere Änderungen** — die unten aufgeführten Dateien;
+2. **drei Dateien, die sich nur in den Zeilenenden unterscheiden** (`e2e/support/assets/dog_breeds.csv`,
+   `e2e/support/assets/pokedex.tsv`, `resources/frontend_client/app/fonts/Merriweather/OFL.txt`) —
+   Artefakt eines Windows-Checkouts, inhaltlich identisch (nachgeprüft nach Entfernen der CR);
+3. **Dateien, die unsere eigene `.gitignore` ausschließt** (`.vscode/*`, `.babel_cache/.gitkeep`,
+   `modules/drivers/mongo/.clj-kondo/.lock`) — im Fork nicht vorhanden, nicht geändert.
+
+Zusätzlich melden **57 Dateien eine reine Rechteänderung** (verlorenes Ausführbar-Bit an
+Shell-Skripten, ebenfalls Windows-Checkout). `git diff --numstat` zeigt sie mit `0` Zeilen.
+
+**Warum der Wurzel-Commit dafür nicht genügt:** `4c02fe37` heißt „import upstream source",
+enthält aber `src/metabase/sso/local.clj` — also unsere Modifikation — schon im ersten Commit.
+Ein Empfänger konnte daraus nie ablesen, was von uns stammt. Genau diese Lücke schließt der
+Basis-Tag.
 
 ## Geänderte Dateien
 
@@ -53,7 +92,8 @@ Gemäß AGPL-3.0 werden alle Änderungen gegenüber dem Upstream hier dokumentie
 - **Grund**: Das Admin-Menü (Settings, Admin-Bereich) soll nur für Metabase-Superuser sichtbar sein
 
 #### `frontend/src/metabase/utils/iframe.ts`
-- **Änderung**: Keine inhaltliche Änderung gegenüber Upstream (Kommentar angepasst)
+- **Änderung**: Ein Kommentar und zwei Leerzeilen entfernt — das Verhalten ist unverändert
+  (`git diff` zeigt `+0/-3`)
 
 #### `frontend/src/metabase/querying/notebook/components/NotebookDataPicker/NotebookDataPicker.tsx`
 - **Änderung**: Der Embedding-Picker (`EmbeddingDataPicker` → `PLUGIN_EMBEDDING.*`) wird nicht mehr allein wegen iframe-Kontext erzwungen; die Bedingung ist auf `isTenantUser` verengt
@@ -63,11 +103,41 @@ Gemäß AGPL-3.0 werden alle Änderungen gegenüber dem Upstream hier dokumentie
 - **Änderung**: Das erzwungene Rendern des `NotebookDataPicker` im iframe-Kontext (`|| isEmbed`) wurde entfernt
 - **Grund**: Im Ruhezustand (Tabelle gewählt, Schritt geschlossen) rendert der `ModernDataPicker` keine sichtbare Pille → die „Daten"-Leiste blieb leer. Ohne den Zwang nutzt das Embedding dieselbe Ruhe-Pille (`DataPickerTarget`) wie der Normalbetrieb; ein Klick öffnet den Picker
 
+#### Weitere Dateien des Embed-Freischaltens *(nachgetragen 04.08.2026)*
+
+Diese Dateien standen bisher **nicht** in diesem Protokoll, obwohl das Dokument oben
+Vollständigkeit behauptet. Aufgefallen ist das erst, als der Basis-Tag den Diff bildbar machte —
+vorher gab es nichts, wogegen man die Liste prüfen konnte. Alle folgen demselben Muster: Metabase
+sperrt im Full-App-Embedding Funktionen für **alle** Nutzer; da unsere Instanz *immer* eingebettet
+läuft, wäre sie damit dauerhaft eingeschränkt. Die Sperre entfällt, die **Rollenprüfung bleibt**.
+
+| Datei | Änderung |
+|---|---|
+| `frontend/src/metabase/route-guards.tsx` | `AvailableInEmbedding`-Wächter entfernt (sperrte Data Studio im iframe pauschal) |
+| `frontend/src/metabase/data-studio/selectors.ts` | `canAccessDataStudio` gibt im iframe nicht mehr `false` zurück; bleibt auf Admin/Analyst begrenzt |
+| `frontend/src/metabase/data-studio/selectors.unit.spec.ts` | die Tests zur entfernten iframe-Sperre entfernt |
+| `frontend/src/metabase/browse/models/BrowseModels.tsx`, `browse/metrics/BrowseMetrics.tsx` | „Modell/Metrik anlegen" auch im iframe |
+| `frontend/src/metabase/nav/containers/MainNavbar/MainNavbarContainer/BrowseNavSection.tsx` | Browse-Einträge in der Navigation auch im iframe |
+| `frontend/src/metabase/nav/components/search/SearchBar/SearchBar.tsx` | Suchleiste auch im iframe |
+| `frontend/src/metabase/palette/components/Palette.tsx` | Befehlspalette auch im iframe |
+| `frontend/src/metabase/visualizations/click-actions/actions/NativeQueryClickFallback.tsx` | Hinweis „als Frage speichern" auch im iframe |
+
+#### `frontend/src/metabase/AppColorSchemeProvider.tsx`
+- **Änderung**: Im iframe wird ein vom Host gesetztes Cookie `mb-embed-color-scheme` (`light`/`dark`)
+  berücksichtigt; ohne Cookie bleibt es beim bisherigen `light`
+- **Grund**: Der einbettende Host (Analytics Studio) schaltet hell/dunkel zentral um, ohne die
+  persönliche Einstellung eines Nutzers zu überschreiben
+
+#### `Dockerfile`
+- **Änderung**: fehlende Zeilenfortsetzung (`\`) in der Installationszeile ergänzt — eine Zeile
+- **Grund**: Bauen des Images aus dem Quellbaum
+
 ## Neue Dateien
 
 | Datei | Beschreibung |
 |-------|-------------|
 | `src/metabase/sso/local.clj` | Custom-SSO-Endpunkt für Keycloak-Integration |
+| `test/metabase/sso/local_test.clj` | Tests dazu (Signatur, Ablauf, `safe-return-to`, Cookie-Vorrang, Gruppen-Abgleich) — fehlte in dieser Liste bis 04.08.2026 |
 | `IBYKUS_CHANGES.md` | Dieses Dokument |
 
 ## Umgebungsvariablen
