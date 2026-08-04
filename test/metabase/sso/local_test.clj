@@ -150,3 +150,47 @@
   (testing "gewoehnliche Rollennamen sind es sehr wohl"
     (is (not (contains? gesperrte "analyst")))
     (is (not (contains? gesperrte "pruefer")))))
+
+;;; ---- Kontozuordnung ueber die Keycloak-Kennung (04.08.2026) ----------------
+;;
+;; Diese Tests halten einen belegten Angriffsweg fest. Vorher entschied allein die E-Mail-Adresse,
+;; wer welches Metabase-Konto bekommt. Am laufenden System nachgewiesen: Kollege A meldet sich an
+;; und erhaelt Konto 12; A scheidet aus, sein Keycloak-Konto wird geloescht, das Metabase-Konto
+;; bleibt (Metabase loescht keine Nutzer); B setzt die eigene Adresse auf die freigewordene -- was
+;; jeder Nutzer selbst darf, `POST .../account` antwortet 204 -- und landet auf Konto 12, samt
+;; persoenlicher Sammlung. Gegenbeleg damals: eine frische Adresse ergab Konto 13.
+;;
+;; Geprueft wird hier die REGEL, nicht der Datenbankzugriff: `zuordnung` ist genau deshalb von
+;; `find-or-create-user!` getrennt. Der entscheidende Hebel ist `emailVerified` -- Keycloak setzt es
+;; auf false, sobald jemand seine Adresse selbst aendert (am System gemessen).
+
+(def ^:private zuordnung #'sso.local/zuordnung)
+(def ^:private kc-sub-attr @#'sso.local/kc-sub-attr)
+
+(defn- konto [id & [sub]]
+  (cond-> {:id id :is_active true}
+    sub (assoc :login_attributes {kc-sub-attr sub})))
+
+(deftest zuordnung-kennung-schlaegt-adresse-test
+  (testing "Ist die Kennung bekannt, zaehlt sie -- auch wenn die Adresse zu einem anderen Konto passt"
+    (is (= :vorhanden (zuordnung "sub-1" true (konto 7 "sub-1") (konto 12 "sub-2"))))))
+
+(deftest zuordnung-neues-konto-test
+  (testing "Kein Konto zur Kennung und keins zur Adresse -> neu anlegen"
+    (is (= :neu (zuordnung "sub-1" true nil nil)))
+    (is (= :neu (zuordnung "sub-1" false nil nil))
+        "Fuer ein NEUES Konto ist die Bestaetigung unerheblich -- es wird nichts geerbt")))
+
+(deftest zuordnung-altkonto-nur-mit-bestaetigter-adresse-test
+  (testing "Altkonto ohne Kennung wird uebernommen, wenn die Adresse bestaetigt ist"
+    (is (= :altkonto (zuordnung "sub-1" true nil (konto 12)))))
+  (testing "und NICHT, wenn sie es nicht ist -- das ist der belegte Uebernahmeweg"
+    (is (= :unbestaetigt (zuordnung "sub-1" false nil (konto 12))))))
+
+(deftest zuordnung-fremdes-konto-wird-nie-uebernommen-test
+  (testing "Traegt das Konto eine ANDERE Kennung, wird es auch mit bestaetigter Adresse abgelehnt"
+    (is (= :fremde-kennung (zuordnung "sub-1" true nil (konto 12 "sub-2"))))
+    (is (= :fremde-kennung (zuordnung "sub-1" false nil (konto 12 "sub-2")))))
+  (testing "die eigene Kennung am Adresskonto ist dagegen kein Fremdkonto"
+    (is (= :altkonto (zuordnung "sub-1" true nil (konto 12 "sub-1")))
+        "gleiche Kennung: nur der Sub-Index hat nicht gegriffen, das Konto gehoert dem Aufrufer")))

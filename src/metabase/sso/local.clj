@@ -54,17 +54,118 @@
 
 ;;; ---- User & group management ----------------------------------------------
 
-(defn- find-or-create-user! [email first-name last-name]
-  (or (t2/select-one [:model/User :id :is_active] :%lower.email (str/lower-case email))
+;; Schlüssel in `login_attributes`, unter dem die unveränderliche Keycloak-Kennung liegt.
+;;
+;; Warum dort und nicht in einer eigenen Spalte: `core_user` gehört Metabase, seine Schemaänderungen
+;; laufen über Liquibase. Eine Fork-eigene Spalte wäre bei jedem Upgrade im Weg. `login_attributes`
+;; ist ein für genau solche Zusatzmerkmale gedachtes Feld und überlebt Upgrades.
+(def ^:private kc-sub-attr "keycloak_sub")
+
+(defn- user-mit-sub [sub]
+  (when-not (str/blank? sub)
+    (first (filter #(= sub (get (:login_attributes %) kc-sub-attr))
+                   (t2/select [:model/User :id :is_active :email :first_name :last_name :login_attributes]
+                              :sso_source "sso")))))
+
+(defn- sub-schreiben! [user-id sub]
+  (let [vorhanden (or (:login_attributes (t2/select-one [:model/User :login_attributes] :id user-id)) {})]
+    (t2/update! :model/User user-id {:login_attributes (assoc vorhanden kc-sub-attr sub)})))
+
+(defn- zuordnung
+  "Die **Entscheidung** über die Kontozuordnung — ohne Datenbankzugriff, damit sie prüfbar ist.
+
+  Diese Funktion ist absichtlich von `find-or-create-user!` getrennt: die Regel ist der
+  sicherheitsrelevante Teil, und ein Test dafür soll keine Datenbank brauchen. Alles, was hier
+  hereingegeben wird, hat der Aufrufer vorher nachgesehen.
+
+  Mögliche Antworten: `:vorhanden`, `:neu`, `:altkonto`, `:fremde-kennung`, `:unbestaetigt`."
+  [sub email-verified? konto-per-sub konto-per-mail]
+  (let [kennung-am-konto (get (:login_attributes konto-per-mail) kc-sub-attr)]
+    (cond
+      (some? konto-per-sub)                                   :vorhanden
+      (nil? konto-per-mail)                                   :neu
+      (and (some? kennung-am-konto)
+           (not= kennung-am-konto sub))                       :fremde-kennung
+      (not email-verified?)                                   :unbestaetigt
+      :else                                                   :altkonto)))
+
+(defn- find-or-create-user!
+  "Ordnet dem Aufrufer sein Metabase-Konto zu — **über die unveränderliche Keycloak-Kennung**, nicht
+  über die E-Mail-Adresse. Die Regel selbst steht in [[zuordnung]].
+
+  Gibt `{:user … }` zurück oder `{:fehler \"…\"}`, wenn die Zuordnung abgelehnt wird.
+
+  **Warum diese Umstellung (04.08.2026).** Vorher entschied allein die Adresse. Das war übernehmbar,
+  und es ist am laufenden System belegt worden: Kollege A meldet sich an und bekommt Konto 12; A
+  scheidet aus, sein Keycloak-Konto wird gelöscht, das Metabase-Konto bleibt (Metabase löscht keine
+  Nutzer); B setzt die eigene Adresse auf die freigewordene — was jeder selbst darf — und landet beim
+  nächsten Aufruf auf Konto 12, mitsamt persönlicher Sammlung. Dieselbe Lehre wie im Juli bei
+  `datasets.owner_sub`: die Identität muss an dem hängen, was sich nicht ändern lässt.
+
+  **Die drei Fälle:**
+
+  1. Konto mit dieser Kennung vorhanden → das ist es. Eine abweichende Adresse wird nachgezogen (der
+     Nutzer hat sie rechtmäßig geändert).
+  2. Keine Kennung, aber ein Konto mit dieser Adresse → **Altkonto**. Es wird übernommen und die
+     Kennung nachgetragen, aber **nur bei bestätigter Adresse**. Keycloak setzt `emailVerified` auf
+     `false`, sobald jemand seine Adresse selbst ändert (gemessen) — genau daran scheitert der
+     Übernahmeversuch, während der Bestandsnutzer mit seiner gewachsenen Adresse durchgeht. Die
+     Umstellung heilt den Bestand also durch Benutzung, ohne Datenmigration.
+  3. Nichts vorhanden → neues Konto mit Kennung.
+
+  Ein Konto, dessen Kennung **abweicht**, wird nie übernommen — dann kollidieren zwei Identitäten auf
+  einer Adresse, und Weitergeben wäre die falsche Antwort."
+  [sub email first-name last-name email-verified?]
+  (let [per-sub  (user-mit-sub sub)
+        per-mail (when (nil? per-sub)
+                   (t2/select-one [:model/User :id :is_active :email :login_attributes]
+                                  :%lower.email (str/lower-case email)))]
+    (case (zuordnung sub email-verified? per-sub per-mail)
+      :vorhanden
+      ;; Adresse UND Namen nachziehen. Das Nachziehen der Namen lag bis zum 04.08.2026 in der
+      ;; Webapp (`ensureMetabaseUser`), die dafuer per Admin-API nach der Adresse suchte und ein
+      ;; Konto anlegte, wenn sie keins fand -- ohne Kennung. Damit haette sie genau die Konten
+      ;; erzeugt, die unten nur mit bestaetigter Adresse uebernommen werden duerfen. Zustaendig ist
+      ;; jetzt diese Stelle, an der die Identitaet ohnehin entschieden wird.
+      (let [neu (cond-> {}
+                  (not= (str/lower-case (or (:email per-sub) "")) (str/lower-case email))
+                  (assoc :email email)
+                  (not= (or (:first_name per-sub) "") (or first-name ""))
+                  (assoc :first_name (or first-name ""))
+                  (not= (or (:last_name per-sub) "") (or last-name ""))
+                  (assoc :last_name (or last-name "")))]
+        (when (seq neu)
+          (log/infof "SSO local: Konto %s wird nachgezogen (%s)" (:id per-sub) (keys neu))
+          (t2/update! :model/User (:id per-sub) neu))
+        {:user per-sub})
+
+      :fremde-kennung
+      (do (log/warnf "SSO local: abgelehnt — Konto %s gehoert einer anderen Keycloak-Kennung"
+                     (:id per-mail))
+          {:fehler "Dieses Konto gehoert zu einer anderen Anmeldung."})
+
+      :unbestaetigt
+      (do (log/warnf (str "SSO local: abgelehnt — Altkonto %s soll uebernommen werden, die "
+                          "Adresse ist aber nicht bestaetigt") (:id per-mail))
+          {:fehler (str "Ihre E-Mail-Adresse ist nicht bestaetigt. Ein bestehendes Konto mit "
+                        "dieser Adresse kann deshalb nicht zugeordnet werden.")})
+
+      :altkonto
+      (do (log/infof "SSO local: Altkonto %s wird der Keycloak-Kennung zugeordnet" (:id per-mail))
+          (sub-schreiben! (:id per-mail) sub)
+          {:user per-mail})
+
+      :neu
       (do
         (log/infof "SSO local: creating new Metabase user for %s" email)
-        (t2/insert-returning-instance!
-         [:model/User :id :is_active]
-         {:email      email
-          :first_name (or first-name "")
-          :last_name  (or last-name "")
-          :sso_source "sso"
-          :is_active  true}))))
+        {:user (t2/insert-returning-instance!
+                [:model/User :id :is_active]
+                {:email            email
+                 :first_name       (or first-name "")
+                 :last_name        (or last-name "")
+                 :sso_source       "sso"
+                 :login_attributes {kc-sub-attr sub}
+                 :is_active        true})}))))
 
 (defn- ensure-group! [group-name]
   (or (t2/select-one :permissions_group :name group-name)
@@ -247,13 +348,27 @@
     (clear-sso-token-cookie
      (if-let [claims (validate-jwt token secret)]
        (let [email      (get claims "email")
+             sub        (get claims "sub")
+             verified?  (true? (get claims "email_verified"))
              first-name (get claims "first_name")
              last-name  (get claims "last_name")
              groups     (get claims "groups" [])]
-         (if (str/blank? email)
+         (cond
+           (str/blank? email)
            {:status 400 :body "Missing email in SSO token" :headers {"Content-Type" "text/plain"}}
-           (try
-             (let [user    (find-or-create-user! email first-name last-name)
+
+           ;; Ohne Kennung keine Anmeldung. Ein Rückfall auf die Adresse wäre bequem und würde die
+           ;; geschlossene Lücke wieder öffnen — und zwar unsichtbar, denn er sähe wie Erfolg aus.
+           (str/blank? sub)
+           (do (log/warn "SSO local: abgelehnt — Token ohne sub (Keycloak-Kennung)")
+               {:status 400 :body "Missing sub in SSO token" :headers {"Content-Type" "text/plain"}})
+
+           :else
+           (let [ergebnis (find-or-create-user! sub email first-name last-name verified?)]
+            (if-let [fehler (:fehler ergebnis)]
+              {:status 403 :body fehler :headers {"Content-Type" "text/plain; charset=utf-8"}}
+              (try
+             (let [user    (:user ergebnis)
                    _       (sync-groups! (:id user) groups)
                    session (create-session! (:id user))
                    resp    (cookies/set-session-cookies
@@ -267,7 +382,7 @@
                  resp))
              (catch Exception e
                (log/error e "SSO local: error creating session")
-               {:status 500 :body "SSO error" :headers {"Content-Type" "text/plain"}}))))
+               {:status 500 :body "SSO error" :headers {"Content-Type" "text/plain"}}))))))
        (do
          (log/warn "SSO local: kein, ungueltiges oder abgelaufenes Uebergabe-Cookie")
          {:status 401
