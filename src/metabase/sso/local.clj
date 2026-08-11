@@ -71,6 +71,30 @@
   (let [vorhanden (or (:login_attributes (t2/select-one [:model/User :login_attributes] :id user-id)) {})]
     (t2/update! :model/User user-id {:login_attributes (assoc vorhanden kc-sub-attr sub)})))
 
+;; Nur was die Anwendung tatsächlich ausliefert, darf in `core_user.locale` landen. Der Wert kommt
+;; zwar aus einem signierten Token, aber er stammt ursprünglich aus einem Keycloak-Attribut, das
+;; auch anders belegt sein kann — und Metabase prüft beim Schreiben nicht nach.
+(def ^:private erlaubte-sprachen #{"de" "en"})
+
+(defn- sprache-nachziehen!
+  "Setzt die Anzeigesprache des Metabase-Kontos auf die in Keycloak gewählte.
+
+  **Warum das überhaupt nötig ist.** Metabase bietet im eingebetteten Notebook keine
+  Sprachumschaltung an — es zeigt schlicht, was in `core_user.locale` steht. `MB_SITE_LOCALE` ist
+  dabei nur die Vorgabe für NEUE Konten und ändert an einem bestehenden nichts. Ohne diese Stelle
+  bliebe Metabase also deutsch, während die Webapp bereits englisch ist.
+
+  **Warum bei jeder Anmeldung.** Genau das ist die Umsetzung der Zusage „ein Sprachwechsel greift
+  beim nächsten Anmelden“: die Anmeldung ist der einzige Zeitpunkt, an dem beide Seiten
+  zusammenkommen. Geschrieben wird nur bei Abweichung — sonst fiele bei jeder Anmeldung ein
+  Schreibvorgang auf `core_user` an, der nichts ändert."
+  [user-id sprache]
+  (when (contains? erlaubte-sprachen sprache)
+    (let [vorhanden (:locale (t2/select-one [:model/User :id :locale] :id user-id))]
+      (when (not= vorhanden sprache)
+        (log/infof "SSO local: Sprache von Konto %s wird auf %s gesetzt" user-id sprache)
+        (t2/update! :model/User user-id {:locale sprache})))))
+
 (defn- zuordnung
   "Die **Entscheidung** über die Kontozuordnung — ohne Datenbankzugriff, damit sie prüfbar ist.
 
@@ -352,7 +376,8 @@
              verified?  (true? (get claims "email_verified"))
              first-name (get claims "first_name")
              last-name  (get claims "last_name")
-             groups     (get claims "groups" [])]
+             groups     (get claims "groups" [])
+             sprache    (get claims "locale")]
          (cond
            (str/blank? email)
            {:status 400 :body "Missing email in SSO token" :headers {"Content-Type" "text/plain"}}
@@ -369,6 +394,7 @@
               {:status 403 :body fehler :headers {"Content-Type" "text/plain; charset=utf-8"}}
               (try
              (let [user    (:user ergebnis)
+                   _       (sprache-nachziehen! (:id user) sprache)
                    _       (sync-groups! (:id user) groups)
                    session (create-session! (:id user))
                    resp    (cookies/set-session-cookies
