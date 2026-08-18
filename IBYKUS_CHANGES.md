@@ -86,6 +86,16 @@ Basis-Tag.
   kein Cookie unter dem alten Namen liegenbleibt. `__Host-` wäre hier falsch: dieser Präfix verlangt
   `Path=/` und würde die Pfadbindung aufheben, die verhindert, dass der Token an jede
   Metabase-Anfrage mitgeht.
+- **Anzeigesprache aus dem Token nachziehen** *(ab `v0.59.5.10-ibykus`)*: der Claim `locale` wird
+  bei jeder Anmeldung nach `core_user.locale` geschrieben. Nötig, weil Metabase im eingebetteten
+  Notebook keine Sprachumschaltung anbietet und `MB_SITE_LOCALE` nur die Vorgabe für **neue** Konten
+  ist — ein bestehendes Konto bliebe deutsch, während die einbettende Anwendung schon englisch ist.
+  Bei jeder Anmeldung, weil das der einzige Zeitpunkt ist, an dem beide Seiten zusammenkommen; das
+  ist die Umsetzung der Zusage „ein Sprachwechsel greift beim nächsten Anmelden". Geschrieben wird
+  nur bei Abweichung, sonst fiele je Anmeldung ein wirkungsloser Schreibvorgang auf `core_user` an.
+  **Allowlist `#{"de" "en"}`:** der Wert kommt zwar aus einem signierten Token, stammt aber
+  ursprünglich aus einem Keycloak-Attribut, das anders belegt sein kann — und Metabase prüft beim
+  Schreiben nicht nach.
 
 #### `src/metabase/server/middleware/security.clj`
 - **Änderung**: `X-Frame-Options`-Header wird unterdrückt wenn `MB_EMBEDDING_APP_ORIGIN` gesetzt ist
