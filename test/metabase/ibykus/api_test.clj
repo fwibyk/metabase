@@ -166,10 +166,29 @@
                                              {:eingebettet true :art "frage" :id card-id
                                               :gesperrt {:preis 3} :parameter {:preis 1}})))))))))
 
-(deftest person-ohne-datenrecht-bekommt-fehler-statt-bild-test
+(deftest gespeicherte-native-frage-mit-reinem-datenrecht-test
+  ;; ibkefap121, 06.11.2026: die Demo-Fachabteilung darf die Tabelle sehen, aber kein eigenes SQL schreiben. In der
+  ;; Oberfläche und im Dashboard läuft ihre gespeicherte native Frage, als einzelne Frage exportiert kam „keine
+  ;; Berechtigung“ -- der Export lief wie eine freie Abfrage statt wie eine gespeicherte Frage.
   (mt/with-no-data-perms-for-all-users!
+    (perms/set-database-permission! (perms/all-users-group) (mt/id) :perms/view-data :unrestricted)
+    (perms/set-database-permission! (perms/all-users-group) (mt/id) :perms/create-queries :no)
     (mt/with-temp [:model/User _ (dissoc (person-attrs nil) ::group)
                    :model/Card {card-id :id} (anzahl-karte)]
+      (zeilen-statt-bild
+       (fn []
+         (let [antwort (mt/user-http-request :crowberto :post 200 "ibykus/zeichnen"
+                                             {:keycloak_sub sub :art "frage" :id card-id :parameter {:preis 1}})]
+           (is (= (erwartete-anzahl 1) (zeilen antwort)) (pr-str (first (:karten antwort))))))))))
+
+(deftest person-ohne-datenrecht-bekommt-fehler-statt-bild-test
+  ;; Metabase prüft bei einer GESPEICHERTEN Frage die Tabellen aus ihren result_metadata (so kam auf ibkefap121
+  ;; „keine Berechtigung, Daten der Tabelle 72 in result_metadata anzusehen“). Eine Karte ohne Metadaten hätte hier
+  ;; nichts zu verweigern -- deshalb eine mit echten Metadaten.
+  (mt/with-no-data-perms-for-all-users!
+    (mt/with-temp [:model/User _ (dissoc (person-attrs nil) ::group)
+                   :model/Card {card-id :id} (mt/card-with-metadata
+                                              {:name "Lokale" :dataset_query (mt/mbql-query venues {:fields [$name] :limit 3})})]
       (let [karte (first (:karten (mt/user-http-request :crowberto :post 200 "ibykus/zeichnen"
                                                         {:keycloak_sub sub :art "frage" :id card-id})))]
         (is (false? (:darstellbar karte)) (pr-str karte))

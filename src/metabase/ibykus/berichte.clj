@@ -16,12 +16,12 @@
   nicht zeichnen kann (Karten u. a.), kommt als `darstellbar false` zurück -- nicht stillschweigend weggelassen."
   (:require
    [clojure.string :as str]
-   [metabase.api.common :as api]
    [metabase.channel.render.core :as channel.render]
    [metabase.channel.shared :as channel.shared]
    [metabase.dashboards.models.dashboard-card :as dashboard-card]
    [metabase.models.interface :as mi]
    [metabase.notification.payload.execute :as execute]
+   [metabase.query-processor.card :as qp.card]
    [metabase.query-processor.core :as qp]
    [metabase.request.core :as request]
    [metabase.sso.local :as sso.local]
@@ -138,16 +138,22 @@
         (log/warnf e "ibykus/berichte: Karte %s nicht gezeichnet" (:id card))
         {:titel titel :darstellbar false :fehler (or (ex-message e) "Fehler beim Zeichnen")}))))
 
-(defn- frage-ausfuehren [card parameter]
-  (qp/process-query
-   (qp/userland-query
-    (cond-> (assoc (:dataset_query card)
-                   :middleware {:process-viz-settings? true
-                                :js-int-to-string?     false})
-      (seq parameter) (assoc :parameters (filterv #(contains? % :value) parameter)))
-    {:executed-by api/*current-user-id*
-     :context     :pulse
-     :card-id     (:id card)})))
+(defn- frage-ausfuehren
+  "Über `qp.card/process-query-for-card` wie die Oberfläche und die Abonnements (`execute/execute-card`), NICHT als
+  freie Abfrage: nur dieser Weg bindet `qp.perms/*card-id*`, und erst damit darf eine gespeicherte NATIVE Frage mit
+  reinem Datenrecht laufen. Der frühere Nachbau verlangte das Recht auf eigene SQL-Abfragen (ibkefap121, 06.11.2026)."
+  [card parameter]
+  (qp.card/process-query-for-card
+   (:id card) :api
+   ;; Nur, was auch die Oberfläche schickt: process-query-for-card ergänzt den Rest aus der Karte und prüft :name
+   ;; gegen die Template-Tags (Anzeigename "Preis" ≠ Tag "preis" -> 500).
+   :parameters (into [] (comp (filter #(contains? % :value)) (map #(select-keys % [:id :type :target :value]))) parameter)
+   :context    :pulse
+   :middleware {:process-viz-settings? true
+                :js-int-to-string?     false}
+   :make-run   (fn [qp _export-format]
+                 (fn [query info]
+                   (qp (qp/userland-query query info) nil)))))
 
 (defn- frage-zeichnen [card-id werte gesperrt]
   (let [card (t2/select-one :model/Card :id card-id :archived false)]
