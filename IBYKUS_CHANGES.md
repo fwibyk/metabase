@@ -105,6 +105,15 @@ Basis-Tag.
 - **Änderung**: `effective-schema`-Funktion ergänzt; normalisiert leeres Schema auf den `dbname` der Verbindung
 - **Grund**: Doris-JDBC-Treiber liefert leere Strings statt dem Datenbanknamen als Schema-Bezeichner; ohne diesen Fix zeigt Metabase keine Tabellen an
 
+#### `src/metabase/api_routes/routes.clj`
+- **Änderung**: Route `/api/ibykus` auf `metabase.ibykus.api` (mit Anmeldung, `+auth`)
+- **Grund**: Berichtsexport des Analytics Studio (siehe neue Dateien)
+
+#### `src/metabase/sso/local.clj` *(ergänzt 06.11.2026)*
+- **Änderung**: `user-mit-sub` und `sync-groups!` sind öffentlich
+- **Grund**: `metabase.ibykus.berichte` findet das Konto einer Person über dieselbe Keycloak-Kennung und gleicht ihre
+  Gruppen wie bei der Anmeldung ab — eine Zuordnung, nicht zwei
+
 ### Frontend (TypeScript/React)
 
 #### `frontend/src/metabase/selectors/embed.ts`
@@ -162,6 +171,9 @@ läuft, wäre sie damit dauerhaft eingeschränkt. Die Sperre entfällt, die **Ro
 |-------|-------------|
 | `src/metabase/sso/local.clj` | Custom-SSO-Endpunkt für Keycloak-Integration |
 | `test/metabase/sso/local_test.clj` | Tests dazu (Signatur, Ablauf, `safe-return-to`, Cookie-Vorrang, Gruppen-Abgleich) — fehlte in dieser Liste bis 04.08.2026 |
+| `src/metabase/ibykus/api.clj` | *(06.11.2026)* `POST /api/ibykus/berichte` und `POST /api/ibykus/zeichnen`, nur für Superuser (API-Schlüssel des Analytics Studio). Liste und Zeichnen mit den Rechten des Metabase-Kontos einer Person (`keycloak_sub`) oder `eingebettet` mit verriegelten Parameterwerten wie eine signierte Einbettung |
+| `src/metabase/ibykus/berichte.clj` | *(06.11.2026)* Umsetzung: lesbare Fragen/Dashboards mit Parametern; Zeichnen je Karte als PNG über die Ausführung der Dashboard-Abonnements und `channel.render`; nicht zeichenbare Darstellungen als Kennzeichen statt stiller Lücke |
+| `test/metabase/ibykus/api_test.clj` | *(06.11.2026)* Tests dazu (nur Superuser, Sammlungsrechte der Person, fremde Frage 404, `eingebettet` nur mit verriegeltem Wert, unbekannter Parameter, PNG) |
 | `IBYKUS_CHANGES.md` | Dieses Dokument |
 
 ## Umgebungsvariablen

@@ -61,7 +61,9 @@
 ;; ist ein für genau solche Zusatzmerkmale gedachtes Feld und überlebt Upgrades.
 (def ^:private kc-sub-attr "keycloak_sub")
 
-(defn- user-mit-sub [sub]
+(defn user-mit-sub
+  "Das SSO-Konto zur Keycloak-Kennung `sub` (oder nil). Oeffentlich fuer metabase.ibykus.berichte."
+  [sub]
   (when-not (str/blank? sub)
     (first (filter #(= sub (get (:login_attributes %) kc-sub-attr))
                    (t2/select [:model/User :id :is_active :email :first_name :last_name :login_attributes]
@@ -208,7 +210,7 @@
 ;; haette dauerhaft gewirkt. Rechte auf dieser Ebene gehoeren nicht an einen Rollennamen.
 (def ^:private gesperrte-gruppennamen #{"administrators" "all users"})
 
-(defn- sync-groups!
+(defn sync-groups!
   "Bringt die Metabase-Gruppen des Nutzers auf die Rollen aus dem Token.
 
   UEBER DIE MODELL-FUNKTIONEN, nicht ueber die Rohtabelle (Audit 04.08.2026). Vorher schrieb dies
