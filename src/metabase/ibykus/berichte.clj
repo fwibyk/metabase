@@ -33,8 +33,25 @@
 (set! *warn-on-reflection* true)
 
 (def bild-breite
-  "Breite der gezeichneten Karten in Pixeln (wie Slack: lesbar auf A4 quer)."
+  "Breite einer Karte über die volle Dashboard-Breite in Pixeln (wie Slack: lesbar auf A4 quer)."
   1200)
+
+(def ^:private raster-spalten
+  "Spalten des Dashboard-Rasters von Metabase."
+  24)
+
+(defn- bild-breite-fuer
+  "Zeichenbreite einer Dashboard-Karte nach ihrem Anteil am Raster (06.11.2026): eine halbbreite Karte, auf 1200 px
+  gezeichnet und im PDF auf die halbe Breite verkleinert, hätte Schrift unter Lesegröße. Untergrenze 500 px."
+  [size-x]
+  (if (pos-int? size-x)
+    (max 500 (Math/round (double (/ (* bild-breite (min size-x raster-spalten)) raster-spalten))))
+    bild-breite))
+
+(defn- lage
+  "Position der Karte im Dashboard-Raster, damit der Aufrufer die Anordnung nachbauen kann."
+  [dc]
+  {:reihe (:row dc) :spalte (:col dc) :breite (:size_x dc) :hoehe (:size_y dc)})
 
 (def max-karten
   "Höchstzahl Karten je Dashboard. Der hopservice hat eine eigene, kleinere Grenze; diese hier schützt Metabase."
@@ -119,7 +136,7 @@
 
 (defn- zeichne-karte
   "Ein Teil (Karte + Ergebnis) als PNG. Fehler und nicht zeichenbare Darstellungen kommen als Kennzeichen zurück."
-  [card dashcard result]
+  [card dashcard result px]
   (let [titel (or (-> dashcard :visualization_settings :card.title) (:name card))]
     (try
       (cond
@@ -133,7 +150,7 @@
         (let [tz   (channel.render/defaulted-timezone card)
               info (channel.render/render-pulse-card :inline tz card dashcard result)]
           {:titel titel :darstellbar true
-           :png   (png-base64 (channel.render/png-from-render-info info bild-breite))}))
+           :png   (png-base64 (channel.render/png-from-render-info info px))}))
       (catch Throwable e
         (log/warnf e "ibykus/berichte: Karte %s nicht gezeichnet" (:id card))
         {:titel titel :darstellbar false :fehler (or (ex-message e) "Fehler beim Zeichnen")}))))
@@ -163,7 +180,7 @@
           result    (frage-ausfuehren card parameter)]
       {:titel     (:name card)
        :parameter (mapv parameter-beschreibung (ohne-gesperrte (:parameters card) (set (map name (keys gesperrt)))))
-       :karten    [(zeichne-karte card nil result)]})))
+       :karten    [(zeichne-karte card nil result bild-breite)]})))
 
 (defn- dashboard-zeichnen [dashboard-id werte gesperrt]
   (let [dash (t2/select-one :model/Dashboard :id dashboard-id :archived false)]
@@ -181,22 +198,23 @@
                  (fn [dc]
                    (cond
                      (execute/virtual-card-of-type? dc "text")
-                     {:text (-> (execute/process-virtual-dashcard dc parameter) :visualization_settings :text)}
+                     (assoc (lage dc) :text (-> (execute/process-virtual-dashcard dc parameter) :visualization_settings :text))
 
                      (execute/virtual-card-of-type? dc "heading")
-                     {:ueberschrift (-> (execute/process-virtual-dashcard dc parameter) :visualization_settings :text)}
+                     (assoc (lage dc) :ueberschrift (-> (execute/process-virtual-dashcard dc parameter) :visualization_settings :text))
 
                      (:card_id dc)
                      (let [teil (channel.shared/maybe-realize-data-rows
                                  (execute/execute-dashboard-subscription-card dc parameter))]
                        (if teil
-                         (assoc (zeichne-karte (:card teil) (:dashcard teil) (:result teil))
-                                :reihe (:row dc) :spalte (:col dc) :breite (:size_x dc))
+                         (merge (zeichne-karte (:card teil) (:dashcard teil) (:result teil) (bild-breite-fuer (:size_x dc)))
+                                (lage dc))
                          ;; nil heißt: Abfrage gescheitert (execute protokolliert) oder leer und ausgeblendet.
-                         {:titel       (or (-> dc :visualization_settings :card.title)
-                                           (t2/select-one-fn :name :model/Card :id (:card_id dc)))
-                          :darstellbar false
-                          :fehler      "Die Karte konnte nicht ausgeführt werden oder ist leer und ausgeblendet."}))
+                         (assoc (lage dc)
+                                :titel       (or (-> dc :visualization_settings :card.title)
+                                                 (t2/select-one-fn :name :model/Card :id (:card_id dc)))
+                                :darstellbar false
+                                :fehler      "Die Karte konnte nicht ausgeführt werden oder ist leer und ausgeblendet.")))
 
                      :else nil))
                  dashcards))})))

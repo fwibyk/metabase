@@ -100,7 +100,7 @@
 
 (defn- zeilen-statt-bild [thunk]
   (with-redefs-fn {#'metabase.ibykus.berichte/zeichne-karte
-                   (fn [card _dashcard result]
+                   (fn [card _dashcard result _px]
                      {:titel (:name card) :zeilen (-> result :data :rows) :fehler (some-> (:error result) str)})}
     thunk))
 
@@ -165,6 +165,35 @@
                 (:code (mt/user-http-request :crowberto :post 400 "ibykus/zeichnen"
                                              {:eingebettet true :art "frage" :id card-id
                                               :gesperrt {:preis 3} :parameter {:preis 1}})))))))))
+
+(defn- png-breite [^String b64]
+  (let [b (.decode (java.util.Base64/getDecoder) b64)]
+    (.getInt (java.nio.ByteBuffer/wrap b 16 4))))
+
+(deftest lage-und-zeichenbreite-test
+  ;; 06.11.2026: der Aufrufer baut das Raster des Dashboards nach. Dafuer braucht JEDE Karte ihre Lage, auch Text, und
+  ;; eine halbbreite Karte wird halb so breit gezeichnet -- sonst waere ihre Schrift im PDF unter Lesegroesse.
+  (mt/with-temp [:model/User _ (dissoc (person-attrs nil) ::group)
+                 :model/Card {card-id :id} {:name "Je Preis" :display :bar
+                                            :dataset_query (mt/mbql-query venues {:aggregation [[:count]]
+                                                                                  :breakout    [$price]})}
+                 :model/Dashboard {dash-id :id} {:name "Raster"}
+                 :model/DashboardCard _ {:dashboard_id dash-id :row 0 :col 0 :size_x 24 :size_y 2
+                                         :visualization_settings {:virtual_card {:display "text"} :text "**Hallo**"}}
+                 :model/DashboardCard _ {:dashboard_id dash-id :card_id card-id :row 2 :col 0 :size_x 24 :size_y 4}
+                 :model/DashboardCard _ {:dashboard_id dash-id :card_id card-id :row 6 :col 12 :size_x 12 :size_y 4}]
+    (let [karten (:karten (mt/user-http-request :crowberto :post 200 "ibykus/zeichnen"
+                                                {:keycloak_sub sub :art "dashboard" :id dash-id}))
+          text   (first (filter :text karten))
+          [voll halb] (filter :png karten)]
+      (is (some? halb))
+      (is (= {:reihe 0 :spalte 0 :breite 24 :hoehe 2 :text "**Hallo**"} (select-keys text [:reihe :spalte :breite :hoehe :text])))
+      (is (= {:reihe 6 :spalte 12 :breite 12 :hoehe 4} (select-keys halb [:reihe :spalte :breite :hoehe])))
+      (is (string? (:png voll)))))
+  (testing "Zeichenbreite nach Rasteranteil, mit Untergrenze (die Wirkung am echten Diagramm misst die Probe auf
+            ibkefap121; im Testabbild wird ein Diagramm auf seinen Inhalt zugeschnitten)"
+    (let [f @#'metabase.ibykus.berichte/bild-breite-fuer]
+      (is (= [1200 600 500 500 1200 1200] (mapv f [24 12 8 2 nil 30]))))))
 
 (deftest gespeicherte-native-frage-mit-reinem-datenrecht-test
   ;; ibkefap121, 06.11.2026: die Demo-Fachabteilung darf die Tabelle sehen, aber kein eigenes SQL schreiben. In der
