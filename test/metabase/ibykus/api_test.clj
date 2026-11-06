@@ -5,8 +5,15 @@
   des aufrufenden Superusers -- und `eingebettet` geht nur mit verriegeltem Wert."
   (:require
    [clojure.test :refer :all]
+   [metabase.ibykus.berichte]
    [metabase.permissions.core :as perms]
-   [metabase.test :as mt]))
+   [metabase.query-processor.core :as qp]
+   [metabase.test :as mt]
+   [metabase.test.fixtures :as fixtures]))
+
+;; Ohne Initialisierung haengt das Ergebnis von der Reihenfolge ab: legt der erste Test ein Konto an, bevor ein
+;; HTTP-Aufruf Metabase hochgefahren hat, scheitert er mit "Metabase instance has not been initialized".
+(use-fixtures :once (fixtures/initialize :db :test-users :web-server))
 
 (def ^:private sub "kc-ibykus-test-1")
 
@@ -87,6 +94,87 @@
   (is (= "bericht.kontext_mehrdeutig"
          (:code (mt/user-http-request :crowberto :post 400 "ibykus/zeichnen"
                                       {:keycloak_sub sub :eingebettet true :art "frage" :id 1})))))
+
+;;; Ob ein Parameter WIRKT, zeigt das PNG nicht. Deshalb ersetzen diese Tests nur das Zeichnen und geben die Zeilen
+;;; zurück, die bis dorthin gekommen sind -- Ausführung, Rechte und Parameter laufen echt.
+
+(defn- zeilen-statt-bild [thunk]
+  (with-redefs-fn {#'metabase.ibykus.berichte/zeichne-karte
+                   (fn [card _dashcard result]
+                     {:titel (:name card) :zeilen (-> result :data :rows) :fehler (some-> (:error result) str)})}
+    thunk))
+
+(def ^:private anzahl-sql "SELECT count(*) AS n FROM venues [[WHERE price = {{preis}}]]")
+
+(defn- anzahl-karte []
+  {:name          "Anzahl je Preis"
+   :display       :scalar
+   :dataset_query (mt/native-query {:query         anzahl-sql
+                                    :template-tags {"preis" {:id "t-preis" :name "preis" :display-name "Preis"
+                                                             :type :number}}})
+   :parameters    [{:id "t-preis" :slug "preis" :name "Preis" :type :number/=
+                    :target [:variable [:template-tag "preis"]]}]})
+
+(defn- erwartete-anzahl [preis]
+  (-> (mt/native-query {:query (str "SELECT count(*) AS n FROM venues WHERE price = " preis)})
+      qp/process-query mt/rows ffirst))
+
+(defn- zeilen [antwort]
+  (-> antwort :karten first :zeilen ffirst))
+
+(deftest parameter-wirkt-test
+  (mt/with-temp [:model/User _ (dissoc (person-attrs nil) ::group)
+                 :model/Card {card-id :id} (anzahl-karte)]
+    (zeilen-statt-bild
+     (fn []
+       (let [ohne (zeilen (mt/user-http-request :crowberto :post 200 "ibykus/zeichnen"
+                                                {:keycloak_sub sub :art "frage" :id card-id}))
+             mit  (zeilen (mt/user-http-request :crowberto :post 200 "ibykus/zeichnen"
+                                                {:keycloak_sub sub :art "frage" :id card-id :parameter {:preis 1}}))]
+         (is (= 100 ohne) "ohne Wert: alle Lokale")
+         (is (= (erwartete-anzahl 1) mit) "mit preis 1: nur die mit Preis 1")
+         (is (< mit ohne)))))))
+
+(deftest dashboard-filter-wirkt-test
+  (mt/with-temp [:model/User _ (dissoc (person-attrs nil) ::group)
+                 :model/Card {card-id :id} (anzahl-karte)
+                 :model/Dashboard {dash-id :id} {:name       "Lokale"
+                                                 :parameters [{:id "d-preis" :slug "preis" :name "Preis"
+                                                               :type :number/=}]}
+                 :model/DashboardCard _ {:dashboard_id       dash-id
+                                         :card_id            card-id
+                                         :parameter_mappings [{:parameter_id "d-preis" :card_id card-id
+                                                               :target [:variable [:template-tag "preis"]]}]}]
+    (zeilen-statt-bild
+     (fn []
+       (is (= (erwartete-anzahl 2)
+              (zeilen (mt/user-http-request :crowberto :post 200 "ibykus/zeichnen"
+                                            {:keycloak_sub sub :art "dashboard" :id dash-id
+                                             :parameter {:preis 2}}))))))))
+
+(deftest verriegelter-parameter-wirkt-test
+  (mt/with-temp [:model/Card {card-id :id} (anzahl-karte)]
+    (zeilen-statt-bild
+     (fn []
+       (is (= (erwartete-anzahl 3)
+              (zeilen (mt/user-http-request :crowberto :post 200 "ibykus/zeichnen"
+                                            {:eingebettet true :art "frage" :id card-id :gesperrt {:preis 3}})))
+           "eingebettet läuft mit dem verriegelten Wert, nicht ungefiltert")
+       (testing "der verriegelte Wert lässt sich über `parameter` nicht überschreiben"
+         (is (= "bericht.parameter_verriegelt"
+                (:code (mt/user-http-request :crowberto :post 400 "ibykus/zeichnen"
+                                             {:eingebettet true :art "frage" :id card-id
+                                              :gesperrt {:preis 3} :parameter {:preis 1}})))))))))
+
+(deftest person-ohne-datenrecht-bekommt-fehler-statt-bild-test
+  (mt/with-no-data-perms-for-all-users!
+    (mt/with-temp [:model/User _ (dissoc (person-attrs nil) ::group)
+                   :model/Card {card-id :id} (anzahl-karte)]
+      (let [karte (first (:karten (mt/user-http-request :crowberto :post 200 "ibykus/zeichnen"
+                                                        {:keycloak_sub sub :art "frage" :id card-id})))]
+        (is (false? (:darstellbar karte)) (pr-str karte))
+        (is (string? (:fehler karte)))
+        (is (nil? (:png karte)) "kein Bild, obwohl der Aufrufer Superuser ist")))))
 
 (deftest unbekannter-parameter-test
   (mt/with-temp [:model/User _ (dissoc (person-attrs nil) ::group)

@@ -164,6 +164,8 @@ läuft, wäre sie damit dauerhaft eingeschränkt. Die Sperre entfällt, die **Ro
 #### `Dockerfile`
 - **Änderung**: fehlende Zeilenfortsetzung (`\`) in der Installationszeile ergänzt — eine Zeile
 - **Grund**: Bauen des Images aus dem Quellbaum
+- **Änderung** *(07.11.2026)*: Bau-Stufe `node:22-bullseye` → `node:22-bookworm`
+- **Grund**: Debian Bullseye ist seit 31.08.2026 ohne LTS; `bullseye-security` liefert die Pakete nicht mehr (404), der Bau brach in der ersten `RUN`-Zeile ab. Nur die Bau-Stufe; das ausgelieferte Abbild (`eclipse-temurin:21-jre-alpine`) ist unverändert
 
 ## Neue Dateien
 
