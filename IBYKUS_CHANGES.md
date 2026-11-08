@@ -183,6 +183,8 @@ läuft, wäre sie damit dauerhaft eingeschränkt. Die Sperre entfällt, die **Ro
 - **Änderung** *(07.11.2026)*: Bau-Stufe `node:22-bullseye` → `node:22-bookworm`
 - **Grund**: Debian Bullseye ist seit 31.08.2026 ohne LTS; `bullseye-security` liefert die Pakete nicht mehr (404), der Bau brach in der ersten `RUN`-Zeile ab. Nur die Bau-Stufe; das ausgelieferte Abbild ist unverändert (ab 0.65: `eclipse-temurin:25-jre-alpine`, upstream)
 - **Änderung** *(08.11.2026)*: `npm install -g bun@1.3.14` statt ungepinnt -- dieselbe Version wie `packageManager` in `package.json`
+- **Änderung** *(08.11.2026)*: das Clojure-CLI-Archiv kommt von `download.clojure.org` statt aus den GitHub-Releases (das Installationsskript selbst kommt ohnehin von dort)
+- **Grund**: GitHub-Release-Downloads fielen am 08.11.2026 aus und brachen den Bau ab; eine Quelle weniger
 
 ## Neue Dateien
 
