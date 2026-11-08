@@ -1,10 +1,10 @@
-// eslint-disable-next-line no-restricted-imports -- We sometimes need css-in-js in the SDK
+// eslint-disable-next-line eslint-js/no-restricted-imports -- We sometimes need css-in-js in the SDK
 import { Global, css } from "@emotion/react";
 import { useMemo } from "react";
 
 import { defaultFontFiles } from "metabase/css/core/fonts.styled";
+import { useSelector } from "metabase/redux";
 import { getFontFiles } from "metabase/styled-components/selectors";
-import { useSelector } from "metabase/utils/redux";
 
 /**
  * css style to define the font files for the SDK

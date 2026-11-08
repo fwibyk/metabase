@@ -1,6 +1,6 @@
-// eslint-disable-next-line no-restricted-imports
+// eslint-disable-next-line eslint-js/no-restricted-imports
 import { css } from "@emotion/react";
-// eslint-disable-next-line no-restricted-imports
+// eslint-disable-next-line eslint-js/no-restricted-imports
 import styled from "@emotion/styled";
 
 import { Icon } from "metabase/ui";
@@ -42,7 +42,7 @@ export const CardIconContainer = styled.div`
   align-items: center;
   width: 2rem;
   height: 2rem;
-  border: 1px solid var(--mb-color-border);
+  border: 1px solid var(--mb-color-border-neutral);
   border-radius: 1rem;
 `;
 
@@ -57,19 +57,19 @@ interface CardProps {
 }
 
 const selectedStyles = css`
-  background-color: var(--mb-color-brand);
+  background-color: var(--mb-color-core-brand);
 
   ${CardTitle}, ${CardDescription}, ${CardAside} {
     color: var(--mb-color-text-primary-inverse);
   }
 
   ${CardIcon} {
-    color: var(--mb-color-brand);
+    color: var(--mb-color-core-brand);
   }
 
   ${CardIconContainer} {
-    border-color: var(--mb-color-background-primary);
-    background-color: var(--mb-color-background-primary);
+    border-color: var(--mb-color-background_page-primary);
+    background-color: var(--mb-color-background_page-primary);
   }
 `;
 

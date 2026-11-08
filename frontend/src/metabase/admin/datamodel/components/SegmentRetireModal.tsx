@@ -31,7 +31,7 @@ export function SegmentRetireModal({
         </Text>
         <Flex justify="flex-end" gap="sm">
           <Button onClick={onClose}>{t`Cancel`}</Button>
-          <Button color="danger" variant="filled" onClick={handleRetire}>
+          <Button color="negative" variant="filled" onClick={handleRetire}>
             {t`Retire`}
           </Button>
         </Flex>

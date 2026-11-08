@@ -1,18 +1,22 @@
 import userEvent from "@testing-library/user-event";
-import dayjs from "dayjs";
 
-import { setupFieldsValuesEndpoints } from "__support__/server-mocks";
+import {
+  setupDatabaseEndpoints,
+  setupFieldsValuesEndpoints,
+} from "__support__/server-mocks";
 import {
   renderWithProviders,
   screen,
   waitFor,
   waitForLoaderToBeRemoved,
 } from "__support__/ui";
+import { dayjs } from "metabase/dayjs";
 import { checkNotNull } from "metabase/utils/types";
 import * as Lib from "metabase-lib";
 import {
   PRODUCT_CATEGORY_VALUES,
   PRODUCT_VENDOR_VALUES,
+  createSampleDatabase,
 } from "metabase-types/api/mocks/presets";
 
 import { FilterPicker } from "./FilterPicker";
@@ -30,12 +34,15 @@ import {
   createQueryWithTimeFilter,
   findBooleanColumn,
   findDateColumn,
+  findDateTimeColumn,
   findNumericColumn,
   findStringColumn,
   storeInitialState,
 } from "./test-utils";
 
+// Unjustified type cast. FIXME
 const productCategories = PRODUCT_CATEGORY_VALUES.values.flat() as string[];
+// Unjustified type cast. FIXME
 const productVendors = PRODUCT_VENDOR_VALUES.values.flat() as string[];
 
 function createQueryWithMultipleValuesFilter() {
@@ -151,6 +158,7 @@ function setup({ query = createQuery(), filter }: SetupOpts = {}) {
   const onSelect = jest.fn();
 
   setupFieldsValuesEndpoints([PRODUCT_CATEGORY_VALUES, PRODUCT_VENDOR_VALUES]);
+  setupDatabaseEndpoints(createSampleDatabase());
 
   renderWithProviders(
     <FilterPicker
@@ -340,7 +348,7 @@ describe("FilterPicker", () => {
         expect(screen.getByTestId("date-filter-picker")).toBeInTheDocument();
       });
 
-      it("should open the expression editor when column type isn't supported", () => {
+      it("should open the expression editor when column type isn't supported", async () => {
         const query = Lib.filter(
           createQuery(),
           -1,
@@ -349,7 +357,16 @@ describe("FilterPicker", () => {
         const [filter] = Lib.filters(query, -1);
 
         setup({ query, filter });
-        expect(screen.getByText(/Custom expression/i)).toBeInTheDocument();
+        expect(
+          await screen.findByText(/Custom expression/i),
+        ).toBeInTheDocument();
+        // the expression editor formats its source asynchronously; wait for it
+        // to settle so the resulting state updates stay inside act()
+        await waitFor(() =>
+          expect(
+            screen.getByTestId("custom-expression-query-editor"),
+          ).toHaveProperty("readOnly", false),
+        );
       });
     });
 
@@ -408,11 +425,23 @@ describe("FilterPicker", () => {
   });
 
   describe("custom expression", () => {
+    // The editor wraps long expressions over lines, so compare without whitespace.
+    async function expectEditorSource(source: string) {
+      const editor = await screen.findByTestId(
+        "custom-expression-query-editor",
+      );
+      await waitFor(() =>
+        expect(editor.textContent?.replace(/\s/g, "")).toBe(
+          source.replace(/\s/g, ""),
+        ),
+      );
+    }
+
     async function editExpressionAndSubmit(
       text: string,
       { delay }: { delay: number } = { delay: 0 },
     ) {
-      const input = screen.getByTestId("custom-expression-query-editor");
+      const input = await screen.findByTestId("custom-expression-query-editor");
       const button = screen.getByRole("button", { name: /(Done|Update)/ });
 
       // The expression editor applies changes on blur,
@@ -440,11 +469,139 @@ describe("FilterPicker", () => {
       );
     });
 
+    it("should reach the custom expression editor after going back from a column (metabase#29094)", async () => {
+      setup();
+
+      await userEvent.click(screen.getByText("Total"));
+      expect(screen.getByTestId("number-filter-picker")).toBeInTheDocument();
+      await userEvent.click(screen.getByLabelText("Back"));
+      await userEvent.click(screen.getByText(/Custom expression/i));
+
+      expect(
+        await screen.findByTestId("custom-expression-query-editor"),
+      ).toBeInTheDocument();
+    });
+
+    it.each<[string, (search: HTMLElement) => Promise<void>]>([
+      [
+        "a function picked from the search results",
+        async (search) => {
+          await userEvent.type(search, "coalesce");
+          await userEvent.click(screen.getByText("coalesce"));
+        },
+      ],
+      [
+        "a search that ends with an opening parenthesis",
+        (search) => userEvent.type(search, "case("),
+      ],
+    ])("should open the expression editor for %s", async (_name, act) => {
+      setup();
+      expect(
+        screen.queryByTestId("custom-expression-query-editor"),
+      ).not.toBeInTheDocument();
+
+      await act(screen.getByPlaceholderText("Find..."));
+
+      expect(
+        await screen.findByTestId("custom-expression-query-editor"),
+      ).toBeInTheDocument();
+    });
+
     it("should open the expression editor for unsupported expressions", async () => {
       setup(createQueryWithNullStringFilter());
+      const editor = await screen.findByTestId(
+        "custom-expression-query-editor",
+      );
+      expect(editor).toBeInTheDocument();
+      // the expression editor formats its source asynchronously; wait for it
+      // to settle so the resulting state updates stay inside act()
+      await waitFor(() => expect(editor).toHaveProperty("readOnly", false));
+    });
+
+    it.each<[string, () => SetupOpts, string]>([
+      [
+        "a negated case-insensitive string filter (metabase#14880)",
+        () =>
+          createQueryWithStringFilter({
+            column: findStringColumn(createQuery(), "PRODUCTS", "TITLE"),
+            operator: "does-not-contain",
+            values: ["Wallet"],
+            options: { caseSensitive: false },
+          }),
+        'doesNotContain([Product → Title], "Wallet", "case-insensitive")',
+      ],
+      [
+        "a case-insensitive string filter (metabase#14959)",
+        () =>
+          createQueryWithStringFilter({
+            column: findStringColumn(createQuery(), "PRODUCTS", "TITLE"),
+            operator: "contains",
+            values: ["MULLER"],
+            options: { caseSensitive: false },
+          }),
+        'contains([Product → Title], "MULLER", "case-insensitive")',
+      ],
+      [
+        "an is-empty string filter",
+        () =>
+          createQueryWithStringFilter({
+            operator: "is-empty",
+            values: [],
+          }),
+        "isEmpty([Product → Description])",
+      ],
+      [
+        "an is-empty numeric filter",
+        () => createQueryWithNumberFilter({ operator: "is-null", values: [] }),
+        "isNull([Total])",
+      ],
+    ])(
+      "should convert %s to a custom expression",
+      async (_name, getOpts, expectedSource) => {
+        setup(getOpts());
+
+        await userEvent.click(screen.getByLabelText("Back"));
+        await userEvent.click(screen.getByText(/Custom expression/i));
+
+        await expectEditorSource(expectedSource);
+      },
+    );
+
+    it("should show a comparison between two columns as a custom expression (metabase#12492)", async () => {
+      const query = createQuery();
+      const clause = Lib.expressionClause(">", [
+        findDateTimeColumn(query),
+        findStringColumn(query, "PRODUCTS", "CREATED_AT"),
+      ]);
+      setup(createFilteredQuery(query, clause));
+
+      await expectEditorSource("[Created At] > [Product → Created At]");
+    });
+
+    it("should keep include-current after converting a relative date filter to a custom expression (metabase#12457)", async () => {
+      const { query, getNextFilter } = setup(
+        createQueryWithRelativeDateFilter({
+          value: -30,
+          unit: "day",
+          options: { includeCurrent: true },
+        }),
+      );
+
+      await userEvent.click(screen.getByLabelText("Back"));
+      await userEvent.click(screen.getByLabelText("Back"));
+      await userEvent.click(screen.getByText(/Custom expression/i));
+
+      const button = await screen.findByRole("button", { name: "Update" });
+      await waitFor(() => expect(button).toBeEnabled());
+      await userEvent.click(button);
+
       expect(
-        screen.getByTestId("custom-expression-query-editor"),
-      ).toBeInTheDocument();
+        Lib.relativeDateFilterParts(query, 0, getNextFilter()),
+      ).toMatchObject({
+        value: -30,
+        unit: "day",
+        options: { includeCurrent: true },
+      });
     });
 
     it("should update a filter with a numeric custom expression", async () => {

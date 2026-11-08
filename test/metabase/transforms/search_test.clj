@@ -1,9 +1,11 @@
 (ns metabase.transforms.search-test
+  {:clj-kondo/config '{:linters {:deprecated-var {:exclude {metabase.test.data/mbql-query {:namespaces [metabase.transforms.search-test]}}}}}}
   (:require
    [clojure.test :refer :all]
    [java-time.api :as t]
    [metabase.app-db.core :as mdb]
    [metabase.lib.core :as lib]
+   [metabase.lib.metadata :as lib.metadata]
    [metabase.search.appdb.index :as search.index]
    [metabase.search.engine :as search.engine]
    [metabase.search.ingestion :as search.ingestion]
@@ -60,10 +62,10 @@
       (let [now (t/truncate-to (t/offset-date-time) :millis)]
         (mt/with-temp [:model/Transform {transform-id :id} {:name        "Test transform"
                                                             :description "A test transform"
-                                                            :source      {:type "query"
-                                                                          :query (mt/native-query {:query "SELECT 1"})}
-                                                            :target      {:database (mt/id)
-                                                                          :table "test_table"}
+                                                            :source      {:type :query
+                                                                          :query (lib/native-query (mt/metadata-provider) "SELECT 1")}
+                                                            :target      {:type "table" :database (mt/id)
+                                                                          :name "test_table"}
                                                             :created_at  now
                                                             :updated_at  now}]
           (let [ingested-transform (ingest-then-fetch! "transform" "Test transform")]
@@ -75,15 +77,15 @@
                       :model_created_at now
                       :model_updated_at now})
                     ingested-transform))))))
-
     (testing "A simple MBQL transform gets properly ingested & indexed for search"
       (let [now (t/truncate-to (t/offset-date-time) :millis)]
         (mt/with-temp [:model/Transform {transform-id :id} {:name        "Test MBQL transform"
                                                             :description "An MBQL test transform"
-                                                            :source      {:type "query"
-                                                                          :query (mt/mbql-query venues {:limit 10})}
-                                                            :target      {:database (mt/id)
-                                                                          :table "test_mbql_table"}
+                                                            :source      {:type :query
+                                                                          :query (-> (lib/query (mt/metadata-provider) (lib.metadata/table (mt/metadata-provider) (mt/id :venues)))
+                                                                                     (lib/limit 10))}
+                                                            :target      {:type "table" :database (mt/id)
+                                                                          :name "test_mbql_table"}
                                                             :created_at  now
                                                             :updated_at  now}]
           (let [ingested-transform (ingest-then-fetch! "transform" "Test MBQL transform")]
@@ -99,20 +101,20 @@
 (deftest transform-query-ingestion-test
   (testing "Contents of SQL and Python transform sources are extracted and indexed for full-text search"
     (when (= (mdb/db-type) :postgres)
-      (mt/with-temp [:model/Transform _ {:target {:database (mt/id)
-                                                  :table "test_table"}
+      (mt/with-temp [:model/Transform _ {:target {:type "table" :database (mt/id)
+                                                  :name "test_table"}
                                          :name "Test SQL transform"
-                                         :source {:type "query"
+                                         :source {:type :query
                                                   :query (lib/native-query (mt/metadata-provider) "SELECT 1")}}]
         (let [ingested-transform (ingest-then-fetch! "transform" "Test SQL transform")
               vector-value (.getValue ^PGobject (:with_native_query_vector ingested-transform))]
           (is (string? vector-value))
           (is (re-find #"select" vector-value))
           (is (re-find #"sql" vector-value))))
-
       (mt/when-ee-evailable
-       (mt/with-temp [:model/Transform _ {:target {:database (mt/id)}
-                                          :source {:type "python"
+       (mt/with-temp [:model/Transform _ {:target {:type "table" :database (mt/id) :name "python_target"}
+                                          :source {:type :python
+                                                   :source-tables []
                                                    :source-database (mt/id)
                                                    :body "import pandas as pd\n"}
                                           :name "Test python transform"}]
@@ -121,13 +123,13 @@
            (is (string? vector-value))
            (is (re-find #"import" vector-value))
            (is (re-find #"panda" vector-value)))))
-
       (testing "MBQL queries are not indexed in with_native_query_vector"
-        (mt/with-temp [:model/Transform _ {:target {:database (mt/id)
-                                                    :table "test_mbql_table"}
+        (mt/with-temp [:model/Transform _ {:target {:type "table" :database (mt/id)
+                                                    :name "test_mbql_table"}
                                            :name "Test MBQL transform"
-                                           :source {:type "query"
-                                                    :query (mt/mbql-query venues {:limit 10})}}]
+                                           :source {:type :query
+                                                    :query (-> (lib/query (mt/metadata-provider) (lib.metadata/table (mt/metadata-provider) (mt/id :venues)))
+                                                               (lib/limit 10))}}]
           (let [ingested-transform (ingest-then-fetch! "transform" "Test MBQL transform")
                 vector-value (.getValue ^PGobject (:with_native_query_vector ingested-transform))]
             (is (string? vector-value))
@@ -150,7 +152,7 @@
               "Transform should be removed from the search index after deletion"))))))
 
 (deftest transform-search-test
-  (mt/with-premium-features #{:transforms-basic}
+  (mt/with-premium-features #{:transforms-basic :hosting}
     (search.tu/with-temp-index-table
       (mt/as-admin
         (testing "Transforms can be indexed and subsequently searched for"
@@ -158,10 +160,10 @@
             (mt/with-temp [:model/Transform {transform-id :id}
                            {:name "Customer Revenue Analysis"
                             :description "Analyzes revenue by customer segment"
-                            :source {:type "query"
-                                     :query (mt/native-query {:query "SELECT customer_id, SUM(revenue) FROM orders GROUP BY customer_id"})}
-                            :target {:database (mt/id)
-                                     :table "customer_revenue"}}]
+                            :source {:type :query
+                                     :query (lib/native-query (mt/metadata-provider) "SELECT customer_id, SUM(revenue) FROM orders GROUP BY customer_id")}
+                            :target {:type "table" :database (mt/id)
+                                     :name "customer_revenue"}}]
               (ingest! "transform" [:= :this.id transform-id])
               (testing "Can search by transform name"
                 (let [results (search.tu/search-results "Customer Revenue")]

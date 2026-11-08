@@ -14,6 +14,9 @@
 
   If a report timezone is specified and the database supports it, the JVM timezone should have no impact on queries or
   their results."
+  {:clj-kondo/config '{:linters {:deprecated-var {:exclude {metabase.test.data/mbql-query     {:namespaces [metabase.query-processor.date-bucketing-test]}
+                                                            metabase.test.data/query          {:namespaces [metabase.query-processor.date-bucketing-test]}
+                                                            metabase.test.data/run-mbql-query {:namespaces [metabase.query-processor.date-bucketing-test]}}}}}}
   (:require
    [clojure.string :as str]
    [clojure.test :refer :all]
@@ -30,6 +33,7 @@
    [metabase.query-processor.compile :as qp.compile]
    [metabase.query-processor.middleware.format-rows :as format-rows]
    [metabase.query-processor.preprocess :as qp.preprocess]
+   ;; reads the provider that mt/with-metadata-provider binds in the ambient store
    ^{:clj-kondo/ignore [:deprecated-namespace]} [metabase.query-processor.store :as qp.store]
    [metabase.query-processor.test :as qp]
    [metabase.query-processor.test-util :as qp.test-util]
@@ -955,7 +959,7 @@
 (defn- fmt-str-or-int
   [x]
   (if (string? x)
-    (str x)
+    x
     (int x)))
 
 (defn- week-of-year-and-week-count-should-be-consistent-test-break-out [unit]
@@ -1258,6 +1262,10 @@
   "Dynamically generated dataset with 60 checkins spaced 24 hours apart, from 30 days ago to 29 days in the future."
   (dataset-def-with-timestamps (* 24 (u/minutes->seconds 60)) 60))
 
+(def ^:private checkins:1-per-10-days
+  "Dynamically generated dataset with 240 checkins spaced 10 days apart, from 1200 days ago to 1190 days in the future."
+  (dataset-def-with-timestamps (* 10 24 (u/minutes->seconds 60)) 240))
+
 (defn- checkins-db-is-old?
   "Determine whether we need to recreate one of the dynamically-generated datasets above, if the data has grown a little
   stale."
@@ -1265,6 +1273,7 @@
   (u.date/greater-than-period-duration? (u.date/period-duration (:created_at (mt/db)) (t/zoned-date-time))
                                         (t/seconds max-age-seconds)))
 
+#_{:clj-kondo/ignore [:metabase/discourage-dynamic-vars]}
 (def ^:private ^:dynamic *recreate-db-if-stale?* true)
 
 (defn- count-of-grouping! [^TimestampDatasetDef dataset field-grouping & relative-datetime-args]
@@ -1371,7 +1380,7 @@
 (deftest ^:parallel relative-time-interval-test
   (mt/test-drivers
     (mt/normal-drivers-with-feature :date-arithmetics :test/dynamic-dataset-loading)
-   ;; Following verifies #45942 is solved. Changing the offset ensures that intervals do not overlap.
+    ;; Following verifies #45942 is solved. Changing the offset ensures that intervals do not overlap.
     (testing "Syntactic sugar (`:relative-time-interval` clause) (#45942)"
       (mt/dataset checkins:1-per-day:60
         (is (= 7
@@ -1389,6 +1398,46 @@
                    checkins
                    {:aggregation [[:count]]
                     :filter [:relative-time-interval $timestamp -1 :week 0 :week]})))))))))
+
+(deftest ^:parallel relative-time-interval-positive-offset-test
+  (mt/test-drivers
+    (mt/normal-drivers-with-feature :date-arithmetics :test/dynamic-dataset-loading)
+    (testing "positive-offset relative-time-interval (\"Next N, starting N from now\") executes and returns the shifted window"
+      (mt/dataset checkins:1-per-day:60
+        (let [mp    (mt/metadata-provider)
+              query (-> (lib/query mp (lib.metadata/table mp (mt/id :checkins)))
+                        (lib/aggregate (lib/count))
+                        (lib/filter (lib/relative-time-interval
+                                     (lib.metadata/field mp (mt/id :checkins :timestamp))
+                                     1 :week 1 :week)))]
+          (is (= 7
+                 (ffirst
+                  (mt/formatted-rows [int] (qp/process-query query))))))))))
+
+(deftest ^:parallel relative-time-interval-per-unit-test
+  (mt/test-drivers
+    (mt/normal-drivers-with-feature :date-arithmetics :test/dynamic-dataset-loading)
+    (testing "\"Previous/Next 1 unit, starting 1 unit ago/from now\" returns the rows of the bucket 2 units away"
+      (let [check-units (fn [units]
+                          (doseq [unit units
+                                  n    [-1 1]]
+                            (testing (format "%s %s" n unit)
+                              (let [timestamp [:field (mt/id :checkins :timestamp) nil]
+                                    ;; Count, first and last timestamp: windows of the same size can have the same count.
+                                    summary   (fn [filter-clause]
+                                                (mt/first-row
+                                                 (mt/run-mbql-query checkins
+                                                   {:aggregation [[:count] [:min timestamp] [:max timestamp]]
+                                                    :filter      filter-clause})))
+                                    expected  (summary [:= (assoc timestamp 2 {:temporal-unit unit})
+                                                        [:relative-datetime (* 2 n) unit]])]
+                                (is (pos? (first expected)))
+                                (is (= expected
+                                       (summary [:relative-time-interval timestamp n unit n unit])))))))]
+        (mt/dataset checkins:1-per-day:60
+          (check-units [:day :week]))
+        (mt/dataset checkins:1-per-10-days
+          (check-units [:month :quarter :year]))))))
 
 ;; Make sure that when referencing the same field multiple times with different units we return the one that actually
 ;; reflects the units the results are in. eg when we breakout by one unit and filter by another, make sure the results
@@ -1440,7 +1489,8 @@
               [int]
               (mt/run-mbql-query checkins
                 {:aggregation [[:count]]
-                 :filter [:= [:field $timestamp nil] (t/format "yyyy-MM-dd" (u.date/truncate :day))]})))))))
+                 :filter [:= [:field $timestamp nil]
+                          (t/format "yyyy-MM-dd" (t/zoned-date-time))]})))))))
 
 (deftest ^:parallel default-bucketing-test-2
   ;; this is basically the same test as above, but using the office-checkins dataset instead of the dynamically
@@ -1487,7 +1537,7 @@
                 [int]
                 (mt/run-mbql-query checkins
                   {:aggregation [[:count]]
-                   :filter [:= [:field $timestamp nil] (str (t/format "yyyy-MM-dd" (u.date/truncate :day))
+                   :filter [:= [:field $timestamp nil] (str (t/format "yyyy-MM-dd" (t/zoned-date-time))
                                                             "T14:16:00Z")]}))))))))
 
 (def ^:private addition-unit-filtering-vals
@@ -1810,7 +1860,7 @@
                      #t "2022-03-31T00:00:00"
                      #t "2022-03-31T00:00:00-00:00"]]
             (testing (format "%d %s ^%s %s" n unit (.getCanonicalName (class t)) (pr-str t))
-              (let [march-31 (sql.qp/->honeysql driver/*driver* [:absolute-datetime t :day])
+              (let [march-31 (sql.qp/->honeysql driver/*driver* [:absolute-datetime {} t :day])
                     june-31 (sql.qp/add-interval-honeysql-form driver/*driver* march-31 n unit)
                     checkins (mt/with-metadata-provider (mt/id)
                                (sql.qp/->honeysql driver/*driver* (lib.metadata/table (qp.store/metadata-provider) (mt/id :checkins))))

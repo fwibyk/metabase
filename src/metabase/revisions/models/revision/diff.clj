@@ -1,12 +1,21 @@
 (ns metabase.revisions.models.revision.diff
   (:require
-   [clojure.core.match :refer [match]]
    [clojure.data :as data]
+   [metabase.models.interface :as mi]
+   [metabase.revisions.db :as revisions.db]
    [metabase.util.i18n :refer [deferred-tru]]
-   [toucan2.core :as t2]))
+   [metabase.util.log :as log]
+   [metabase.util.match :as match]))
+
+(defn- readable-name
+  [model id]
+  (when id
+    (when-let [instance (revisions.db/entity model id)]
+      (when (mi/can-read? instance)
+        (:name instance)))))
 
 (defn- match-1 [k v1 v2 identifier]
-  (match [k v1 v2]
+  (match/match-one [k v1 v2]
     [:name _ _]
     (deferred-tru "renamed {0} from \"{1}\" to \"{2}\"" identifier v1 v2)
 
@@ -44,12 +53,10 @@
     (deferred-tru "changed the filters")
 
     [:embedding_params _ _]
-    (deferred-tru "changed the embedding parameters")
-
-    :else nil))
+    (deferred-tru "changed the embedding parameters")))
 
 (defn- match-2 [k v1 v2 identifier]
-  (match [k v1 v2]
+  (match/match-one [k v1 v2]
     [:archived _ after]
     (if after
       (deferred-tru "trashed {0}" identifier)
@@ -60,15 +67,18 @@
 
     [:collection_id nil coll-id]
     (deferred-tru "moved {0} to {1}" identifier (if coll-id
-                                                  (t2/select-one-fn :name 'Collection coll-id)
+                                                  (or (readable-name :model/Collection coll-id)
+                                                      (str "#" coll-id))
                                                   (deferred-tru "Our analytics")))
 
     [:collection_id (prev-coll-id :guard int?) coll-id]
     (deferred-tru "moved {0} from {1} to {2}"
                   identifier
-                  (t2/select-one-fn :name 'Collection prev-coll-id)
+                  (or (readable-name :model/Collection prev-coll-id)
+                      (str "#" prev-coll-id))
                   (if coll-id
-                    (t2/select-one-fn :name 'Collection coll-id)
+                    (or (readable-name :model/Collection coll-id)
+                        (str "#" coll-id))
                     (deferred-tru "Our analytics")))
 
     [:visualization_settings _ _]
@@ -102,12 +112,12 @@
     [:dashboard_id v1 v2]
     (cond
       (and v1 v2) (deferred-tru "moved from dashboard {0} to {1}"
-                                (t2/select-one-fn :name :model/Dashboard :id v1)
-                                (t2/select-one-fn :name :model/Dashboard :id v2))
+                                (readable-name :model/Dashboard v1)
+                                (readable-name :model/Dashboard v2))
       (nil? v1) (deferred-tru "moved this question into {0}"
-                              (t2/select-one-fn :name :model/Dashboard :id v2))
+                              (readable-name :model/Dashboard v2))
       (nil? v2) (deferred-tru "moved this question from {0}"
-                              (t2/select-one-fn :name :model/Dashboard :id v1)))
+                              (readable-name :model/Dashboard v1)))
 
     [:width v1 v2]
     (if (and v1 v2)
@@ -122,7 +132,8 @@
     [#{:table_id :database_id :query_type} _ _]
     nil
 
-    :else nil))
+    ;; Don't recurse, bail on fallthrough.
+    _ nil))
 
 (defn- diff-string [k v1 v2 identifier]
   (or (match-1 k v1 v2 identifier)
@@ -140,19 +151,26 @@
 (defn ^:private model-str->i18n-str
   [model-str]
   (case model-str
-    "Dashboard" (deferred-tru "Dashboard")
-    "Card"      (deferred-tru "Card")
-    "Segment"   (deferred-tru "Segment")
-    "Measure"   (deferred-tru "Measure")
-    "Document"  (deferred-tru "Document")
-    "Transform" (deferred-tru "Transform")))
+    "Dashboard"     (deferred-tru "Dashboard")
+    "Card"          (deferred-tru "Card")
+    "Segment"       (deferred-tru "Segment")
+    "Measure"       (deferred-tru "Measure")
+    "Document"      (deferred-tru "Document")
+    "Exploration"   (deferred-tru "Exploration")
+    "Transform"     (deferred-tru "Transform")
+    "TransformTest" (deferred-tru "Transform test")))
 
 (defn diff-strings*
   "Create a seq of string describing how `o1` is different from `o2`.
   The directionality of the statement should indicate that `o1` changed into `o2`."
   [model o1 o2]
   (when-let [[before after] (data/diff o1 o2)]
-    (let [model-name (model-str->i18n-str model)
+    (let [model-name (try
+                       (model-str->i18n-str model)
+                       ;; A missing display name costs one untranslated word, not the whole history read.
+                       (catch Exception e
+                         (log/warnf e "No display name for model %s; the revision description uses the model string" model)
+                         model))
           ;; ignore collection_id as part of diff if the dashboard_id has changed
           ;; so that the final diff string doesn't contain two messages about moving
           ks         (cond->> (keys (or after before))

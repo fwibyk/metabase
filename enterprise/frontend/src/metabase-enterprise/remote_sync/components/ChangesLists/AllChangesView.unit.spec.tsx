@@ -1,10 +1,16 @@
+import fetchMock from "fetch-mock";
+
+import { setupEnterpriseOnlyPlugin } from "__support__/enterprise";
 import { setupCollectionTreeEndpoint } from "__support__/server-mocks";
 import { mockSettings } from "__support__/settings";
-import { renderWithProviders, screen } from "__support__/ui";
-import { createMockState } from "metabase/redux/store/mocks";
+import { createMockState } from "__support__/state";
+import { renderWithProviders, screen, waitFor } from "__support__/ui";
 import { TRANSFORMS_ROOT_ID } from "metabase-enterprise/remote_sync/displayGroups";
 import type { Collection, RemoteSyncEntity } from "metabase-types/api";
-import { createMockCollection } from "metabase-types/api/mocks";
+import {
+  createMockCollection,
+  createMockTokenFeatures,
+} from "metabase-types/api/mocks";
 import { createMockRemoteSyncEntity } from "metabase-types/api/mocks/remote-sync";
 
 import { AllChangesView } from "./AllChangesView";
@@ -39,11 +45,15 @@ const setup = ({
   collections?: Collection[];
   isTransformsSyncEnabled?: boolean;
 }) => {
+  setupEnterpriseOnlyPlugin("library");
   setupCollectionTreeEndpoint(collections);
 
   const storeInitialState = createMockState({
     settings: mockSettings({
       "remote-sync-transforms": isTransformsSyncEnabled,
+      "token-features": createMockTokenFeatures({
+        library: true,
+      }),
     }),
   });
 
@@ -179,6 +189,31 @@ describe("AllChangesView", () => {
       expect(screen.getByText("Transform in Collection")).toBeInTheDocument();
     });
 
+    it("should load transforms collections while remote-sync-transforms is off, so removed transforms keep their folders", async () => {
+      const removedTransform = createMockRemoteSyncEntity({
+        id: 200,
+        name: "Removed Transform",
+        model: "transform",
+        collection_id: 100,
+        sync_status: "removed",
+      });
+
+      setup({
+        entities: [removedTransform],
+        collections: [],
+        isTransformsSyncEnabled: false,
+      });
+
+      await waitFor(() => {
+        const namespaces = fetchMock.callHistory
+          .calls("collection-tree-simple")
+          .map((call) => new URL(call.url).searchParams.getAll("namespaces"));
+        expect(namespaces).toContainEqual(
+          expect.arrayContaining(["transforms"]),
+        );
+      });
+    });
+
     it("should display transforms collection hierarchy when remote-sync-transforms is enabled", async () => {
       const childTransformsCollection = createMockCollection({
         id: 101,
@@ -266,6 +301,38 @@ describe("AllChangesView", () => {
       expect(screen.getByText("Transform in Collection")).toBeInTheDocument();
     });
 
+    it("should link the Transforms virtual root to the transforms list, not a dead collection URL (GHY-3901)", async () => {
+      const transformsCollection = createMockCollection({
+        id: 100,
+        name: "My Transforms Collection",
+        namespace: "transforms",
+        effective_ancestors: [],
+      });
+      const transformEntity = createMockRemoteSyncEntity({
+        id: 200,
+        name: "Transform in Collection",
+        model: "transform",
+        collection_id: 100,
+        sync_status: "create",
+      });
+
+      setup({
+        entities: [transformEntity],
+        collections: [transformsCollection],
+        isTransformsSyncEnabled: true,
+      });
+
+      // The virtual root uses the sentinel id -1, which must not leak into a
+      // /collection/-1-transforms URL.
+      const transformsRootLink = await screen.findByRole("link", {
+        name: "Transforms",
+      });
+      expect(transformsRootLink).toHaveAttribute(
+        "href",
+        "/data-studio/transforms",
+      );
+    });
+
     it("should display nested transforms collections with Transforms virtual root in path", async () => {
       const childTransformsCollection = createMockCollection({
         id: 101,
@@ -308,7 +375,7 @@ describe("AllChangesView", () => {
       const tableEntity = createMockRemoteSyncEntity({
         id: 100,
         name: "Orders Table",
-        model: "table",
+        model: "tableusersettings",
         collection_id: 1,
         sync_status: "update",
       });
@@ -375,7 +442,7 @@ describe("AllChangesView", () => {
       const fieldEntity = createMockRemoteSyncEntity({
         id: 400,
         name: "email",
-        model: "field",
+        model: "fieldusersettings",
         collection_id: 1,
         sync_status: "update",
         table_id: 100,
@@ -399,6 +466,54 @@ describe("AllChangesView", () => {
       expect(screen.getByText("Users Table")).toBeInTheDocument();
       expect(screen.getByText("email")).toBeInTheDocument();
       expect(screen.getByText("Total Users")).toBeInTheDocument();
+    });
+  });
+
+  describe("table user settings", () => {
+    it("should link a table's user settings and its fields' user settings and dimensions to Data Studio", async () => {
+      const tableEntity = createMockRemoteSyncEntity({
+        id: 100,
+        name: "Orders Table",
+        model: "tableusersettings",
+        collection_id: 1,
+        sync_status: "update",
+        table_id: 100,
+        table_name: "Orders Table",
+      });
+      const fieldEntity = createMockRemoteSyncEntity({
+        id: 400,
+        name: "email",
+        model: "fieldusersettings",
+        collection_id: 1,
+        sync_status: "update",
+        table_id: 100,
+        table_name: "Orders Table",
+      });
+      const dimensionEntity = createMockRemoteSyncEntity({
+        id: 401,
+        name: "user_id",
+        model: "dimension",
+        collection_id: 1,
+        sync_status: "update",
+        table_id: 100,
+        table_name: "Orders Table",
+      });
+
+      setup({
+        entities: [tableEntity, fieldEntity, dimensionEntity],
+      });
+
+      expect(
+        await screen.findByRole("link", { name: /Orders Table/ }),
+      ).toHaveAttribute("href", "/data-studio/library/tables/100");
+      expect(screen.getByRole("link", { name: /email/ })).toHaveAttribute(
+        "href",
+        "/data-studio/library/tables/100/fields/400",
+      );
+      expect(screen.getByRole("link", { name: /user_id/ })).toHaveAttribute(
+        "href",
+        "/data-studio/library/tables/100/fields/401",
+      );
     });
   });
 
@@ -798,6 +913,31 @@ describe("AllChangesView", () => {
       expect(screen.getByText("common.py")).toBeInTheDocument();
     });
 
+    it("should group transform tests under Transforms with the test tube icon and no link", async () => {
+      const transformTestEntity = createMockRemoteSyncEntity({
+        id: 500,
+        name: "Orders are deduplicated",
+        model: "transformtest",
+        collection_id: undefined,
+        sync_status: "update",
+      });
+
+      setup({
+        entities: [transformTestEntity],
+        isTransformsSyncEnabled: true,
+      });
+
+      expect(
+        await screen.findByRole("link", { name: "Transforms" }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("Root")).not.toBeInTheDocument();
+      expect(screen.getByText("Orders are deduplicated")).toBeInTheDocument();
+      expect(screen.getByLabelText("test_tube icon")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("link", { name: /Orders are deduplicated/ }),
+      ).not.toBeInTheDocument();
+    });
+
     it("should group transforms-namespace collections under Transforms root", async () => {
       const transformsCollection = createMockCollection({
         id: 100,
@@ -902,6 +1042,105 @@ describe("AllChangesView", () => {
       expect(await screen.findByText("Transforms")).toBeInTheDocument();
       expect(screen.getByText("common.py")).toBeInTheDocument();
       expect(screen.queryByText("Root")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("glossary entries", () => {
+    it("should display glossary entries under the Library collection with the glossary icon", async () => {
+      const libraryCollection = createMockCollection({
+        id: 99,
+        name: "Library",
+        type: "library",
+        effective_ancestors: [],
+      });
+      const glossaryEntity = createMockRemoteSyncEntity({
+        id: 500,
+        name: "ARR",
+        model: "glossary",
+        collection_id: undefined,
+        sync_status: "create",
+      });
+
+      setup({
+        entities: [glossaryEntity],
+        collections: [libraryCollection],
+      });
+
+      expect(await screen.findByText("Library")).toBeInTheDocument();
+      expect(screen.getByText("ARR")).toBeInTheDocument();
+      expect(screen.getAllByLabelText("glossary icon").length).toBeGreaterThan(
+        0,
+      );
+      expect(screen.queryByText("Root")).not.toBeInTheDocument();
+    });
+
+    it("should display glossary entries under Root when no Library collection exists", async () => {
+      const glossaryEntity = createMockRemoteSyncEntity({
+        id: 500,
+        name: "ARR",
+        model: "glossary",
+        collection_id: undefined,
+        sync_status: "update",
+      });
+
+      setup({
+        entities: [glossaryEntity],
+        collections: [defaultCollection],
+      });
+
+      expect(await screen.findByText("ARR")).toBeInTheDocument();
+      expect(screen.queryByText("Library")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("actions", () => {
+    // The dirty entry for an action has no parent model id, so there is no
+    // action URL to build. The item must show without a dead /404 link (GHY-4722).
+    it("should display a model action in its model's collection with the bolt icon and no link", async () => {
+      const actionEntity = createMockRemoteSyncEntity({
+        id: 600,
+        name: "Create order",
+        model: "action",
+        collection_id: 1,
+        sync_status: "create",
+      });
+
+      setup({ entities: [actionEntity] });
+
+      expect(await screen.findByText("Entity Collection")).toBeInTheDocument();
+      expect(screen.getByText("Create order")).toBeInTheDocument();
+      expect(screen.getByLabelText("bolt icon")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("link", { name: /Create order/ }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  describe("data apps", () => {
+    it("should group data apps under a Data apps root linked to the admin page", async () => {
+      const dataAppEntity = createMockRemoteSyncEntity({
+        id: 700,
+        name: "boba-staff-review",
+        model: "dataapp",
+        collection_id: undefined,
+        sync_status: "update",
+      });
+      const rootEntity = createMockRemoteSyncEntity({
+        id: 701,
+        name: "Root Question",
+        collection_id: undefined,
+      });
+
+      setup({ entities: [dataAppEntity, rootEntity] });
+
+      expect(
+        await screen.findByRole("link", { name: "Data apps" }),
+      ).toHaveAttribute("href", "/data-studio/apps");
+      expect(screen.getByText("Root")).toBeInTheDocument();
+      expect(
+        screen.getByRole("link", { name: /boba-staff-review/ }),
+      ).toHaveAttribute("href", "/apps/boba-staff-review");
+      expect(screen.getAllByLabelText("app icon")).toHaveLength(2);
     });
   });
 });

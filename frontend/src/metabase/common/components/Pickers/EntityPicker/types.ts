@@ -6,8 +6,12 @@ import type {
   CollectionId,
   CollectionItem,
   CollectionNamespace,
+  CollectionType,
   DashboardId,
+  DataAppId,
   DatabaseId,
+  Measure,
+  MeasureId,
   NativeQuerySnippet,
   RecentContexts,
   RegularCollectionId,
@@ -21,10 +25,12 @@ export type EntityPickerOptions = {
   hasSearch?: boolean;
   hasRecents?: boolean;
   hasDatabases?: boolean;
+  hasDataApps?: boolean;
   hasLibrary?: boolean;
   hasRootCollection?: boolean;
   hasPersonalCollections?: boolean; // other users personal collections
   getItemTooltip?: (item: OmniPickerItem) => string | undefined;
+  disableSearchScope?: boolean;
 
   // options to customize the button bar
   hasConfirmButtons?: boolean;
@@ -87,8 +93,11 @@ export type OmniPickerCollectionItem = Pick<
   | "type"
   | "database_id"
   | "effective_location"
+  | "is_library_root"
 > & {
   id: CollectionItem["id"] | CollectionId;
+  sourceCollectionId?: CollectionItem["id"] | CollectionId;
+  childTypeFilter?: NonNullable<CollectionType>;
   collection?:
     | (Pick<Collection, "id" | "name" | "authority_level"> & {
         namespace?: CollectionNamespace;
@@ -128,6 +137,7 @@ export type OmniPickerTableItem = {
   schema?: SchemaName;
   name: string;
   is_published?: boolean;
+  measures?: Measure[];
 };
 
 export type OmniPickerQuestionItem = Omit<
@@ -144,13 +154,28 @@ export type OmniPickerDatabaseItem = {
   name: string;
 };
 
+export type OmniPickerMeasureItem = {
+  model: "measure";
+  id: MeasureId;
+  name: string;
+  table_name?: string;
+  table_display_name?: string;
+};
+
 export type OmniPickerSnippetItem = Pick<NativeQuerySnippet, "id" | "name"> & {
   model: "snippet";
+};
+
+export type OmniPickerDataAppItem = {
+  model: "data-app";
+  id: DataAppId;
+  name: string;
 };
 
 export enum OmniPickerFolderModel {
   Database = "database",
   Schema = "schema",
+  Table = "table",
   Collection = "collection",
   Dashboard = "dashboard",
 }
@@ -158,22 +183,31 @@ export enum OmniPickerFolderModel {
 export type DbTreeItem =
   | OmniPickerDatabaseItem
   | OmniPickerSchemaItem
-  | OmniPickerTableItem;
+  | OmniPickerTableItem
+  | OmniPickerMeasureItem;
 
-export const isInDbTree = (item: OmniPickerItem): item is DbTreeItem => {
+const isInDbTree = (item: OmniPickerItem): item is DbTreeItem => {
   return (
     item.model === "database" ||
     item.model === "schema" ||
-    item.model === "table"
+    item.model === "table" ||
+    item.model === "measure"
   );
 };
+
+export const isInCollectionTree = (
+  item: OmniPickerItem,
+): item is OmniPickerCollectionItem =>
+  !isInDbTree(item) && item.model !== "data-app";
 
 // this includes all possible item types that can be shown in the mini picker
 export type OmniPickerItem =
   | OmniPickerCollectionItem
   | OmniPickerSchemaItem
   | OmniPickerTableItem
-  | OmniPickerDatabaseItem;
+  | OmniPickerDatabaseItem
+  | OmniPickerMeasureItem
+  | OmniPickerDataAppItem;
 
 export type OmniPickerDbValue = Pick<DbTreeItem, "model" | "id">;
 export type OmniPickerTableValue = Pick<OmniPickerTableItem, "model" | "id">;
@@ -181,13 +215,21 @@ export type OmniPickerCollectionItemValue = Pick<
   OmniPickerCollectionItem,
   "model" | "id" | "namespace"
 >;
+export type OmniPickerDataAppValue = Pick<
+  OmniPickerDataAppItem,
+  "model" | "id"
+>;
 
-export type OmniPickerValue = OmniPickerDbValue | OmniPickerCollectionItemValue;
+export type OmniPickerValue =
+  | OmniPickerDbValue
+  | OmniPickerCollectionItemValue
+  | OmniPickerDataAppValue;
 
 // this is only the intermediate/folder types that cannot ultimately be picked
 export type OmniPickerFolderItem =
   | OmniPickerDatabaseItem
   | OmniPickerSchemaItem
+  | OmniPickerTableItem // can be a parent of measures
   | OmniPickerDashboardItem
   | (OmniPickerCollectionItem & { model: "collection" });
 
@@ -195,7 +237,8 @@ export type OmniPickerFolderItem =
 export type SearchableOmniPickerItem =
   | OmniPickerCollectionItem
   | OmniPickerTableItem
-  | OmniPickerDatabaseItem;
+  | OmniPickerDatabaseItem
+  | OmniPickerMeasureItem;
 
 // used to find only or exclude items in personal collections, usually when adding items to a dashboard
 // so that you don't end up with personal items in a public dashboard

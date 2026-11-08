@@ -6,6 +6,7 @@
    and for Field/Segment/Table models, parent table information."
   (:require
    [clojure.set :as set]
+   [metabase-enterprise.remote-sync.db :as remote-sync.db]
    [metabase-enterprise.remote-sync.spec :as spec]
    [metabase.util :as u]
    [methodical.core :as methodical]
@@ -24,12 +25,24 @@
    Returns true if any remote-synced object has a status other than 'synced', false otherwise.
    Excludes transform model types when transform sync is disabled."
   []
-  (let [excluded (spec/excluded-model-types)]
-    (if (empty? excluded)
-      (t2/exists? :model/RemoteSyncObject :status [:not= "synced"])
-      (t2/exists? :model/RemoteSyncObject
-                  :status [:not= "synced"]
-                  :model_type [:not-in excluded]))))
+  (remote-sync.db/dirty-rso-exists? (spec/excluded-model-types)))
+
+(defn dirty-rows
+  "Returns the raw RemoteSyncObject rows that are not yet synced (status != 'synced'),
+  excluding disabled model types (e.g. transforms when transform sync is off)."
+  []
+  (remote-sync.db/dirty-rsos (spec/excluded-model-types)))
+
+(defn- with-action-card-ids
+  "`objects` with the `:card_id` of the model each existing Action belongs to, nil for an Action without a model."
+  [objects]
+  (let [action-ids (into [] (comp (filter #(= "action" (:model %))) (map :id)) objects)
+        card-ids   (when (seq action-ids)
+                     (remote-sync.db/action-model-ids action-ids))]
+    (mapv (fn [{:keys [id model] :as object}]
+            (cond-> object
+              (and (= "action" model) (contains? card-ids id)) (assoc :card_id (get card-ids id))))
+          objects)))
 
 (defn dirty-objects
   "Gets all models in any collection that are dirty with their sync status.
@@ -37,22 +50,16 @@
    including details about their current state and sync status.
    Excludes transform model types when transform sync is disabled."
   []
-  (let [excluded (spec/excluded-model-types)
-        query (if (empty? excluded)
-                (t2/select :model/RemoteSyncObject :status [:not= "synced"])
-                (t2/select :model/RemoteSyncObject
-                           :status [:not= "synced"]
-                           :model_type [:not-in excluded]))]
-    (->> query
-         (map #(-> %
-                   (dissoc :id :status_changed_at)
-                   (set/rename-keys {:model_id :id
-                                     :model_name :name
-                                     :model_type :model
-                                     :model_collection_id :collection_id
-                                     :model_display :display
-                                     :model_table_id :table_id
-                                     :model_table_name :table_name
-                                     :status :sync_status})
-                   (update :model u/lower-case-en)))
-         (into []))))
+  (->> (dirty-rows)
+       (map #(-> %
+                 (dissoc :id :status_changed_at)
+                 (set/rename-keys {:model_id :id
+                                   :model_name :name
+                                   :model_type :model
+                                   :model_collection_id :collection_id
+                                   :model_display :display
+                                   :model_table_id :table_id
+                                   :model_table_name :table_name
+                                   :status :sync_status})
+                 (update :model u/lower-case-en)))
+       with-action-card-ids))

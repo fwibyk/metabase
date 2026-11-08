@@ -4,17 +4,17 @@
    [clj-http.client :as http]
    [clojure.string :as str]
    [java-time.api :as t]
-   [metabase.analytics.core :as analytics]
+   [metabase.analytics-interface.core :as analytics]
    [metabase.config.core :as config]
    [metabase.embedding.util :as embed.util]
-   [metabase.request.settings :as request.settings]
+   [metabase.request.current :as request.current]
+   [metabase.request.schema :as request.schema]
    [metabase.util :as u]
-   [metabase.util.i18n :refer [trs tru]]
+   [metabase.util.i18n :refer [trs]]
    [metabase.util.json :as json]
    [metabase.util.log :as log]
    [metabase.util.malli :as mu]
-   [metabase.util.malli.schema :as ms]
-   [user-agent :as user-agent])
+   [metabase.util.malli.schema :as ms])
   (:import
    (java.time ZoneId)))
 
@@ -40,49 +40,69 @@
   [{:keys [uri]}]
   (re-matches #"^/embed/.*$" uri))
 
+(def data-app-url-segment
+  "URL path segment of data-app pages: the `/apps` page route and the `/embed/apps` iframe prefix derive from it
+   (mirrors the FE `DATA_APP_URL_SEGMENT`)."
+  "apps")
+
+(def data-app-embed-prefix
+  "URL prefix the BE serves the internal data-app iframe entrypoint at."
+  (str "/embed/" data-app-url-segment))
+
+(def ^:private data-app-uri-regex
+  (re-pattern (str "^" data-app-embed-prefix "/.*$")))
+
+(defn data-app?
+  "Is this ring request the internal data-app iframe entrypoint (`/embed/apps/...`)?
+   It is only ever framed by the same-origin Metabase app, so it gets
+   `frame-ancestors 'self'` rather than the open embedding `*`."
+  [{:keys [uri]}]
+  (re-matches data-app-uri-regex uri))
+
+(defn embed-sdk-eajs-entrypoint?
+  "Is this ring request the modular embedding (EAJS) entrypoint page, served by `index/embed-sdk`?
+  Matches exactly `/embed/sdk/v1` and, on purpose, any future `/embed/sdk/vN` version. Any other
+  `/embed/sdk/*` URI falls through to the static embed page and does not match. The react embedding
+  SDK renders on the host page and never requests this route."
+  [{:keys [uri]}]
+  (re-matches #"^/embed/sdk/v\d+$" uri))
+
+(def ^:private cache-busted-asset-pattern
+  "Matches a file the build emits under `/app/dist`, where the name carries a content hash either as
+  `<name>.<hash>.<ext>` or as `<hash>.<ext>`. Requiring the hash is what makes a far-future cache
+  safe: changed content always arrives at a new URL."
+  #"^/app/dist/(?:.+\.)?[a-f0-9]{8,}(?:\.[a-z0-9]+)+$")
+
+(def ^:private static-font-pattern
+  "Matches a bundled font. Fonts ship at a stable path and are treated as static."
+  #"^/app/fonts/.+\.(?:woff2?|ttf|otf|eot)$")
+
 (defn cacheable?
   "Can the ring request be permanently cached?"
   [{:keys [request-method uri], :as _request}]
-  (and (= request-method :get)
-       (or
-        ;; match requests that are js/css and have a cache-busting hex string
-        (re-matches #"^/app/dist/.+\.[a-f0-9]+\.(js|css)$" uri)
-        ;; any resource that is named as a cache-busting hex string (e.g. images)
-        (re-matches #"^/app/dist/[a-f0-9]+.*$" uri)
-        ;; font files are static and should be cached
-        (re-matches #"^/app/fonts/.+\.(woff2?|ttf|otf|eot)$" uri))))
+  (boolean
+   (and (= request-method :get)
+        uri
+        (or (re-matches cache-busted-asset-pattern uri)
+            (re-matches static-font-pattern uri)))))
 
-(def https?
-  "True if the original request made by the frontend client (i.e., browser) was made over HTTPS.
+(def https-state
+  "Whether the original request reached us over HTTPS: `:https`, `:http`, or `:unknown`. Require `:https` to skip a
+  protection; treat `:unknown` as HTTPS to add one.
 
-  In many production instances, a reverse proxy such as an ELB or nginx will handle SSL termination, and the actual
-  request handled by Jetty will be over HTTP.
-
-  Note: Implementation is in [[metabase.util/https?]]."
-  u/https?)
+  Note: Implementation is in [[metabase.util/https-state]]."
+  u/https-state)
 
 (defn embedded?
   "Whether this frontend client that made this request is embedded inside an `<iframe>`."
   [request]
   (some-> request (get-in [:headers "x-metabase-embedded"]) Boolean/parseBoolean))
 
-(defn ip-address
-  "The IP address a Ring `request` came from. Looks at the `request.settings/source-address-header` header (by default
-  `X-Forwarded-For`, or the `(:remote-addr request)` if not set, or if disabled via MB_NOT_BEHIND_PROXY=true."
-  [{:keys [headers remote-addr]}]
-  (let [header-ip-address (some->> (request.settings/source-address-header)
-                                   (get headers))
-        source-address    (if (or (request.settings/not-behind-proxy)
-                                  (not header-ip-address))
-                            remote-addr
-                            header-ip-address)]
-    (some-> source-address
-            ;; first IP (if there are multiple) is the actual client -- see
-            ;; https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Forwarded-For
-            (str/split #"\s*,\s*")
-            first
-            ;; strip out non-ip-address characters like square brackets which we get sometimes
-            (str/replace #"[^0-9a-fA-F.:]" ""))))
+(defn referer
+  "The `Referer` header from a Ring `request`, or nil. Best-effort — browsers may strip it under
+  `Referrer-Policy: no-referrer` or cross-origin restrictions."
+  [request]
+  (get-in request [:headers "referer"]))
 
 (def DeviceInfo
   "Schema for the device info returned by `device-info`."
@@ -95,12 +115,12 @@
 
 (mu/defn device-info :- DeviceInfo
   "Information about the device that made this request, as recorded by the `LoginHistory` table."
-  [{{:strs [user-agent]} :headers, :keys [browser-id token-exchange?], :as request}]
+  [{{:strs [user-agent]} :headers, :keys [browser-id token-exchange?], :as request} :- ::request.schema/request]
   (let [id          (or browser-id
                         (log/warn "Login request is missing device ID information"))
         description (or user-agent
                         (log/warn "Login request is missing user-agent information"))
-        ip-address  (or (ip-address request)
+        ip-address  (or (request.current/ip-address request)
                         (log/warn "Unable to determine login request IP address"))]
     (when-not (and id description ip-address)
       (log/warn "Error determining login history for request"))
@@ -109,24 +129,6 @@
      :embedded           (embed.util/is-modular-embedding-request? request)
      :ip_address         (or ip-address (trs "unknown"))
      :token_exchange     (boolean token-exchange?)}))
-
-(defn describe-user-agent
-  "Format a user-agent string from a request in a human-friendly way."
-  [user-agent-string]
-  (when-not (str/blank? user-agent-string)
-    (when-let [{device-type     :type-name
-                {os-name :name} :os
-                browser-name    :name} (some-> user-agent-string user-agent/parse not-empty)]
-      (let [non-blank    (fn [s]
-                           (when-not (str/blank? s)
-                             s))
-            device-type  (or (non-blank device-type)
-                             (tru "Unknown device type"))
-            os-name      (or (non-blank os-name)
-                             (tru "Unknown OS"))
-            browser-name (or (non-blank browser-name)
-                             (tru "Unknown browser"))]
-        (format "%s (%s/%s)" device-type browser-name os-name)))))
 
 (defn- describe-location [{:keys [city region country]}]
   (when-let [info (not-empty (remove str/blank? [city region country]))]
@@ -169,5 +171,5 @@
             result)
           (catch Throwable e
             (analytics/inc! :metabase-geocoding/errors)
-            (log/error e "Error geocoding IP addresses" {:url url})
+            (log/errorf "Error geocoding IP addresses: %s" (ex-message e))
             nil))))))

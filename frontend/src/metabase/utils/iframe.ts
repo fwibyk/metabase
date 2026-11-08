@@ -5,20 +5,25 @@ import { isCypressActive, isStorybookActive } from "metabase/env";
 // Storybook also uses an iframe to display story content, so we want to ignore it
 export const isWithinIframe = function (): boolean {
   try {
+    // Mock that we're embedding, so we could test embed components
     if (window.overrideIsWithinIframe) {
       return true;
     }
+
     if (isCypressActive || isStorybookActive) {
       return false;
     }
+
     return window.self !== window.top;
   } catch (e) {
     return true;
   }
 };
 
-// add a global so we can check if the parent iframe is Metabase
-window.METABASE = true;
+// Input-selector shape for composing the iframe check into createSelector.
+// The read happens on every selection, so mocks take effect and the combiner stays pure.
+export const selectIsWithinIframe = (_state: unknown): boolean =>
+  isWithinIframe();
 
 // check that we're both iframed, and the parent is a Metabase instance
 // used for detecting if we're previewing an embed

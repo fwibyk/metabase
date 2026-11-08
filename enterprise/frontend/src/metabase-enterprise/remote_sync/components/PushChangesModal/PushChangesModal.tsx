@@ -16,7 +16,6 @@ import { useExportChangesMutation } from "metabase-enterprise/api";
 import { trackPushChanges } from "../../analytics";
 import { type SyncError, parseSyncError } from "../../utils";
 import { ChangesLists } from "../ChangesLists";
-import { SyncConflictModal } from "../SyncConflictModal";
 
 import { CommitMessageSection } from "./CommitMessageSection";
 
@@ -25,6 +24,11 @@ interface PushChangesModalProps {
   onClose: () => void;
 }
 
+/**
+ * Plain push of local changes. Only shown when the remote has NOT advanced — the caller
+ * (GitSyncControls) runs the export preflight first and, when the remote is ahead, opens the
+ * SyncConflictModal (push variant) directly instead of this modal.
+ */
 export const PushChangesModal = ({
   onClose,
   currentBranch,
@@ -36,7 +40,8 @@ export const PushChangesModal = ({
     { isLoading: isPushing, error: exportError, isSuccess },
   ] = useExportChangesMutation();
 
-  const { errorMessage, hasConflict } = useMemo(
+  const { errorMessage } = useMemo(
+    // Unjustified type cast. FIXME
     () => parseSyncError(exportError as SyncError),
     [exportError],
   );
@@ -63,32 +68,27 @@ export const PushChangesModal = ({
     });
   }, [commitMessage, exportChanges, currentBranch]);
 
-  if (hasConflict) {
-    return (
-      <SyncConflictModal
-        currentBranch={currentBranch}
-        onClose={onClose}
-        variant="push"
-      />
-    );
-  }
-
   return (
     <Modal
       opened
       title={t`Push to Git`}
       onClose={onClose}
       size="lg"
-      padding="xl"
+      padding="xxl"
     >
-      <Box pt="md">
+      <Box pt="lg">
         {errorMessage && (
-          <Alert mb="md" variant="error" icon={<Icon name="warning" />}>
+          <Alert
+            size="compact"
+            mb="lg"
+            color="error"
+            icon={<Icon name="warning" />}
+          >
             {errorMessage}
           </Alert>
         )}
 
-        <Stack gap="lg">
+        <Stack gap="xl">
           <ChangesLists title={t`Changes to push`} />
 
           <CommitMessageSection
@@ -98,11 +98,11 @@ export const PushChangesModal = ({
         </Stack>
       </Box>
 
-      <Divider my="lg" />
+      <Divider my="xl" />
 
       <Box>
         <Group gap="sm" justify="end">
-          <Button variant="subtle" onClick={onClose}>
+          <Button variant="subtle" color="neutral" onClick={onClose}>
             {t`Cancel`}
           </Button>
           <Button

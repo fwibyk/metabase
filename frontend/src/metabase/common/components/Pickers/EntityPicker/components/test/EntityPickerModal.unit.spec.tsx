@@ -1,7 +1,17 @@
 import userEvent from "@testing-library/user-event";
+import fetchMock from "fetch-mock";
 
 import { findRequests } from "__support__/server-mocks";
 import { screen, waitFor, within } from "__support__/ui";
+import { reinitialize } from "metabase/plugins";
+import {
+  createMockCollection,
+  createMockCollectionItem,
+  createMockDataApp,
+  createMockSearchResult,
+} from "metabase-types/api/mocks";
+
+import type { OmniPickerItem } from "../../types";
 
 import { setup } from "./setup";
 
@@ -26,9 +36,132 @@ const expectVisibleItem = async (itemName: string) =>
     ).toBeVisible(),
   );
 
+const libraryCollection = createMockCollection({
+  id: 9,
+  name: "Library",
+  type: "library",
+  can_write: false,
+  location: "/",
+  here: ["collection"],
+  below: ["table"],
+});
+
+const hiddenDataCollection = createMockCollection({
+  id: 10,
+  name: "Data",
+  type: "library-data",
+  can_write: false,
+  location: "/9/",
+});
+
+const promotedDataCollection = createMockCollection({
+  id: 28,
+  name: "LibraryCollection3",
+  type: "library-data",
+  can_write: false,
+  location: "/9/10/",
+  effective_location: "/9/",
+  here: ["collection"],
+  below: ["table", "collection"],
+});
+
+const writableNestedDataCollection = createMockCollection({
+  id: 24,
+  name: "LibraryCollection1",
+  type: "library-data",
+  can_write: true,
+  location: "/9/10/28/",
+  effective_location: "/9/28/",
+  here: ["collection"],
+  below: ["table", "collection"],
+});
+
+const libraryRootItems = [
+  createMockCollectionItem({
+    // Unjustified type cast. FIXME
+    id: promotedDataCollection.id as number,
+    model: "collection",
+    name: promotedDataCollection.name,
+    type: "library-data",
+    can_write: false,
+    // Unjustified type cast. FIXME
+    collection_id: libraryCollection.id as number,
+    location: "/9/10/",
+    effective_location: "/9/",
+    here: ["collection"],
+    below: ["table", "collection"],
+  }),
+  createMockCollectionItem({
+    id: 30,
+    model: "collection",
+    name: "LibraryCollection5",
+    type: "library-data",
+    can_write: true,
+    // Unjustified type cast. FIXME
+    collection_id: libraryCollection.id as number,
+    location: "/9/10/",
+    effective_location: "/9/",
+  }),
+  createMockCollectionItem({
+    id: 11,
+    model: "collection",
+    name: "Metrics",
+    type: "library-metrics",
+    is_library_root: true,
+    can_write: false,
+    // Unjustified type cast. FIXME
+    collection_id: libraryCollection.id as number,
+    location: "/9/",
+    effective_location: "/9/",
+    here: ["collection"],
+    below: ["collection"],
+  }),
+];
+
+const promotedDataCollectionItems = [
+  createMockCollectionItem({
+    // Unjustified type cast. FIXME
+    id: writableNestedDataCollection.id as number,
+    model: "collection",
+    name: writableNestedDataCollection.name,
+    type: "library-data",
+    can_write: true,
+    // Unjustified type cast. FIXME
+    collection_id: promotedDataCollection.id as number,
+    location: "/9/10/28/",
+    effective_location: "/9/28/",
+    here: ["collection"],
+    below: ["table", "collection"],
+  }),
+];
+
+const libraryPickerSetup = {
+  additionalCollections: [
+    hiddenDataCollection,
+    promotedDataCollection,
+    writableNestedDataCollection,
+  ],
+  additionalCollectionItemEndpoints: [
+    {
+      collection: promotedDataCollection,
+      collectionItems: promotedDataCollectionItems,
+    },
+    {
+      collection: writableNestedDataCollection,
+      collectionItems: [],
+    },
+  ],
+  libraryCollection,
+  libraryCollectionItems: libraryRootItems,
+  options: { hasRecents: false, hasDatabases: false },
+  isSelectableItem: (item: OmniPickerItem) =>
+    !("can_write" in item) || item.can_write !== false,
+};
+
 describe("EntityPickerModal", () => {
   afterEach(() => {
     jest.restoreAllMocks();
+    reinitialize();
   });
 
   describe("Default Behavior", () => {
@@ -155,6 +288,128 @@ describe("EntityPickerModal", () => {
       await expectVisibleItem("Model in Collection 2");
       expect(
         screen.queryByText("Question in Collection 1"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should show non-selectable synthetic library sections for promoted descendants", async () => {
+      await setup({
+        ...libraryPickerSetup,
+        value: { id: "root", model: "collection" },
+      });
+
+      await userEvent.click(await screen.findByText("Library"));
+      await waitFor(() => {
+        const item = screen
+          .getAllByRole("link")
+          .find((item) => item.textContent?.trim() === "Library");
+
+        expect(item).toHaveAttribute("data-active", "true");
+      });
+      await expectInactiveItem("Data");
+      await expectInactiveItem("Metrics");
+      expect(screen.queryByText("LibraryCollection3")).not.toBeInTheDocument();
+
+      await userEvent.click(await screen.findByText("Data"));
+      await expectActiveItem("Data");
+      expect(
+        await screen.findByRole("button", { name: "Select" }),
+      ).toBeDisabled();
+      await expectInactiveItem("LibraryCollection3");
+      await expectInactiveItem("LibraryCollection5");
+
+      await userEvent.click(await screen.findByText("LibraryCollection3"));
+      await expectActiveItem("LibraryCollection3");
+      expect(
+        await screen.findByRole("button", { name: "Select" }),
+      ).toBeDisabled();
+
+      await userEvent.click(await screen.findByText("LibraryCollection1"));
+      await expectActiveItem("LibraryCollection1");
+      expect(
+        await screen.findByRole("button", { name: "Select" }),
+      ).toBeEnabled();
+    });
+
+    it("should include synthetic library sections when auto-selecting a promoted descendant path", async () => {
+      await setup({
+        ...libraryPickerSetup,
+        value: { id: writableNestedDataCollection.id, model: "collection" },
+      });
+
+      expect(await screen.findByText("Library")).toBeVisible();
+      expect(await screen.findByText("Data")).toBeVisible();
+      expect(await screen.findByText("LibraryCollection3")).toBeVisible();
+      expect(await screen.findByText("LibraryCollection1")).toBeVisible();
+      expect(
+        await screen.findByRole("button", { name: "Select" }),
+      ).toBeEnabled();
+    });
+
+    it("should use real library section roots when they are available", async () => {
+      await setup({
+        ...libraryPickerSetup,
+        libraryCollectionItems: [
+          createMockCollectionItem({
+            // Unjustified type cast. FIXME
+            id: hiddenDataCollection.id as number,
+            model: "collection",
+            name: "Data",
+            type: "library-data",
+            can_write: true,
+            is_library_root: true,
+            // Unjustified type cast. FIXME
+            collection_id: libraryCollection.id as number,
+            location: "/9/",
+            effective_location: "/9/",
+            here: ["collection"],
+            below: ["collection"],
+          }),
+        ],
+        additionalCollectionItemEndpoints: [
+          {
+            collection: hiddenDataCollection,
+            collectionItems: promotedDataCollectionItems,
+          },
+        ],
+        value: { id: "root", model: "collection" },
+      });
+
+      await userEvent.click(await screen.findByText("Library"));
+      await userEvent.click(await screen.findByText("Data"));
+
+      expect(await screen.findByText("LibraryCollection1")).toBeVisible();
+      const gets = await findRequests("GET");
+      expect(
+        gets.some((req) => req.url.includes("/api/collection/10/items")),
+      ).toBe(true);
+    });
+
+    it("should filter synthetic library section children by section type", async () => {
+      await setup({
+        ...libraryPickerSetup,
+        libraryCollectionItems: [
+          ...libraryRootItems,
+          createMockCollectionItem({
+            id: 31,
+            model: "collection",
+            name: "Promoted Metric Collection",
+            type: "library-metrics",
+            can_write: true,
+            // Unjustified type cast. FIXME
+            collection_id: libraryCollection.id as number,
+            location: "/9/11/",
+            effective_location: "/9/",
+          }),
+        ],
+        value: { id: "root", model: "collection" },
+      });
+
+      await userEvent.click(await screen.findByText("Library"));
+      await userEvent.click(await screen.findByText("Data"));
+
+      expect(await screen.findByText("LibraryCollection3")).toBeVisible();
+      expect(
+        screen.queryByText("Promoted Metric Collection"),
       ).not.toBeInTheDocument();
     });
   });
@@ -343,6 +598,51 @@ describe("EntityPickerModal", () => {
       );
     });
 
+    it("should record recent selections by default", async () => {
+      await setup({
+        options: { hasRecents: false },
+      });
+
+      await userEvent.click(await screen.findByText("Our analytics"));
+      await userEvent.click(await screen.findByText("First Collection"));
+      await userEvent.click(
+        await screen.findByText("Question in Collection 1"),
+      );
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Select" }),
+      );
+
+      const posts = await findRequests("POST");
+      expect(posts).toEqual([
+        expect.objectContaining({
+          body: {
+            context: "selection",
+            model: "card",
+            model_id: 100,
+          },
+        }),
+      ]);
+    });
+
+    it("should not record recent selections when logging is disabled", async () => {
+      await setup({
+        disableRecentLogging: true,
+        options: { hasRecents: false },
+      });
+
+      await userEvent.click(await screen.findByText("Our analytics"));
+      await userEvent.click(await screen.findByText("First Collection"));
+      await userEvent.click(
+        await screen.findByText("Question in Collection 1"),
+      );
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Select" }),
+      );
+
+      const posts = await findRequests("POST");
+      expect(posts).toHaveLength(0);
+    });
+
     it("can disable selection based on provided models", async () => {
       const { onChange } = await setup({
         models: ["card"], // no collections
@@ -480,6 +780,20 @@ describe("EntityPickerModal", () => {
       await expectVisibleItem("Search Result Dashboard 5");
       const searchList = await screen.findByTestId("item-picker-level-1");
       expect(within(searchList).getAllByRole("link")).toHaveLength(11);
+    });
+
+    it("should show the no objects illustration when the search finds nothing", async () => {
+      await setup({ searchResults: [] });
+
+      await userEvent.type(
+        await screen.findByPlaceholderText("Search…"),
+        "This aren't the objects you're looking for",
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("We didn't find anything")).toBeInTheDocument();
+        expect(screen.getByAltText("Nothing found")).toBeInTheDocument();
+      });
     });
 
     it("should hide search results based on isHiddenItem", async () => {
@@ -772,6 +1086,219 @@ describe("EntityPickerModal", () => {
       expect(screen.queryByText("Recent Question 2")).not.toBeInTheDocument();
       const searchList = await screen.findByTestId("item-picker-level-1");
       expect(within(searchList).getAllByRole("link")).toHaveLength(2);
+    });
+  });
+
+  describe("Data apps", () => {
+    const OWLS = createMockDataApp({
+      id: 8,
+      name: "owls",
+      display_name: "Owls",
+    });
+    const HERONS = createMockDataApp({
+      id: 9,
+      name: "herons",
+      display_name: "Herons",
+    });
+    const options = { hasDataApps: true, hasConfirmButtons: false };
+    const models: OmniPickerItem["model"][] = ["card", "data-app"];
+
+    it("lists the user's data apps in a Data apps folder", async () => {
+      await setup({ options, models, dataApps: [OWLS, HERONS] });
+
+      await userEvent.click(await screen.findByText("Data apps"));
+
+      await expectVisibleItem("Owls");
+      await expectVisibleItem("Herons");
+      const dataAppList = screen.getByTestId("item-picker-level-1");
+      expect(within(dataAppList).getAllByRole("link")).toHaveLength(2);
+    });
+
+    it("picks a data app", async () => {
+      const { onChange } = await setup({ options, models, dataApps: [OWLS] });
+
+      await userEvent.click(await screen.findByText("Data apps"));
+      await userEvent.click(await screen.findByText("Owls"));
+
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith({
+        model: "data-app",
+        id: OWLS.id,
+        name: "Owls",
+      });
+    });
+
+    it("doesn't pick the Data apps folder when the picker also picks collections", async () => {
+      const { onChange } = await setup({
+        options,
+        models: ["collection", "data-app"],
+        dataApps: [OWLS],
+      });
+
+      await userEvent.click(await screen.findByText("Data apps"));
+
+      await expectVisibleItem("Owls");
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("lists the Data apps folder after the other root items", async () => {
+      await setup({ options, models, dataApps: [OWLS] });
+
+      await expectVisibleItem("Data apps");
+      const rootItems = within(
+        screen.getByTestId("item-picker-level-0"),
+      ).getAllByRole("link");
+      expect(rootItems.map((item) => item.textContent?.trim())).toEqual([
+        "Recent items",
+        "Our analytics",
+        "Data apps",
+      ]);
+    });
+
+    it("opens on the data app given as the value", async () => {
+      await setup({
+        options,
+        models,
+        dataApps: [OWLS, HERONS],
+        value: { model: "data-app", id: HERONS.id },
+      });
+
+      await expectActiveItem("Data apps");
+      await expectActiveItem("Herons");
+      await expectInactiveItem("Owls");
+    });
+
+    it("opens on the data app when the app list arrives after the rest of the picker", async () => {
+      await setup({
+        options,
+        models,
+        dataApps: [OWLS, HERONS],
+        dataAppsDelayMs: 300,
+        value: { model: "data-app", id: HERONS.id },
+      });
+
+      await expectActiveItem("Data apps");
+      await expectActiveItem("Herons");
+    });
+
+    it("opens on no data app without the hasDataApps option", async () => {
+      await setup({
+        options: { hasConfirmButtons: false },
+        models,
+        dataApps: [OWLS],
+        value: { model: "data-app", id: OWLS.id },
+      });
+
+      await expectVisibleItem("Our analytics");
+      expect(screen.queryByText("Owls")).not.toBeInTheDocument();
+      expect(fetchMock.callHistory.called("path:/api/ee/apps")).toBe(false);
+    });
+
+    it("finds a data app in search, located in the Data apps folder", async () => {
+      const { onChange } = await setup({
+        options,
+        models,
+        dataApps: [OWLS],
+        searchResults: [
+          createMockSearchResult({
+            model: "data-app",
+            id: OWLS.id,
+            name: "Owls",
+          }),
+        ],
+      });
+
+      await userEvent.type(
+        await screen.findByPlaceholderText("Search…"),
+        "Owls",
+        { delay: 50 },
+      );
+      const result = await screen.findByTestId("result-item");
+      expect(
+        within(result).getByTestId("picker-item-location"),
+      ).toHaveTextContent("Data apps");
+      const searches = (await findRequests("GET")).filter((request) =>
+        request.url.includes("/api/search"),
+      );
+      expect(searches.at(-1)?.url).toContain("models=data-app");
+
+      await userEvent.click(within(result).getByText("Owls"));
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "data-app", id: OWLS.id }),
+      );
+    });
+
+    it("doesn't search data apps without the hasDataApps option", async () => {
+      await setup({
+        options: { hasConfirmButtons: false },
+        models,
+        dataApps: [OWLS],
+        searchResults: [
+          createMockSearchResult({
+            model: "data-app",
+            id: OWLS.id,
+            name: "Owls",
+          }),
+          createMockSearchResult({
+            model: "card",
+            id: 1,
+            name: "Owl sightings",
+          }),
+        ],
+      });
+
+      await userEvent.type(
+        await screen.findByPlaceholderText("Search…"),
+        "Owl",
+        { delay: 50 },
+      );
+      await expectVisibleItem("Owl sightings");
+      expect(screen.queryByText("Owls")).not.toBeInTheDocument();
+      const searches = (await findRequests("GET")).filter((request) =>
+        request.url.includes("/api/search"),
+      );
+      expect(searches.at(-1)?.url).not.toContain("models=data-app");
+    });
+
+    it("has no Data apps folder without the hasDataApps option", async () => {
+      await setup({
+        options: { hasConfirmButtons: false },
+        models,
+        dataApps: [OWLS],
+      });
+
+      await expectVisibleItem("Our analytics");
+      expect(screen.queryByText("Data apps")).not.toBeInTheDocument();
+      expect(fetchMock.callHistory.called("path:/api/ee/apps")).toBe(false);
+    });
+
+    it("has no Data apps folder when the picker doesn't pick data apps", async () => {
+      await setup({ options, models: ["card"], dataApps: [OWLS] });
+
+      await expectVisibleItem("Our analytics");
+      expect(screen.queryByText("Data apps")).not.toBeInTheDocument();
+    });
+
+    it("has no Data apps folder when the picker picks collections but not data apps", async () => {
+      await setup({
+        options,
+        models: ["card", "collection"],
+        dataApps: [OWLS],
+      });
+
+      await expectVisibleItem("Our analytics");
+      expect(screen.queryByText("Data apps")).not.toBeInTheDocument();
+    });
+
+    it("has no Data apps folder when the user has no data apps", async () => {
+      await setup({ options, models, dataApps: [] });
+
+      await expectVisibleItem("Our analytics");
+      await waitFor(() => {
+        expect(fetchMock.callHistory.called("path:/api/ee/apps")).toBe(true);
+      });
+      expect(screen.queryByText("Data apps")).not.toBeInTheDocument();
     });
   });
 });

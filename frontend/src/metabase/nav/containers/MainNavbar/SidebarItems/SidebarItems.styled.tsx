@@ -1,13 +1,12 @@
-// eslint-disable-next-line no-restricted-imports
+// eslint-disable-next-line eslint-js/no-restricted-imports
 import { css } from "@emotion/react";
-// eslint-disable-next-line no-restricted-imports
+// eslint-disable-next-line eslint-js/no-restricted-imports
 import styled from "@emotion/styled";
 import type { ComponentProps } from "react";
 import { forwardRef } from "react";
 
 import { Link } from "metabase/common/components/Link";
 import { TreeNode } from "metabase/common/components/tree/TreeNode";
-import { NAV_SIDEBAR_WIDTH } from "metabase/nav/constants";
 import type { IconProps } from "metabase/ui";
 import { Icon, Tooltip } from "metabase/ui";
 import { alpha } from "metabase/ui/colors";
@@ -27,21 +26,21 @@ export const SidebarIcon = styled(
   ${(props) =>
     !props.color &&
     css`
-      color: var(--mb-color-brand);
+      color: var(--mb-color-core-brand);
     `}
 `;
 
 export const ExpandToggleButton = styled(TreeNode.ExpandToggleButton)`
   padding: 4px 0 4px 2px;
-  color: var(--mb-color-brand);
+  color: var(--mb-color-core-brand);
 `;
 
 const activeColorCSS = css`
-  color: var(--mb-color-brand);
+  color: var(--mb-color-core-brand);
 `;
 
 function getTextColor(isSelected: boolean) {
-  return isSelected ? color("brand") : color("text-primary");
+  return isSelected ? color("core-brand") : color("text-primary");
 }
 
 type NodeRootProps = ComponentProps<typeof TreeNode.Root> & {
@@ -51,12 +50,12 @@ type NodeRootProps = ComponentProps<typeof TreeNode.Root> & {
 export const NodeRoot = styled(TreeNode.Root)<NodeRootProps>`
   color: ${(props) => getTextColor(props.isSelected)};
   background-color: ${(props) =>
-    props.isSelected ? alpha("brand", 0.2) : "unset"};
+    props.isSelected ? alpha("core-brand", 0.2) : "unset"};
   padding-left: ${(props) => props.depth}rem;
   border-radius: 4px;
 
   &:focus-within {
-    outline: 2px solid var(--mb-color-focus);
+    outline: 2px solid var(--mb-color-input-focus);
     outline-offset: -2px;
   }
 
@@ -65,11 +64,11 @@ export const NodeRoot = styled(TreeNode.Root)<NodeRootProps>`
   }
 
   &:hover {
-    background-color: ${() => alpha("brand", 0.35)};
-    color: var(--mb-color-brand);
+    background-color: ${() => alpha("core-brand", 0.35)};
+    color: var(--mb-color-core-brand);
 
     ${ExpandToggleButton} {
-      color: var(--mb-color-brand);
+      color: var(--mb-color-core-brand);
     }
   }
 
@@ -85,7 +84,7 @@ export const NodeRoot = styled(TreeNode.Root)<NodeRootProps>`
 
 const collectionDragAndDropHoverStyle = css`
   color: var(--mb-color-text-primary-inverse);
-  background-color: var(--mb-color-brand);
+  background-color: var(--mb-color-core-brand);
 `;
 
 export const CollectionNodeRoot = styled(NodeRoot)<{ hovered?: boolean }>`
@@ -96,6 +95,7 @@ const itemContentStyle = css`
   display: flex;
   align-items: center;
   width: 100%;
+  min-width: 0;
 `;
 
 export const FullWidthButton = styled.button<{ isSelected: boolean }>`
@@ -105,11 +105,11 @@ export const FullWidthButton = styled.button<{ isSelected: boolean }>`
   ${itemContentStyle}
   ${TreeNode.NameContainer} {
     font-weight: 700;
-    color: ${(props) => (props.isSelected ? color("brand") : "inherit")};
+    color: ${(props) => (props.isSelected ? color("core-brand") : "inherit")};
     text-align: start;
 
     &:hover {
-      color: var(--mb-color-brand);
+      color: var(--mb-color-core-brand);
     }
   }
 
@@ -128,11 +128,15 @@ export const FullWidthLink = styled(Link)`
   }
 `;
 
+export const FullWidthContainer = styled.div`
+  ${itemContentStyle}
+  cursor: pointer;
+`;
+
 const ITEM_NAME_LENGTH_TOOLTIP_THRESHOLD = 35;
-const ITEM_NAME_LABEL_WIDTH = Math.round(parseInt(NAV_SIDEBAR_WIDTH, 10) * 0.7);
 
 export const ItemName = styled(TreeNode.NameContainer)`
-  width: ${ITEM_NAME_LABEL_WIDTH}px;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

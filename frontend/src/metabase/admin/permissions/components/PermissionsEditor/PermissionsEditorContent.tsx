@@ -2,20 +2,16 @@ import { useMemo, useState } from "react";
 import { t } from "ttag";
 
 import { EmptyState } from "metabase/common/components/EmptyState";
-import { Input } from "metabase/common/components/Input";
 import { Subhead } from "metabase/common/components/type/Subhead";
 import { useDebouncedValue } from "metabase/common/hooks/use-debounced-value";
-import { Text } from "metabase/ui";
-import { SEARCH_DEBOUNCE_DURATION } from "metabase/utils/constants";
-
-import type {
-  PermissionEditorBreadcrumb,
-  PermissionEditorType,
-} from "../../types";
 import {
+  type PermissionEditorBreadcrumb,
+  type PermissionEditorType,
   PermissionsTable,
   type PermissionsTableProps,
-} from "../PermissionsTable";
+} from "metabase/permissions";
+import { Icon, Input, Text, TextInput } from "metabase/ui";
+import { SEARCH_DEBOUNCE_DURATION } from "metabase/utils/constants";
 
 import { PermissionsEditorBreadcrumbs } from "./PermissionsEditorBreadcrumbs";
 import {
@@ -87,13 +83,20 @@ export function PermissionsEditorContent({
       <PostHeaderContent />
 
       <EditorFilterContainer>
-        <Input
-          colorScheme="filter"
+        <TextInput
           placeholder={filterPlaceholder}
           onChange={handleFilterChange}
-          onResetClick={() => setFilter("")}
           value={filter}
-          leftIcon="search"
+          leftSection={<Icon name="search" />}
+          rightSectionPointerEvents="all"
+          rightSection={
+            filter.length > 0 ? (
+              <Input.ClearButton
+                c="text-secondary"
+                onClick={() => setFilter("")}
+              />
+            ) : null
+          }
         />
       </EditorFilterContainer>
 

@@ -1,9 +1,9 @@
 import { t } from "ttag";
 
 import { useToast } from "metabase/common/hooks/use-toast";
+import { useDispatch, useSelector } from "metabase/redux";
 import { useStep } from "metabase/setup/useStep";
 import { Text } from "metabase/ui";
-import { useDispatch, useSelector } from "metabase/utils/redux";
 
 import { submitLicenseToken } from "../../actions";
 import { ActiveStep } from "../ActiveStep";
@@ -57,8 +57,8 @@ export const LicenseTokenStep = ({ stepLabel }: NumberedStepProps) => {
       className={styles.licenseTokenStep}
     >
       <Text
-        mb="lg"
-        c="text-tertiary"
+        mb="xl"
+        c="text-disabled"
       >{t`Unlock access to paid features if you'd like to try them out`}</Text>
 
       <LicenseTokenForm

@@ -1,65 +1,78 @@
-import { useState } from "react";
-import { push } from "react-router-redux";
 import { c, t } from "ttag";
 
 import { ForwardRefLink } from "metabase/common/components/Link";
-import { PLUGIN_LIBRARY, PLUGIN_REMOTE_SYNC } from "metabase/plugins";
-import { ActionIcon, Icon, Menu } from "metabase/ui";
-import { useDispatch, useSelector } from "metabase/utils/redux";
-import * as Urls from "metabase/utils/urls";
-import type { Table } from "metabase-types/api";
+import { MoreMenuButton } from "metabase/common/data-studio/components/MoreMenuButton";
+import { PLUGIN_REMOTE_SYNC } from "metabase/plugins";
+import { useSelector } from "metabase/redux";
+import { Box, Icon, Menu } from "metabase/ui";
+import * as Urls from "metabase/urls";
 
-type TableModalType = "unpublish";
+import type { TableModalState, TableModalTable } from "../../TableModal";
 
-type TableMoreMenuProps = {
-  table: Table;
+export type TableMoreMenuProps = {
+  table: TableModalTable;
+  onOpenModal: (modal: TableModalState) => void;
 };
 
-export function TableMoreMenu({ table }: TableMoreMenuProps) {
-  const dispatch = useDispatch();
-  const [modalType, setModalType] = useState<TableModalType>();
+export function TableMoreMenu({ table, onOpenModal }: TableMoreMenuProps) {
   const remoteSyncReadOnly = useSelector(
     PLUGIN_REMOTE_SYNC.getIsRemoteSyncReadOnly,
   );
 
-  const handleUnpublish = () => {
-    setModalType(undefined);
-    dispatch(push(Urls.dataStudioLibrary()));
-  };
+  const dbId = "db_id" in table ? table.db_id : table.database_id;
 
   return (
-    <>
-      <Menu>
+    <Box
+      onClick={(event) => {
+        event.stopPropagation();
+      }}
+    >
+      <Menu withinPortal>
         <Menu.Target>
-          <ActionIcon size="sm" aria-label={t`Show table options`}>
-            <Icon name="ellipsis" />
-          </ActionIcon>
+          <MoreMenuButton
+            aria-label={t`Show table options`}
+            onClick={(event) => {
+              event.preventDefault();
+            }}
+          />
         </Menu.Target>
         <Menu.Dropdown>
-          <Menu.Item
-            leftSection={<Icon name="external" />}
-            component={ForwardRefLink}
-            to={Urls.queryBuilderTable(table.id, table.db_id)}
-            target="_blank"
-          >
-            {c("A verb, not a noun").t`View`}
-          </Menu.Item>
-          {!remoteSyncReadOnly && (
+          {dbId != null && (
             <Menu.Item
-              leftSection={<Icon name="unpublish" />}
-              onClick={() => setModalType("unpublish")}
+              leftSection={<Icon name="external" />}
+              component={ForwardRefLink}
+              to={Urls.queryBuilderTable(table.id, dbId)}
+              target="_blank"
             >
-              {t`Unpublish`}
+              {c("A verb, not a noun").t`View`}
             </Menu.Item>
+          )}
+          {!remoteSyncReadOnly && (
+            <>
+              <Menu.Item
+                leftSection={<Icon name="move" />}
+                onClick={(event) => {
+                  onOpenModal({ type: "move", table });
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              >
+                {t`Move`}
+              </Menu.Item>
+              <Menu.Item
+                leftSection={<Icon name="unpublish" />}
+                onClick={(event) => {
+                  onOpenModal({ type: "unpublish", table });
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              >
+                {t`Unpublish`}
+              </Menu.Item>
+            </>
           )}
         </Menu.Dropdown>
       </Menu>
-      <PLUGIN_LIBRARY.UnpublishTablesModal
-        isOpened={modalType === "unpublish"}
-        tableIds={[table.id]}
-        onUnpublish={handleUnpublish}
-        onClose={() => setModalType(undefined)}
-      />
-    </>
+    </Box>
   );
 }

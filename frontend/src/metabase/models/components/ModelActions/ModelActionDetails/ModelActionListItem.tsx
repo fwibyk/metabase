@@ -1,12 +1,11 @@
 import { useDisclosure } from "@mantine/hooks";
-import { useCallback, useMemo } from "react";
+import { useCallback } from "react";
 import { t } from "ttag";
 
 import { ActionExecuteModal } from "metabase/actions/containers/ActionExecuteModal";
-import { EntityMenu } from "metabase/common/components/EntityMenu";
-import { Link } from "metabase/common/components/Link";
+import { ForwardRefLink } from "metabase/common/components/Link";
 import { useConfirmation } from "metabase/common/hooks/use-confirmation";
-import { Icon } from "metabase/ui";
+import { ActionIcon, Icon, Menu, Tooltip } from "metabase/ui";
 import * as Lib from "metabase-lib";
 import Question from "metabase-lib/v1/Question";
 import type { WritebackAction, WritebackQueryAction } from "metabase-types/api";
@@ -14,14 +13,12 @@ import type { WritebackAction, WritebackQueryAction } from "metabase-types/api";
 import {
   ActionCardContainer,
   ActionHeader,
-  ActionRunButton,
   ActionRunButtonContainer,
   ActionSubtitle,
   ActionSubtitlePart,
   ActionTitle,
   CodeBlock,
   ImplicitActionCardContentRoot,
-  MenuIcon,
 } from "./ModelActionListItem.styled";
 
 interface Props {
@@ -29,8 +26,8 @@ interface Props {
   actionUrl: string;
   canRun: boolean;
   canEdit: boolean;
-  canArchive: boolean;
-  onArchive: (action: WritebackAction) => void;
+  canDelete: boolean;
+  onDelete: (action: WritebackAction) => void;
 }
 
 function QueryActionCardContent({ action }: { action: WritebackQueryAction }) {
@@ -38,7 +35,7 @@ function QueryActionCardContent({ action }: { action: WritebackQueryAction }) {
   if (!question.isNative()) {
     return (
       <CodeBlock>
-        <Icon name="warning" size={16} tooltip={t`No query found`} />
+        <Icon name="warning" tooltip={t`No query found`} />
       </CodeBlock>
     );
   }
@@ -62,8 +59,8 @@ function ModelActionListItem({
   actionUrl,
   canRun,
   canEdit,
-  canArchive,
-  onArchive,
+  canDelete,
+  onDelete,
 }: Props) {
   const { show: askConfirmation, modalContent: confirmationModal } =
     useConfirmation();
@@ -72,31 +69,14 @@ function ModelActionListItem({
     { open: openExecuteModal, close: closeExecuteModal },
   ] = useDisclosure(false);
 
-  const handleArchive = useCallback(() => {
+  const handleDelete = useCallback(() => {
     askConfirmation({
-      title: t`Archive ${action.name}?`,
-      confirmButtonText: t`Archive`,
-      onConfirm: () => onArchive(action),
+      title: t`Delete ${action.name}?`,
+      message: t`Dashboard buttons and public forms that use this action will be removed.`,
+      confirmButtonText: t`Delete`,
+      onConfirm: () => onDelete(action),
     });
-  }, [action, askConfirmation, onArchive]);
-
-  const menuItems = useMemo(
-    () => [
-      {
-        title: canEdit ? t`Edit` : t`View`,
-        icon: canEdit ? "pencil" : "eye",
-        link: actionUrl,
-      },
-      canArchive
-        ? {
-            title: t`Archive`,
-            icon: "archive",
-            action: handleArchive,
-          }
-        : null,
-    ],
-    [actionUrl, canEdit, canArchive, handleArchive],
-  );
+  }, [action, askConfirmation, onDelete]);
 
   return (
     <>
@@ -117,7 +97,33 @@ function ModelActionListItem({
             )}
           </ActionSubtitle>
         </div>
-        <EntityMenu items={menuItems} trigger={<MenuIcon name="ellipsis" />} />
+        <Menu position="bottom-end">
+          <Menu.Target>
+            <ActionIcon aria-label={t`Actions`} variant="subtle">
+              <Icon name="ellipsis" />
+            </ActionIcon>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item
+              component={ForwardRefLink}
+              data-testid="entity-menu-link"
+              leftSection={
+                <Icon name={canEdit ? "pencil" : "eye"} aria-hidden />
+              }
+              to={actionUrl}
+            >
+              {canEdit ? t`Edit` : t`View`}
+            </Menu.Item>
+            {canDelete && (
+              <Menu.Item
+                leftSection={<Icon name="trash" aria-hidden />}
+                onClick={handleDelete}
+              >
+                {t`Delete`}
+              </Menu.Item>
+            )}
+          </Menu.Dropdown>
+        </Menu>
       </ActionHeader>
       <ActionCardContainer>
         {action.type === "query" ? (
@@ -128,14 +134,17 @@ function ModelActionListItem({
         {canRun && (
           <>
             <ActionRunButtonContainer>
-              <ActionRunButton
-                as={Link}
-                icon="play"
-                onlyIcon
-                tooltip={t`Run`}
-                aria-label={t`Run`}
-                onClick={openExecuteModal}
-              />
+              <Tooltip label={t`Run`}>
+                <ActionIcon
+                  variant="subtle"
+                  bg="background_page-primary"
+                  c="text-primary"
+                  aria-label={t`Run`}
+                  onClick={openExecuteModal}
+                >
+                  <Icon name="play" />
+                </ActionIcon>
+              </Tooltip>
             </ActionRunButtonContainer>
             <ActionExecuteModal
               opened={executeModalOpened}

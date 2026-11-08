@@ -5,12 +5,12 @@
   series data in chart_configs, which is seeded into agent memory during
   initialization. This avoids re-executing queries."
   (:require
+   [metabase.interestingness.core :as interestingness]
    [metabase.metabot.scope :as scope]
-   [metabase.metabot.stats.core :as stats.core]
-   [metabase.metabot.stats.repr :as stats.repr]
    [metabase.metabot.tools.shared :as shared]
-   [metabase.util.log :as log]
+   [metabase.metabot.tools.util :as metabot.tools.u]
    [metabase.util.malli :as mu]
+   [metabase.util.quoting :as quoting]
    [tech.v3.resource :as resource]))
 
 (set! *warn-on-reflection* true)
@@ -50,8 +50,27 @@ Do not use headers (##). Do not list statistics. Do not analyze series separatel
   (some-> (get (shared/current-chart-configs-state) chart-config-id)
           stringify-series-keys))
 
+(defn- non-numeric-y-value?
+  "True when `y-values` contains a non-nil value that is not a number.
+  nil y-values are allowed; they are treated as missing data points downstream."
+  [y-values]
+  (boolean (some (fn [v] (and (some? v) (not (number? v)))) y-values)))
+
+(defn- validate-chart-config!
+  "Throw an informative exception when `chart-config` is too malformed to analyze."
+  [{:keys [series] :as chart-config}]
+  (when (empty? (interestingness/analyzable-series chart-config))
+    (throw (ex-info "This chart has no series data to analyze."
+                    {:agent-error? true, :type ::malformed-chart-config})))
+  (doseq [[series-name {:keys [y_values]}] series]
+    (when (non-numeric-y-value? y_values)
+      ;; compute-chart-stats assumes each series has numeric y-values.
+      (throw (ex-info (format (str "Series %s has non-numeric y-values. Chart analysis "
+                                   "requires a numeric y-axis metric.")
+                              (quoting/quoted series-name))
+                      {:agent-error? true, :type ::malformed-chart-config, :series series-name})))))
+
 (mu/defn ^{:tool-name "analyze_chart"
-           :prompt    "analyze_chart"
            :scope     scope/agent-viz-read}
   analyze-chart-tool
   "Compute statistics and generate analysis context for a chart.
@@ -64,19 +83,20 @@ Do not use headers (##). Do not list statistics. Do not analyze series separatel
                                       [:deep {:optional true :default true} [:maybe :boolean]]]]
   (try
     (if-let [chart-config (resolve-chart-config-from-memory chart_config_id)]
-      ;; Wrap TMD operations in resource context to ensure off-heap memory is released
-      (resource/stack-resource-context
-       (let [{:keys [timeline_events title display_type]} chart-config
-             opts  {:deep? (if (nil? deep) true (boolean deep))}
-             stats (stats.core/compute-chart-stats chart-config opts)
-             context {:title           title
-                      :display-type    display_type
-                      :stats           stats
-                      :timeline-events timeline_events}
-             representation (stats.repr/generate-representation context)]
-         {:output (str representation "\n\n---\n\n" interpretation-guidance)}))
+      (do
+        (validate-chart-config! chart-config)
+        ;; Wrap TMD operations in resource context to ensure off-heap memory is released
+        (resource/stack-resource-context
+         (let [{:keys [timeline_events title display_type]} chart-config
+               opts  {:deep? (if (nil? deep) true (boolean deep))}
+               stats (interestingness/compute-chart-stats chart-config opts)
+               context {:title           title
+                        :display-type    display_type
+                        :stats           stats
+                        :timeline-events timeline_events}
+               representation (interestingness/generate-representation context)]
+           {:output (str representation "\n\n---\n\n" interpretation-guidance)})))
       {:output (str "Chart config not found: " chart_config_id
                     ". Available chart configs can be found in the viewing context.")})
     (catch Exception e
-      (log/error e "Error analyzing chart")
-      {:output (str "Failed to analyze chart: " (or (ex-message e) "Unknown error"))})))
+      (metabot.tools.u/handle-agent-error e))))

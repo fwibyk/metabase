@@ -1,6 +1,5 @@
 import userEvent from "@testing-library/user-event";
 import fetchMock from "fetch-mock";
-import { Route } from "react-router";
 
 import { callMockEvent } from "__support__/events";
 import {
@@ -17,16 +16,18 @@ import {
 } from "__support__/server-mocks";
 import { setupNotificationChannelsEndpoints } from "__support__/server-mocks/pulse";
 import { mockSettings } from "__support__/settings";
+import { createMockDashboardState } from "__support__/state";
 import { createMockEntitiesState } from "__support__/store";
 import {
   act,
   renderWithProviders,
   screen,
-  waitForLoaderToBeRemoved,
+  waitForDashboardToLoad,
 } from "__support__/ui";
-import { BEFORE_UNLOAD_UNSAVED_MESSAGE } from "metabase/common/hooks/use-before-unload";
+import { getBeforeUnloadUnsavedMessage } from "metabase/common/hooks/use-before-unload";
 import { DashboardApp } from "metabase/dashboard/containers/DashboardApp/DashboardApp";
-import { createMockDashboardState } from "metabase/redux/store/mocks";
+import { Route } from "metabase/router";
+import { defer } from "metabase/utils/promise";
 import { checkNotNull } from "metabase/utils/types";
 import type { Dashboard } from "metabase-types/api";
 import {
@@ -36,7 +37,9 @@ import {
   createMockDashboard,
   createMockDashboardQueryMetadata,
   createMockDatabase,
+  createMockHeadingDashboardCard,
   createMockTable,
+  createMockTextDashboardCard,
 } from "metabase-types/api/mocks";
 
 const TEST_COLLECTION = createMockCollection();
@@ -58,22 +61,34 @@ const TestHome = () => <div />;
 
 interface Options {
   dashboard?: Partial<Dashboard>;
+  slug?: string;
+  /** Holds the query metadata response until `resolveQueryMetadata` is called. */
+  deferQueryMetadata?: boolean;
 }
 
-async function setup({ dashboard }: Options = {}) {
+function renderDashboardApp({
+  dashboard,
+  slug,
+  deferQueryMetadata = false,
+}: Options = {}) {
   const mockDashboard = createMockDashboard(dashboard);
   const dashboardId = mockDashboard.id;
+  const queryMetadata = createMockDashboardQueryMetadata({
+    databases: [TEST_DATABASE_WITH_ACTIONS],
+  });
+  const queryMetadataRequest = defer();
 
   setupNotificationChannelsEndpoints({});
 
   setupDatabasesEndpoints([TEST_DATABASE_WITH_ACTIONS]);
   setupDashboardEndpoints(mockDashboard);
-  setupDashboardQueryMetadataEndpoint(
-    mockDashboard,
-    createMockDashboardQueryMetadata({
-      databases: [TEST_DATABASE_WITH_ACTIONS],
-    }),
-  );
+  if (deferQueryMetadata) {
+    fetchMock.get(`path:/api/dashboard/${dashboardId}/query_metadata`, () =>
+      queryMetadataRequest.promise.then(() => queryMetadata),
+    );
+  } else {
+    setupDashboardQueryMetadataEndpoint(mockDashboard, queryMetadata);
+  }
   setupCollectionsEndpoints({ collections: [] });
   setupCollectionItemsEndpoint({
     collection: TEST_COLLECTION,
@@ -97,13 +112,13 @@ async function setup({ dashboard }: Options = {}) {
     );
   };
 
-  const { history } = renderWithProviders(
+  const { router, store } = renderWithProviders(
     <>
-      <Route path="/" component={TestHome} />
-      <Route path="/dashboard/:slug" component={DashboardAppContainer} />
+      <Route path="/" element={<TestHome />} />
+      <Route path="/dashboard/:slug" element={<DashboardAppContainer />} />
     </>,
     {
-      initialRoute: `/dashboard/${dashboardId}`,
+      initialRoute: `/dashboard/${slug ?? dashboardId}`,
       withRouter: true,
       storeInitialState: {
         dashboard: createMockDashboardState(),
@@ -115,13 +130,21 @@ async function setup({ dashboard }: Options = {}) {
     },
   );
 
-  await waitForLoaderToBeRemoved();
-
   return {
     dashboardId,
-    history: checkNotNull(history),
+    router: checkNotNull(router),
+    store,
     mockEventListener,
+    resolveQueryMetadata: () => queryMetadataRequest.resolve(),
   };
+}
+
+async function setup(options: Options = {}) {
+  const view = renderDashboardApp(options);
+
+  await waitForDashboardToLoad();
+
+  return view;
 }
 
 describe("DashboardApp", () => {
@@ -146,7 +169,7 @@ describe("DashboardApp", () => {
       const mockEvent = callMockEvent(mockEventListener, "beforeunload");
 
       expect(mockEvent.preventDefault).toHaveBeenCalled();
-      expect(mockEvent.returnValue).toEqual(BEFORE_UNLOAD_UNSAVED_MESSAGE);
+      expect(mockEvent.returnValue).toEqual(getBeforeUnloadUnsavedMessage());
     });
 
     it("should not have a beforeunload event when the dashboard is unedited", async function () {
@@ -160,16 +183,20 @@ describe("DashboardApp", () => {
     });
 
     it("does not show custom warning modal when leaving with no changes via SPA navigation", async () => {
-      const { dashboardId, history } = await setup();
+      const { dashboardId, router } = await setup();
 
-      history.push("/");
-      history.push(`/dashboard/${dashboardId}`);
+      act(() => {
+        router.navigate("/");
+        router.navigate(`/dashboard/${dashboardId}`);
+      });
 
-      await waitForLoaderToBeRemoved();
+      await waitForDashboardToLoad();
 
       await userEvent.click(await screen.findByLabelText("Edit dashboard"));
 
-      history.goBack();
+      act(() => {
+        router.back();
+      });
 
       expect(
         screen.queryByTestId("leave-confirmation"),
@@ -177,14 +204,14 @@ describe("DashboardApp", () => {
     });
 
     it("shows custom warning modal when leaving with unsaved changes via SPA navigation", async () => {
-      const { dashboardId, history } = await setup();
+      const { dashboardId, router } = await setup();
 
       act(() => {
-        history.push("/");
-        history.push(`/dashboard/${dashboardId}`);
+        router.navigate("/");
+        router.navigate(`/dashboard/${dashboardId}`);
       });
 
-      await waitForLoaderToBeRemoved();
+      await waitForDashboardToLoad();
 
       await userEvent.click(screen.getByLabelText("Edit dashboard"));
       await userEvent.click(screen.getByTestId("dashboard-name-heading"));
@@ -192,7 +219,7 @@ describe("DashboardApp", () => {
       await userEvent.tab(); // need to click away from the input to trigger the isDirty flag
 
       act(() => {
-        history.goBack();
+        router.back();
       });
 
       expect(
@@ -270,6 +297,62 @@ describe("DashboardApp", () => {
     expect(queryMetadataSearchParams.get("dashboard_load_id")).toEqual(
       dashboardSearchParams.get("dashboard_load_id"),
     );
+  });
+
+  it("should show the error page instead of an endless loader for a non-numeric slug (metabase#78725)", async () => {
+    const { store } = await setup({ slug: "thisisinvalid" });
+
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+    expect(store.getState().app.errorPage).toMatchObject({ status: 404 });
+  });
+
+  describe("loading state (DSN-749)", () => {
+    it("renders the dashboard with skeletons, instead of a loading spinner, while it loads", async () => {
+      renderDashboardApp();
+
+      // The real dashboard page renders right away, with skeletons for its
+      // header and grid, and a loading spinner is never shown.
+      expect(screen.getByTestId("dashboard")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("dashboard-header-skeleton"),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("dashboard-grid-skeleton")).toBeInTheDocument();
+      expect(screen.queryByTestId("loading-indicator")).not.toBeInTheDocument();
+
+      // Once the dashboard arrives, its real header and grid replace them.
+      await waitForDashboardToLoad();
+      expect(screen.getByTestId("dashboard-header")).toBeInTheDocument();
+    });
+
+    it("switches to the dashboard's real card layout as soon as it is known, before the load finishes", async () => {
+      const { resolveQueryMetadata } = renderDashboardApp({
+        dashboard: {
+          dashcards: [
+            createMockHeadingDashboardCard({ id: 1, text: "Heading" }),
+            createMockTextDashboardCard({
+              id: 2,
+              text: "First line\nSecond line",
+            }),
+          ],
+        },
+        deferQueryMetadata: true,
+      });
+
+      try {
+        // These can only come from the dashboard's own layout, drawn while
+        // its query metadata loads.
+        expect(
+          await screen.findAllByTestId("dashboard-skeleton-text"),
+        ).toHaveLength(2);
+      } finally {
+        resolveQueryMetadata();
+      }
+
+      await waitForDashboardToLoad();
+      expect(
+        screen.queryByTestId("dashboard-skeleton-text"),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it("should not allow to enter a dashboard name longer than 254 characters", async () => {

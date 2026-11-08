@@ -1,5 +1,5 @@
-import { getUserIsAdmin } from "metabase/selectors/user";
-import { useSelector } from "metabase/utils/redux";
+import { getUserIsAdmin } from "metabase/current-user";
+import { useSelector } from "metabase/redux";
 
 /**
  * we should wrap all upsell components in this HoC to ensure that they are only rendered for admins

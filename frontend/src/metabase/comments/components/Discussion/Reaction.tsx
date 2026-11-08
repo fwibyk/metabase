@@ -1,9 +1,9 @@
 import cx from "classnames";
 import { useCallback, useMemo } from "react";
 
-import { getUser } from "metabase/selectors/user";
+import { getUser } from "metabase/current-user";
+import { useSelector } from "metabase/redux";
 import { Flex, Text, Tooltip } from "metabase/ui";
-import { useSelector } from "metabase/utils/redux";
 import type { CommentReaction } from "metabase-types/api";
 
 import S from "./Discussion.module.css";
@@ -38,7 +38,7 @@ export function Reaction({ reaction, onReaction, onReactionRemove }: Props) {
     <Tooltip label={reactionLabel}>
       <Flex
         align="center"
-        gap="xs"
+        gap="xxs"
         fz="sm"
         fw={700}
         className={cx(S.reaction, {

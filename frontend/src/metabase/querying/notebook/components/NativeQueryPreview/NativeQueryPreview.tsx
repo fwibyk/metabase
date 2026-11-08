@@ -6,13 +6,15 @@ import { CodeEditor } from "metabase/common/components/CodeEditor";
 import { CopyButton } from "metabase/common/components/CopyButton";
 import { ExternalLink } from "metabase/common/components/ExternalLink";
 import { formatNativeQuery } from "metabase/databases/utils/engine";
+import { useSelector } from "metabase/redux";
 import { getLearnUrl } from "metabase/selectors/settings";
 import { getShowMetabaseLinks } from "metabase/selectors/whitelabel";
-import { Box, Flex, Icon, Loader, Stack } from "metabase/ui";
-import { useSelector } from "metabase/utils/redux";
+import { Box, Button, Flex, Icon, Loader, Stack } from "metabase/ui";
 import * as Lib from "metabase-lib";
-import type { UiParameter } from "metabase-lib/v1/parameters/types";
-import type { NativeDatasetResponse } from "metabase-types/api";
+import type {
+  NativeDatasetResponse,
+  NormalizedQueryParameter,
+} from "metabase-types/api";
 
 import { language } from "../../../components/CodeMirrorEditor/language";
 
@@ -23,7 +25,7 @@ export function NativeQueryPreview({
   parameters = [],
 }: {
   query: Lib.Query;
-  parameters?: UiParameter[];
+  parameters?: NormalizedQueryParameter[];
 }) {
   const { data, error, isFetching } = useGetNativeDatasetQuery({
     ...Lib.toJsQuery(query),
@@ -43,14 +45,14 @@ export function NativeQueryPreview({
     <Stack>
       {formattedError && (
         <Flex gap="sm">
-          <Icon name="warning" c="error" />
+          <Icon name="warning" c="feedback-negative" />
           {t`An error occurred in your query`}
         </Flex>
       )}
 
       {isFetching ? (
         <Flex direction="column" justify="center" align="center">
-          <Loader c="brand" />
+          <Loader c="core-brand" />
         </Flex>
       ) : (
         <Flex direction="column" mih={0}>
@@ -63,10 +65,10 @@ export function NativeQueryPreview({
       )}
 
       {formattedError && showMetabaseLinks && (
-        <Flex justify="end" mt="lg">
-          <ExternalLink className={S.ModalExternalLink} href={learnUrl}>
+        <Flex justify="end" mt="xl">
+          <Button component={ExternalLink} href={learnUrl} variant="subtle">
             {t`Learn how to debug SQL errors`}
-          </ExternalLink>
+          </Button>
         </Flex>
       )}
     </Stack>

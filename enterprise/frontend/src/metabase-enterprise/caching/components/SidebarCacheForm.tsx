@@ -22,6 +22,7 @@ export const SidebarCacheForm = ({
   withOverlay = true,
   overlayProps,
   onBack,
+  withBackButton,
   ...stackProps
 }: SidebarCacheFormProps) => {
   const configurableModels = useMemo(() => [model], [model]);
@@ -67,11 +68,12 @@ export const SidebarCacheForm = ({
       onBack={() =>
         isStrategyFormDirty ? askBeforeDiscardingChanges(onBack) : onBack()
       }
+      withBackButton={withBackButton}
     >
       <Stack
         align="space-between"
         h="calc(100% + 2.5rem)" // to make bottom padding nice with scroll containers
-        gap="md"
+        gap="lg"
         aria-labelledby={headingId}
         {...stackProps}
       >
@@ -85,9 +87,13 @@ export const SidebarCacheForm = ({
             savedStrategy={savedStrategy}
             shouldAllowInvalidation
             shouldShowName={false}
-            onReset={onBack}
+            onCancel={() =>
+              isStrategyFormDirty
+                ? askBeforeDiscardingChanges(onBack)
+                : onBack()
+            }
             buttonLabels={{ save: t`Save`, discard: t`Cancel` }}
-            isInSidebar
+            layout="sidebar"
           />
         </DelayedLoadingAndErrorWrapper>
         {confirmationModal}

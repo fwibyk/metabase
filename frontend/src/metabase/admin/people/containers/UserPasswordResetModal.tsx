@@ -13,14 +13,14 @@ import { CopyButton } from "metabase/common/components/CopyButton";
 import { LoadingAndErrorWrapper } from "metabase/common/components/LoadingAndErrorWrapper";
 import { PasswordReveal } from "metabase/common/components/PasswordReveal";
 import { useToast } from "metabase/common/hooks/use-toast";
+import { useDispatch, useSelector } from "metabase/redux";
 import { Button, Flex, Modal, Text, TextInput } from "metabase/ui";
 import { generatePassword } from "metabase/utils/password";
-import { useDispatch, useSelector } from "metabase/utils/redux";
 import MetabaseSettings from "metabase/utils/settings";
 import type { User } from "metabase-types/api";
 
 import { clearTemporaryPassword, storeTemporaryPassword } from "../people";
-import { getUserTemporaryPassword } from "../selectors";
+import { getIsSsoOnlyUser, getUserTemporaryPassword } from "../selectors";
 
 interface UserPasswordResetModalInnerProps {
   clearTemporaryPassword: () => void;
@@ -84,7 +84,7 @@ const UserPasswordResetModalInner = ({
         onClose={onClose}
         message={
           <>
-            <Text pb="lg">{t`Share this link with the user. It will expire in 48 hours.`}</Text>
+            <Text pb="xl">{t`Share this link with the user. It will expire in 48 hours.`}</Text>
             <TextInput
               value={resetUrl}
               readOnly
@@ -109,7 +109,7 @@ const UserPasswordResetModalInner = ({
         onClose={onClose}
         message={
           <>
-            <Text pb="lg">{t`Here's a temporary password they can use to log in and then change their password.`}</Text>
+            <Text pb="xl">{t`Here's a temporary password they can use to log in and then change their password.`}</Text>
             <PasswordReveal password={temporaryPassword} />
           </>
         }
@@ -124,9 +124,9 @@ const UserPasswordResetModalInner = ({
       onClose={onClose}
       size="lg"
     >
-      <Flex direction="column" gap="lg" mt="md">
+      <Flex direction="column" gap="xl" mt="lg">
         <Text>{t`Are you sure you want to do this?`}</Text>
-        <Flex align="center" justify="flex-end" gap="md">
+        <Flex align="center" justify="flex-end" gap="lg">
           <Button onClick={onClose}>{t`Cancel`}</Button>
           <Button
             variant="filled"
@@ -134,7 +134,7 @@ const UserPasswordResetModalInner = ({
             onClick={handleGetResetLink}
           >{t`Get reset link`}</Button>
           <Button
-            color="danger"
+            color="negative"
             variant="filled"
             onClick={handleResetConfirm}
           >{t`Reset password`}</Button>
@@ -143,6 +143,27 @@ const UserPasswordResetModalInner = ({
     </Modal>
   );
 };
+
+interface SsoUserPasswordResetModalProps {
+  user: User;
+  onClose: () => void;
+}
+
+const SsoUserPasswordResetModal = ({
+  user,
+  onClose,
+}: SsoUserPasswordResetModalProps) => (
+  <ConfirmModal
+    opened
+    title={t`Can't reset ${user.common_name}'s password`}
+    onConfirm={onClose}
+    confirmButtonProps={{ color: "brand", variant: "filled" }}
+    confirmButtonText={t`Done`}
+    closeButtonText={null}
+    onClose={onClose}
+    message={t`This user signs in with single sign-on. Manage their access through your identity provider.`}
+  />
+);
 
 interface UserPasswordResetModalProps {
   params: { userId?: string };
@@ -158,10 +179,16 @@ export const UserPasswordResetModal = (props: UserPasswordResetModalProps) => {
   const temporaryPassword = useSelector((state) =>
     getUserTemporaryPassword(state, { userId }),
   );
+  const isSsoOnlyUser = useSelector(
+    (state) => user != null && getIsSsoOnlyUser(state, user),
+  );
 
   return (
     <LoadingAndErrorWrapper loading={isLoading} error={error}>
-      {user && (
+      {user && isSsoOnlyUser && (
+        <SsoUserPasswordResetModal user={user} onClose={props.onClose} />
+      )}
+      {user && !isSsoOnlyUser && (
         <UserPasswordResetModalInner
           {...props}
           clearTemporaryPassword={() =>

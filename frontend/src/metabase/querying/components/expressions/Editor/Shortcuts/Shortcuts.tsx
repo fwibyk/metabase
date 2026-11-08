@@ -1,5 +1,5 @@
-import { Button, Flex, Icon, type IconName } from "metabase/ui";
-
+import { Button, Flex, Icon } from "metabase/ui";
+import type { IconName } from "metabase-types/api";
 export type Shortcut = {
   name: string;
   icon: IconName;
@@ -21,8 +21,6 @@ export function Shortcuts({
         <Button
           key={index}
           variant="light"
-          radius="5rem"
-          size="xs"
           onClick={shortcut.action}
           leftSection={<Icon name={shortcut.icon} />}
         >

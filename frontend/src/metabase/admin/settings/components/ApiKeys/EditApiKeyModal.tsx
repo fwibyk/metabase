@@ -2,10 +2,6 @@ import { useCallback, useState } from "react";
 import { t } from "ttag";
 
 import {
-  useRegenerateApiKeyMutation,
-  useUpdateApiKeyMutation,
-} from "metabase/api";
-import {
   Form,
   FormErrorMessage,
   FormGroupWidget,
@@ -13,14 +9,17 @@ import {
   FormSubmitButton,
   FormTextInput,
 } from "metabase/forms";
-import { Button, Group, Modal, Stack, Text } from "metabase/ui";
-import { getThemeOverrides } from "metabase/ui/theme";
+import { Button, Group, Modal, Paper, Stack, Text } from "metabase/ui";
 import type { ApiKey, UpdateApiKeyRequest } from "metabase-types/api";
 
-import { SecretKeyModal } from "./SecretKeyModal";
-import { API_KEY_VALIDATION_SCHEMA } from "./utils";
+import {
+  useRegenerateApiKeyMutation,
+  useUpdateApiKeyMutation,
+} from "../../api/api-key";
 
-const { fontFamilyMonospace } = getThemeOverrides();
+import S from "./EditApiKeyModal.module.css";
+import { SecretKeyModal } from "./SecretKeyModal";
+import { getApiKeyValidationSchema } from "./utils";
 
 type EditModalName = "edit" | "regenerate" | "secretKey";
 
@@ -42,37 +41,41 @@ const RegenerateKeyModal = ({
 
   return (
     <Modal
-      size="30rem"
+      size="40rem"
+      padding="xxl"
       opened
       onClose={() => setModal("edit")}
       title={t`Regenerate API key`}
     >
       <FormProvider initialValues={{}} onSubmit={handleRegenerate}>
         <Form>
-          <Stack gap="lg">
-            <Stack gap="xs">
+          <Stack gap="xxl">
+            <Stack gap="xxs">
               <Text
                 component="label"
+                c="text-secondary"
                 fw="bold"
-                color="text-tertiary"
-                size="sm"
               >{t`Key name`}</Text>
-              <Text fw="bold" size="sm">
-                {apiKey.name}
-              </Text>
+              <Text>{apiKey.name}</Text>
             </Stack>
-            <Stack gap="xs">
+            <Stack gap="xxs">
               <Text
                 component="label"
+                c="text-secondary"
                 fw="bold"
-                color="text-tertiary"
-                size="sm"
               >{t`Group`}</Text>
-              <Text fw="bold" size="sm">
-                {apiKey.group.name}
-              </Text>
+              <Text>{apiKey.group.name}</Text>
             </Stack>
-            <Text>{t`Metabase will replace the existing API key with a new key. You won't be able to recover the old key.`}</Text>
+            {/* TODO: swap for the planned metabase/ui Alert variant once it lands. */}
+            <Paper
+              bg="background_page-secondary"
+              radius="sm"
+              px="lg"
+              py="sm"
+              shadow="none"
+            >
+              <Text c="text-secondary">{t`Metabase will replace the existing API key with a new key. You won't be able to recover the old key.`}</Text>
+            </Paper>
             <FormErrorMessage />
             <Group justify="flex-end">
               <Button
@@ -127,8 +130,8 @@ export const EditApiKeyModal = ({
   if (modal === "edit") {
     return (
       <Modal
-        size="30rem"
-        padding="xl"
+        size="40rem"
+        padding="xxl"
         opened
         onClose={onClose}
         title={t`Edit API key`}
@@ -136,37 +139,32 @@ export const EditApiKeyModal = ({
         <FormProvider
           initialValues={{ ...apiKey, group_id: apiKey.group.id }}
           onSubmit={handleSubmit}
-          validationSchema={API_KEY_VALIDATION_SCHEMA}
+          validationSchema={getApiKeyValidationSchema()}
         >
           {({ dirty }) => (
             <Form>
-              <Stack gap="md">
-                <FormTextInput
-                  name="name"
-                  label={t`Key name`}
-                  size="sm"
-                  required
-                  withAsterisk={false}
-                />
+              <Stack gap="xxl">
+                <FormTextInput name="name" label={t`Key name`} required />
                 <FormGroupWidget
                   name="group_id"
-                  label={t`Which group should this key belong to? The key will have the same permissions granted to that group.`}
-                  size="sm"
+                  label={t`Group this key should belong to`}
+                  description={t`The key will have the same permissions that the group does.`}
+                  classNames={{ description: S.groupDescription }}
                 />
                 <FormTextInput
                   name="masked_key"
                   label={t`API Key`}
-                  size="sm"
                   styles={{
                     input: {
-                      color: `black !important`,
-                      fontFamily: fontFamilyMonospace as string,
+                      // override the disabled-gray so the masked key stays readable in both themes
+                      color: "var(--mb-color-text-primary) !important",
+                      fontFamily: "var(--mb-default-monospace-font-family)",
                     },
                   }}
                   disabled
                 />
                 <FormErrorMessage />
-                <Group justify="space-between" mt="lg">
+                <Group justify="space-between">
                   <Button
                     onClick={() => setModal("regenerate")}
                   >{t`Regenerate API key`}</Button>

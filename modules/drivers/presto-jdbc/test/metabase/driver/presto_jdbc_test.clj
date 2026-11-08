@@ -1,4 +1,5 @@
 (ns ^:mb/driver-tests metabase.driver.presto-jdbc-test
+  {:clj-kondo/config '{:linters {:deprecated-var {:exclude {metabase.test.data/mbql-query {:namespaces [metabase.driver.presto-jdbc-test]}}}}}}
   (:require
    [clojure.string :as str]
    [clojure.test :refer :all]
@@ -10,6 +11,9 @@
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
    [metabase.driver.sql-jdbc.execute :as sql-jdbc.execute]
    [metabase.driver.sql.query-processor :as sql.qp]
+   [metabase.driver.util :as driver.u]
+   [metabase.lib.core :as lib]
+   [metabase.lib.metadata :as lib.metadata]
    [metabase.query-processor.compile :as qp.compile]
    [metabase.query-processor.test :as qp]
    [metabase.sync.core :as sync]
@@ -31,12 +35,12 @@
                       {:name "test_data_checkins" :schema "default"}
                       {:name "test_data_users" :schema "default"}
                       {:name "test_data_venues" :schema "default"}}}
-           (-> (driver/describe-database :presto-jdbc (mt/db))
-               (update :tables (comp set (partial filter (comp #{"test_data_categories"
-                                                                 "test_data_venues"
-                                                                 "test_data_checkins"
-                                                                 "test_data_users"}
-                                                               :name)))))))))
+           (-> (driver/describe-database :presto-jdbc (lib.metadata/database (mt/metadata-provider)))
+               (update :tables #(into #{} (filter (comp #{"test_data_categories"
+                                                          "test_data_venues"
+                                                          "test_data_checkins"
+                                                          "test_data_users"}
+                                                        :name)) %)))))))
 
 (deftest ^:parallel describe-table-test
   (mt/test-driver :presto-jdbc
@@ -68,7 +72,7 @@
                        :database-type "integer"
                        :base-type     :type/Integer
                        :database-position 0}}}
-           (driver/describe-table :presto-jdbc (mt/db) (t2/select-one 'Table :id (mt/id :venues)))))))
+           (driver/describe-table :presto-jdbc (lib.metadata/database (mt/metadata-provider)) (t2/select-one 'Table :id (mt/id :venues)))))))
 
 (deftest ^:parallel table-rows-sample-test
   (mt/test-driver :presto-jdbc
@@ -119,7 +123,7 @@
 (deftest ^:parallel db-default-timezone-test
   (mt/test-driver :presto-jdbc
     (is (= "UTC"
-           (driver/db-default-timezone :presto-jdbc (mt/db))))))
+           (driver/db-default-timezone :presto-jdbc (lib.metadata/database (mt/metadata-provider)))))))
 
 (deftest ^:synchronized template-tag-timezone-test
   (mt/test-driver :presto-jdbc
@@ -217,7 +221,7 @@
         (mt/with-temp [:model/Database db {:engine :presto-jdbc, :name "Temp Presto JDBC Schema DB", :details with-schema}]
           (mt/with-db db
             ;; same as test_data, but with schema, so should NOT pick up venues, users, etc.
-            (sync/sync-database! db)
+            (sync/sync-database! (:id db))
             (is (= [{:name t, :schema s, :db_id (mt/id)}]
                    (map #(select-keys % [:name :schema :db_id]) (t2/select :model/Table :db_id (mt/id)))))))
         (execute-ddl! [(format "DROP TABLE %s.%s" s t)
@@ -232,22 +236,43 @@
       (let [db-details (assoc (:details (mt/db)) :let-user-control-scheduling false)]
         (is (nil? (warehouses/test-database-connection :presto-jdbc db-details)))))))
 
-(deftest ^:parallel kerberos-properties-test
+(deftest kerberos-properties-test
   (testing "Kerberos related properties are set correctly"
-    (let [details {:host                         "presto-server"
-                   :port                         7778
-                   :catalog                      "my-catalog"
-                   :kerberos                     true
-                   :ssl                          true
-                   :kerberos-config-path         "/path/to/krb5.conf"
-                   :kerberos-principal           "alice@DOMAIN.COM"
-                   :kerberos-remote-service-name "HTTP"
-                   :kerberos-keytab-path         "/path/to/client.keytab"}
-          jdbc-spec (sql-jdbc.conn/connection-details->spec :presto-jdbc details)]
-      (is (= (str "//presto-server:7778/my-catalog?KerberosPrincipal=alice@DOMAIN.COM"
-                  "&KerberosRemoteServiceName=HTTP&KerberosKeytabPath=/path/to/client.keytab"
-                  "&KerberosConfigPath=/path/to/krb5.conf")
-             (:subname jdbc-spec))))))
+    (mt/with-temp-env-var-value! [mb-readable-paths "/path/to"]
+      (let [details {:host                         "presto-server"
+                     :port                         7778
+                     :catalog                      "my-catalog"
+                     :kerberos                     true
+                     :ssl                          true
+                     :kerberos-config-path         "/path/to/krb5.conf"
+                     :kerberos-principal           "alice@DOMAIN.COM"
+                     :kerberos-remote-service-name "HTTP"
+                     :kerberos-keytab-path         "/path/to/client.keytab"}
+            jdbc-spec (sql-jdbc.conn/connection-details->spec :presto-jdbc details)]
+        (is (= (str "//presto-server:7778/my-catalog?KerberosPrincipal=alice@DOMAIN.COM"
+                    "&KerberosRemoteServiceName=HTTP&KerberosKeytabPath=/path/to/client.keytab"
+                    "&KerberosConfigPath=/path/to/krb5.conf")
+               (:subname jdbc-spec)))))))
+
+(deftest kerberos-file-paths-must-be-readable-test
+  (testing "the Kerberos keytab, config and credential-cache paths are files on the Metabase host an admin types in, so
+            they have to be somewhere `readable-paths` allows"
+    (let [details {:host "presto-server" :port 7778 :catalog "my-catalog" :kerberos true :ssl true
+                   :kerberos-principal "alice@DOMAIN.COM"}
+          spec    #(sql-jdbc.conn/connection-details->spec :presto-jdbc (merge details %))]
+      (mt/with-temp-env-var-value! [mb-readable-paths "/allowed-dir"]
+        (doseq [extra [{:kerberos-keytab-path "/etc/krb5.keytab"}
+                       {:kerberos-config-path "/etc/krb5.conf"}
+                       {:kerberos-credential-cache-path "/tmp/../etc/krb5cc"}
+                       {:kerberos-credential-cache-path "FILE:/etc/krb5cc"}]]
+          (testing (pr-str extra)
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Reading from path is disallowed" (spec extra)))))
+        (testing "paths inside an allowed directory, and credential caches that are not files, are accepted"
+          (doseq [extra [{:kerberos-keytab-path "/allowed-dir/client.keytab"
+                          :kerberos-config-path "/allowed-dir/krb5.conf"}
+                         {:kerberos-credential-cache-path "FILE:/allowed-dir/krb5cc"}
+                         {:kerberos-credential-cache-path "KEYRING:persistent:1000"}]]
+            (is (map? (spec extra)) (pr-str extra))))))))
 
 (defn- create-dummy-keystore
   "Creates and empty file for simulating a JKS."
@@ -286,3 +311,37 @@
 (deftest bytes-to-varbinary-test
   (is (= ["FROM_BASE64(?)" "YSBzdHJpbmc="]
          (sql/format (sql.qp/->honeysql :presto-jdbc (.getBytes "a string"))))))
+
+(deftest column->field-test
+  (testing "no field comment with blank column"
+    (is (= {:name "foo"
+            :database-type "integer"
+            :base-type :type/Integer
+            :database-position 0}
+           (#'presto-jdbc/column->field 0 {:column "foo" :type "integer" :comment ""}))))
+  (testing "field comment included with non-blank column"
+    (is (= {:name "foo"
+            :database-type "integer"
+            :base-type :type/Integer
+            :database-position 0
+            :field-comment "foo comment"}
+           (#'presto-jdbc/column->field 0 {:column "foo" :type "integer" :comment "foo comment"})))))
+
+(deftest ^:parallel row-struct-column-test
+  (mt/test-driver :presto-jdbc
+    (testing "STRUCT/ROW-typed columns can be queried (#19841)"
+      (is (= [[{"foo" "bar"}]]
+             (->> "SELECT CAST(ROW('bar') AS ROW(foo VARCHAR))"
+                  (lib/native-query (mt/metadata-provider))
+                  (qp/process-query)
+                  (mt/rows)))))))
+
+(deftest ^:parallel url-building-details-reject-separators-test
+  (doseq [details [{:host "localhost" :port 8080 :catalog "c" :schema "a?b"}
+                   {:host "localhost" :port 8080 :catalog "c" :schema "a%26b"}]]
+    (testing (pr-str details)
+      (is (=? {:status-code 400}
+              (try (driver.u/validate-connection-parameters! :presto-jdbc details)
+                   nil
+                   (catch clojure.lang.ExceptionInfo e
+                     (ex-data e))))))))

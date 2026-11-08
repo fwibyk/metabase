@@ -13,9 +13,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install wget apt-transport-h
     && wget -qO - https://packages.adoptium.net/artifactory/api/gpg/key/public | gpg --dearmor | tee /etc/apt/trusted.gpg.d/adoptium.gpg > /dev/null \
     && echo "deb https://packages.adoptium.net/artifactory/deb $(awk -F= '/^VERSION_CODENAME/{print$2}' /etc/os-release) main" | tee /etc/apt/sources.list.d/adoptium.list \
     && apt-get update \
-    && apt install temurin-21-jdk -y \
+    && apt install temurin-25-jdk -y \
     && curl -O https://download.clojure.org/install/linux-install-1.12.0.1488.sh \
     && chmod +x linux-install-1.12.0.1488.sh \
+    && sed -i "s#https://github.com/clojure/brew-install/releases/download/1.12.0.1488/#https://download.clojure.org/install/#" linux-install-1.12.0.1488.sh \
     && ./linux-install-1.12.0.1488.sh \
     && curl -LsSf https://astral.sh/uv/install.sh | sh
 
@@ -27,7 +28,7 @@ COPY . .
 RUN git config --global --add safe.directory /home/node
 
 # install bun for frontend dependencies
-RUN npm install -g bun
+RUN npm install -g bun@1.3.14
 
 # install frontend dependencies
 RUN bun install --frozen-lockfile
@@ -41,7 +42,7 @@ RUN INTERACTIVE=false CI=true MB_EDITION=$MB_EDITION bin/build.sh :version ${VER
 ## Remember that this runner image needs to be the same as bin/docker/Dockerfile with the exception that this one grabs the
 ## jar from the previous stage rather than the local build
 
-FROM eclipse-temurin:21-jre-alpine AS runner
+FROM eclipse-temurin:25-jre-alpine AS runner
 
 ENV FC_LANG=en-US LC_CTYPE=en_US.UTF-8
 
@@ -52,11 +53,17 @@ COPY bin/docker/DigiCertGlobalRootG2.crt.pem /app/certs/DigiCertGlobalRootG2.crt
 RUN apk add -U bash fontconfig curl font-noto font-noto-arabic font-noto-hebrew font-noto-cjk java-cacerts && \
     apk upgrade && \
     rm -rf /var/cache/apk/* && \
+    sed -i 's|^mozilla/emSign_ECC_Root_CA_-_G3.crt|!&|' /etc/ca-certificates.conf && \
+    update-ca-certificates && \
+    /opt/java/openjdk/bin/keytool -list -v -cacerts -storepass changeit | awk '/^Alias name:/{a=substr($0,13)} /^Owner: CN=emSign ECC Root CA - G3,/{print a}' | while read -r a; do /opt/java/openjdk/bin/keytool -delete -cacerts -storepass changeit -alias "$a"; done && \
     mkdir -p /app/certs && \
     curl https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -o /app/certs/rds-combined-ca-bundle.pem  && \
     /opt/java/openjdk/bin/keytool -noprompt -import -trustcacerts -alias aws-rds -file /app/certs/rds-combined-ca-bundle.pem -keystore /etc/ssl/certs/java/cacerts -keypass changeit -storepass changeit && \
     /opt/java/openjdk/bin/keytool -noprompt -import -trustcacerts -alias azure-cert -file /app/certs/DigiCertGlobalRootG2.crt.pem -keystore /etc/ssl/certs/java/cacerts -keypass changeit -storepass changeit && \
     mkdir -p /plugins && chmod a+rwx /plugins
+
+COPY bin/docker/blocked.certs /app/certs/
+RUN cat /app/certs/blocked.certs >> /opt/java/openjdk/lib/security/blocked.certs
 
 # add Metabase script and uberjar
 COPY --from=builder /home/node/target/uberjar/metabase.jar /app/

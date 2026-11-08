@@ -1,13 +1,15 @@
-(ns metabase-enterprise.remote-sync.dashboard-api-test
+(ns ^:synchronized metabase-enterprise.remote-sync.dashboard-api-test
+  {:clj-kondo/config '{:linters {:deprecated-var {:exclude {metabase.test.data/mbql-query {:namespaces [metabase-enterprise.remote-sync.dashboard-api-test]}}}}}}
   (:require
    [clojure.string :as str]
    [clojure.test :refer :all]
    [metabase.test :as mt]
    [toucan2.core :as t2]))
 
-(use-fixtures :each (fn [f]
-                      (mt/with-temporary-setting-values [remote-sync-type :read-write]
-                        (f))))
+(use-fixtures :each
+  (fn [f]
+    (mt/with-temporary-setting-values [remote-sync-type :read-write]
+      (f))))
 
 (deftest api-update-dashboard-collection-id-remote-synced-dependency-checking-success-test
   (testing "PUT /api/dashboard/:id with collection_id in remote-synced succeeds when all dependencies are in remote-synced"
@@ -52,8 +54,8 @@
                                            {:collection_id target-id})]
         ;; Verify error response contains dependency information
         (is (str/includes? (:message response) "content that is not remote synced")
-            "Error message should mention content that is not remote synced"))
-
+            "Error message should mention content that is not remote synced")
+        (is (seq (:non-remote-synced-models response))))
       ;; Verify the transaction was rolled back - dashboard should not be moved
       (let [unchanged-dash (t2/select-one :model/Dashboard :id dash-id)]
         (is (= source-id (:collection_id unchanged-dash))
@@ -78,7 +80,6 @@
       ;; This should return 400 with transaction rollback
       (mt/user-http-request :crowberto :put 400 (str "dashboard/" dash-id)
                             {:collection_id target-id})
-
       ;; Verify the transaction was completely rolled back
       (let [unchanged-dash (t2/select-one :model/Dashboard :id dash-id)]
         (is (= source-id (:collection_id unchanged-dash))
@@ -152,7 +153,6 @@
         ;; Verify error response contains dependency information
         (is (str/includes? (:message response) "content that is not remote synced")
             "Error message should mention content that is not remote synced"))
-
       ;; Verify no dashboard was created
       (is (= 1 (t2/count :model/Dashboard :name "Dashboard to Copy"))
           "No new dashboard should be created after failed copy"))))
@@ -180,3 +180,24 @@
             "Copied dashboard should be in target collection")
         (is (not= dash-id (:id response))
             "Copied dashboard should have different ID")))))
+
+(deftest api-update-dashboard-add-non-remote-synced-dashcard-rejected-test
+  (testing "PUT /api/dashboard/:id rejects adding a dashcard that points to a non-remote-synced card (GHY-3791)"
+    (mt/with-temp [:model/Collection {non-remote-synced-id :id} {:name "Non-Remote-Synced" :location "/" :type nil}
+                   :model/Collection {remote-synced-id :id} {:name "Remote-Synced" :location "/" :is_remote_synced true}
+                   :model/Dashboard {dash-id :id} {:name "Remote-Synced Dashboard"
+                                                   :collection_id remote-synced-id}
+                   :model/Card {non-remote-synced-card-id :id} {:name "Non-Remote-Synced Card"
+                                                                :collection_id non-remote-synced-id
+                                                                :dataset_query (mt/native-query {:query "SELECT 1"})}]
+      (let [response (mt/user-http-request :crowberto :put 400 (str "dashboard/" dash-id)
+                                           {:dashcards [{:id      -1
+                                                         :card_id non-remote-synced-card-id
+                                                         :row     0
+                                                         :col     0
+                                                         :size_x  4
+                                                         :size_y  4}]
+                                            :tabs      []})]
+        (is (= "Uses content that is not remote synced." (:message response))))
+      (testing "dashcard was not added - transaction rolled back"
+        (is (zero? (t2/count :model/DashboardCard :dashboard_id dash-id)))))))

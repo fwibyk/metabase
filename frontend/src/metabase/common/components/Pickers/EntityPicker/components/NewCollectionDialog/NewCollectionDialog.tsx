@@ -3,9 +3,8 @@ import { t } from "ttag";
 import * as Yup from "yup";
 
 import { useCreateCollectionMutation } from "metabase/api";
-import { canPlaceEntityInCollection } from "metabase/collections/utils";
+import { canPlaceEntityInCollection } from "metabase/common/collections/utils";
 import { FormFooter } from "metabase/common/components/FormFooter";
-import { useEscapeToCloseModal } from "metabase/common/hooks/use-escape-to-close-modal";
 import {
   Form,
   FormErrorMessage,
@@ -54,8 +53,6 @@ export const NewCollectionDialog = () => {
           : undefined,
     };
   }, [path]);
-
-  useEscapeToCloseModal(close, { capture: true });
 
   if (!options.canCreateCollections) {
     return null;
@@ -110,7 +107,8 @@ export const NewCollectionDialog = () => {
     <>
       <Button onClick={open} disabled={!canCreateHere}>
         {lastCollection?.namespace === "transforms" ||
-        lastCollection?.namespace === "snippets"
+        lastCollection?.namespace === "snippets" ||
+        lastCollection?.namespace === "data-actions"
           ? t`New folder`
           : t`New collection`}
       </Button>
@@ -121,7 +119,6 @@ export const NewCollectionDialog = () => {
         data-testid="create-collection-on-the-go"
         trapFocus={true}
         withCloseButton={false}
-        closeOnEscape={false}
       >
         <FormProvider
           initialValues={{ name: "" }}

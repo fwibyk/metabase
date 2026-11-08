@@ -5,7 +5,7 @@ import _ from "underscore";
 
 import CS from "metabase/css/core/index.css";
 import { Box, Button, Icon, Select, Text, Tooltip } from "metabase/ui";
-import QuestionParameterTargetWidget from "metabase-enterprise/sandboxes/containers/QuestionParameterTargetWidget";
+import { QuestionParameterTargetWidget } from "metabase-enterprise/sandboxes/containers/QuestionParameterTargetWidget";
 import type {
   DataAttributeMap,
   GroupTableAccessPolicyDraft,
@@ -22,13 +22,13 @@ import {
   replaceEntryValue,
 } from "metabase-enterprise/sandboxes/utils";
 import type {
-  DimensionRef,
   GroupTableAccessPolicy,
+  ParameterTarget,
   Table,
   UserAttributeKey,
 } from "metabase-types/api";
 
-type ValueType = string | DimensionRef | null;
+type ValueType = string | ParameterTarget | null;
 
 export interface MappingEditorProps {
   value: DataAttributeMap<ValueType>;
@@ -125,10 +125,16 @@ export const DataAttributeMappingEditor = ({
                   )}
                 />
               </td>
-              <td className={CS.pb1} style={{ verticalAlign: "top" }}>
+              <td
+                className={cx(CS.pb1, CS.pl1)}
+                style={{ verticalAlign: "middle" }}
+              >
+                {/* TODO: replace with ActionIcon (GDGT-2457) */}
                 <Button
                   leftSection={<Icon name="close" />}
                   variant="subtle"
+                  color="neutral"
+                  size="sm"
                   onClick={() =>
                     handleChange(removeEntry<ValueType>(entries, index))
                   }
@@ -144,7 +150,8 @@ export const DataAttributeMappingEditor = ({
               <td colSpan={2}>
                 <Button
                   leftSection={<Icon name="add" />}
-                  variant="subtle"
+                  variant="transparent"
+                  size="compact-md"
                   onClick={() => handleChange(addEntry<ValueType>(entries))}
                 >
                   {t`Add a filter`}
@@ -193,7 +200,7 @@ const ColumnPicker = ({
   shouldUseSavedQuestion,
 }: {
   value: ValueType;
-  onChange?: (value: string) => void;
+  onChange: (value: ParameterTarget) => void;
   policyTable?: Table;
   policy: GroupTableAccessPolicy | GroupTableAccessPolicyDraft;
   shouldUseSavedQuestion: boolean;
@@ -204,10 +211,12 @@ const ColumnPicker = ({
     shouldUseSavedQuestion && policy.card_id != null;
 
   if (filterByTableColumn || filterBySavedQuestion) {
+    // ValueType's string member is the "no value set yet" sentinel.
+    const target = typeof value === "string" ? null : value;
     return (
       <Box miw={200}>
         <QuestionParameterTargetWidget
-          target={value}
+          target={target}
           onChange={onChange}
           questionObject={
             filterByTableColumn && policyTable

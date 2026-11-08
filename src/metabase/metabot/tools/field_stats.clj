@@ -1,12 +1,16 @@
 (ns metabase.metabot.tools.field-stats
   (:require
    [clojure.set :as set]
+   [metabase.api.common :as api]
    [metabase.lib.core :as lib]
+   [metabase.metabot.curation :as curation]
+   [metabase.metabot.db :as metabot.db]
+   [metabase.metabot.metadata-perms :as metabot.perms]
+   [metabase.metabot.tools.shared :as shared]
    [metabase.metabot.tools.util :as metabot.tools.u]
    [metabase.parameters.field-values :as params.field-values]
    [metabase.request.core :as request]
-   [metabase.sync.core :as sync]
-   [toucan2.core :as t2]))
+   [metabase.sync.core :as sync]))
 
 (defn- build-field-statistics [fvs fp limit]
   (merge
@@ -14,23 +18,78 @@
      {:statistics (-> (or (:global fp) {})
                       (set/rename-keys {:nil% :percent-null})
                       (into (vals (:type fp))))})
-   (when-let [fvs (-> fvs :values not-empty)]
-     {:field_values (into [] (if limit (take limit) identity) fvs)})))
+   (when-let [values (-> fvs :values not-empty)]
+     {:field_values       (into [] (if limit (take limit) identity) values)
+      :field_values_total (count values)
+      :has_more_values    (:has_more_values fvs)})))
 
 (defn- get-or-create-fingerprint! [{:keys [id fingerprint] :as field}]
   (or fingerprint
       ;; Run with admin perms to match behavior during normal sync.
       (and (pos? (:updated-fingerprints (request/as-admin (sync/refingerprint-field! field))))
-           (t2/select-one-fn :fingerprint :model/Field :id id))))
+           (metabot.db/field-fingerprint id))))
 
 (defn- field-statistics
+  "Fingerprint statistics are global (computed across every row of the table), so they're withheld
+  for a user whose actual row access is narrowed by sandboxing, connection impersonation, or
+  database routing -- and a missing fingerprint is never computed on demand for such a user either,
+  since that would run an unrestricted warehouse sample and persist its result to the shared
+  `Field` row. The restriction check uses the persisted Field's owning table rather than the
+  caller's column metadata, since saved Card result metadata can be stale or user-edited."
   [{:keys [id fingerprint]} limit]
   (if id
-    (let [field (t2/select-one :model/Field :id id)
+    (let [field (metabot.db/field id)
+          table-id (:table_id field)
           fvs (params.field-values/get-or-create-field-values! field)
-          fp (or fingerprint (get-or-create-fingerprint! field))]
+          restricted? (or (not (int? table-id))
+                          (contains? (metabot.perms/row-restricted-table-ids #{table-id}) table-id))
+          fp (when-not restricted?
+               (or fingerprint (get-or-create-fingerprint! field)))]
       (build-field-statistics fvs fp limit))
     (build-field-statistics nil fingerprint limit)))
+
+(defn- field-metadata-output
+  "Build the `:field-metadata` tool result for `col` of `query`. Surfaces the column's portable
+  FK + join label (via `->result-column`) so a drilled-into field/dimension detail tells the LLM
+  exactly how to reference the column."
+  [query col field-id limit]
+  {:structured-output (merge {:result-type    :field-metadata
+                              :field_id       field-id
+                              :value_metadata (field-statistics col limit)}
+                             (select-keys (metabot.tools.u/->result-column query col)
+                                          [:portable_fk :table_reference]))})
+
+(defn- check-column-table-perms!
+  [col]
+  (let [field-id (:id col)
+        ;; A saved Card's result metadata can override :table-id while retaining a real Field ID.
+        ;; Always authorize physical Fields against their persisted owner; only virtual columns may
+        ;; fall back to the table carried by Lib metadata.
+        table-id (if (pos-int? field-id)
+                   (or (get (metabot.perms/field-id->table-id #{field-id}) field-id)
+                       (throw (ex-info (str "No field found with ID " field-id)
+                                       {:agent-error? true :status-code 404})))
+                   (:table-id col))]
+    (when (int? table-id)
+      (api/check-403
+       (contains? (if (= :source/implicitly-joinable (:lib/source col))
+                    (metabot.perms/queryable-table-ids #{table-id})
+                    (metabot.perms/data-accessible-table-ids #{table-id}))
+                  table-id))
+      (when-let [allowed (get (metabot.perms/sandbox-restricted-fields #{table-id}) table-id)]
+        (api/check-403 (contains? allowed field-id))))))
+
+(defn- check-curated-field-owner!
+  "Under [[shared/curated-only?]], require that the Field behind `col`, a result column of the card `card-id`, belongs
+  to a Table the card's definition reads or one FK hop from it. A card's result metadata can map a column to any
+  Field, so without this a curated model could serve, and fingerprint, a column of a table it never reads."
+  [card-id col]
+  (when (shared/curated-only?)
+    (let [field-id (:id col)
+          owner    (when (pos-int? field-id)
+                     (get (metabot.perms/field-id->table-id #{field-id}) field-id))]
+      (when (and owner (not (contains? (metabot.tools.u/card-definition-table-ids card-id) owner)))
+        (curation/not-curated! {:label (str "field " field-id)})))))
 
 (defn- table-field-stats
   [table-id field-id limit]
@@ -40,23 +99,28 @@
                                            {:agent-error? true :status-code 404})))
           visible-cols (lib/visible-columns query)
           col          (metabot.tools.u/find-column-by-field-id field-id visible-cols)]
-      {:structured-output {:result-type    :field-metadata
-                           :field_id       field-id
-                           :value_metadata (field-statistics col limit)}})
+      (check-column-table-perms! col)
+      (field-metadata-output query col field-id limit))
     (catch Exception ex
       (metabot.tools.u/handle-agent-error ex))))
 
 (defn- card-field-stats
   [card-id field-id limit card-type]
   (try
-    (let [query        (or (metabot.tools.u/card-query card-id)
+    (let [;; A curated-only read may see what a curated card exposes, its result columns and their FK neighbours,
+          ;; which is what `construct_notebook_query` lets a curated card cover (see
+          ;; `metabase.metabot.curation`). The definition of a question reads more: a verified `count` over a raw
+          ;; table would otherwise serve every column of that table.
+          query        (or (if (shared/curated-only?)
+                             (metabot.tools.u/card-results-query card-id)
+                             (metabot.tools.u/card-query card-id))
                            (throw (ex-info (str "No " card-type " found with ID " card-id)
                                            {:agent-error? true :status-code 404})))
           visible-cols (lib/visible-columns query)
           col          (metabot.tools.u/find-column-by-field-id field-id visible-cols)]
-      {:structured-output {:result-type    :field-metadata
-                           :field_id       field-id
-                           :value_metadata (field-statistics col limit)}})
+      (check-column-table-perms! col)
+      (check-curated-field-owner! card-id col)
+      (field-metadata-output query col field-id limit))
     (catch Exception ex
       (metabot.tools.u/handle-agent-error ex))))
 
@@ -68,9 +132,9 @@
                                               {:agent-error? true :status-code 404})))
           filterable-cols (lib/filterable-columns query)
           col             (metabot.tools.u/find-column-by-field-id field-id filterable-cols)]
-      {:structured-output {:result-type    :field-metadata
-                           :field_id       field-id
-                           :value_metadata (field-statistics col limit)}})
+      (check-column-table-perms! col)
+      (check-curated-field-owner! metric-id col)
+      (field-metadata-output query col field-id limit))
     (catch Exception ex
       (metabot.tools.u/handle-agent-error ex))))
 
@@ -80,4 +144,5 @@
   (case entity-type
     "metric"                      (metric-field-stats entity-id field-id limit)
     ("model" "report" "question") (card-field-stats entity-id field-id limit entity-type)
-    "table"                       (table-field-stats entity-id field-id limit)))
+    "table"                       (table-field-stats entity-id field-id limit)
+    {:output (str "Unknown data source type: " entity-type)}))

@@ -7,15 +7,19 @@ import { CollapseSection } from "metabase/common/components/CollapseSection";
 import CS from "metabase/css/core/index.css";
 import { ParametersList } from "metabase/parameters/components/ParametersList";
 import { getVisibleParameters } from "metabase/parameters/utils/ui";
-import type { DraftDashboardSubscription } from "metabase/redux/store";
-import { getPulseParameters } from "metabase/utils/pulse";
+import { getPulseParameters } from "metabase/pulse";
 import type { UiParameter } from "metabase-lib/v1/parameters/types";
 import { deriveFieldOperatorFromParameter } from "metabase-lib/v1/parameters/utils/operators";
 import {
   PULSE_PARAM_USE_DEFAULT,
   getDefaultValuePopulatedParameters,
 } from "metabase-lib/v1/parameters/utils/parameter-values";
-import type { Dashboard, Parameter, ParameterId } from "metabase-types/api";
+import type {
+  Dashboard,
+  DraftDashboardSubscription,
+  Parameter,
+  ParameterId,
+} from "metabase-types/api";
 
 import { getSortedParameters } from "./utils";
 

@@ -1,9 +1,12 @@
 import { t } from "ttag";
 
+import { DelayedSkeleton } from "metabase/common/components/DelayedLoading";
 import { EmptyState } from "metabase/common/components/EmptyState";
+import { EntityIcon } from "metabase/common/components/EntityIcon";
 import { LoadingAndErrorWrapper } from "metabase/common/components/LoadingAndErrorWrapper";
 import { VirtualizedList } from "metabase/common/components/VirtualizedList";
 import { NoObjectError } from "metabase/common/components/errors/NoObjectError";
+import { useGetIcon } from "metabase/hooks/use-icon";
 import { PLUGIN_LIBRARY, PLUGIN_MODERATION } from "metabase/plugins";
 import {
   Box,
@@ -14,15 +17,20 @@ import {
   SegmentedControl,
   Text,
 } from "metabase/ui";
-import { getIcon } from "metabase/utils/icon";
 
-import type { OmniPickerItem, OmniPickerTableItem, SearchScope } from "../..";
+import type {
+  OmniPickerItem,
+  OmniPickerMeasureItem,
+  OmniPickerTableItem,
+  SearchScope,
+} from "../..";
 import { useOmniPickerContext } from "../../context";
 import {
   useCurrentSearchScope,
   useGetLastCollection,
 } from "../../hooks/use-current-search-scope";
-import { getEntityPickerIcon, isSelectedItem } from "../../utils";
+import { getDataAppsRootItem } from "../../hooks/utils";
+import { isSelectedItem, useGetEntityPickerIcon } from "../../utils";
 
 export const SearchResults = ({
   searchResults,
@@ -38,11 +46,20 @@ export const SearchResults = ({
   const { path, setPath, isDisabledItem, isSelectableItem, options, onChange } =
     useOmniPickerContext();
   const selectedItem = path?.[path.length - 1];
+  const getEntityPickerIcon = useGetEntityPickerIcon();
 
-  if (isLoading || error) {
+  if (error) {
     return (
       <Box h="100%" w="40rem">
-        <LoadingAndErrorWrapper loading={isLoading} error={error} />
+        <LoadingAndErrorWrapper error={error} />
+      </Box>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <Box h="100%" w="40rem" p="lg">
+        <DelayedSkeleton />
       </Box>
     );
   }
@@ -59,7 +76,7 @@ export const SearchResults = ({
   return (
     <VirtualizedList
       Wrapper={({ children, ...props }) => (
-        <Box py="md" {...props}>
+        <Box py="lg" {...props}>
           {children}
         </Box>
       )}
@@ -72,7 +89,7 @@ export const SearchResults = ({
         return (
           <Box
             key={`${item.model}-${item.id}`}
-            pb="xs"
+            pb="xxs"
             px="sm"
             data-testid="result-item"
             data-model-type={item.model}
@@ -97,9 +114,9 @@ export const SearchResults = ({
               }
               active={isSelected}
               leftSection={
-                <Icon
+                <EntityIcon
                   {...getEntityPickerIcon(item, { isSelected })}
-                  size={16}
+                  size="1rem"
                 />
               }
               onClick={(e: React.MouseEvent) => {
@@ -118,7 +135,7 @@ export const SearchResults = ({
                   }
                 }
               }}
-              variant="default"
+              variant="primary"
             />
           </Box>
         );
@@ -134,6 +151,10 @@ const isTableInDb = (item: OmniPickerItem): item is OmniPickerTableItem => {
   );
 };
 
+const isMeasure = (item: OmniPickerItem): item is OmniPickerMeasureItem => {
+  return item.model === "measure";
+};
+
 const getItemText = (item: OmniPickerItem) => {
   const isTable = isTableInDb(item);
 
@@ -145,18 +166,32 @@ const getItemText = (item: OmniPickerItem) => {
     return "";
   }
 
+  if (item.model === "data-app") {
+    return getDataAppsRootItem().name;
+  }
+
+  if (isMeasure(item)) {
+    return item.table_display_name ?? item.table_name;
+  }
+
   return isTable
     ? `${item.database_name}${item.schema ? ` (${item.schema})` : ""}`
     : (item?.collection?.name ?? t`Our analytics`);
 };
 
-const getLocationIcon = (item: OmniPickerItem) => {
+const useLocationIcon = (item: OmniPickerItem) => {
+  const getIcon = useGetIcon();
+
   if (
     item.model === "table" ||
     item.model === "schema" ||
     item.model === "database"
   ) {
     return null;
+  }
+
+  if (isMeasure(item)) {
+    return { name: "table" as const };
   }
 
   return getIcon({
@@ -173,15 +208,14 @@ const LocationInfo = ({
   isSelected: boolean;
 }) => {
   const itemText = getItemText(item);
+  const iconProps = useLocationIcon(item);
 
   if (!itemText) {
     return null;
   }
 
-  const iconProps = getLocationIcon(item);
-
   return (
-    <Flex gap="xs" align="center">
+    <Flex gap="xxs" align="center">
       {iconProps && <Icon {...iconProps} size={12} />}
       <Text
         size="sm"
@@ -196,7 +230,7 @@ const LocationInfo = ({
 };
 
 export function SearchScopeSelector() {
-  const { setSearchScope } = useOmniPickerContext();
+  const { setSearchScope, options: pickerOptions } = useOmniPickerContext();
   const searchScope = useCurrentSearchScope();
 
   const { data: libraryCollection } = PLUGIN_LIBRARY.useGetLibraryCollection();
@@ -216,19 +250,24 @@ export function SearchScopeSelector() {
       : null,
   ].filter((i) => i !== null);
 
+  if (pickerOptions.disableSearchScope) {
+    return null;
+  }
+
   return (
     <Flex
       justify="space-between"
       align="center"
-      px="md"
+      px="lg"
       py="sm"
-      bg="background-secondary"
-      mb="xs"
+      bg="background_page-secondary"
+      mb="xxs"
       data-testid="search-scope-selector"
     >
       <Text>{t`Where to search:`}</Text>
       <SegmentedControl
         value={searchScope ? String(searchScope) : "all"}
+        // Unjustified type cast. FIXME
         onChange={(newValue) => setSearchScope(newValue as SearchScope)}
         data={options}
       />

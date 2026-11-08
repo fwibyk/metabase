@@ -1,7 +1,5 @@
 import type { ReactNode } from "react";
-import { useCallback } from "react";
-import type { Route } from "react-router";
-import { push } from "react-router-redux";
+import { useCallback, useState } from "react";
 import { t } from "ttag";
 
 import {
@@ -13,31 +11,32 @@ import {
   TabsContainer,
   ToolbarButtonsContainer,
 } from "metabase/admin/permissions/components/PermissionsPageLayout/PermissionsPageLayout.styled";
-import { getIsHelpReferenceOpen } from "metabase/admin/permissions/selectors/help-reference";
-import type { PermissionsGraphDiff } from "metabase/admin/permissions/types";
 import { ConfirmModal } from "metabase/common/components/ConfirmModal";
 import { LeaveRouteConfirmModal } from "metabase/common/components/LeaveConfirmModal";
-import { useToggle } from "metabase/common/hooks/use-toggle";
-import CS from "metabase/css/core/index.css";
-import { updateUserSetting } from "metabase/redux/settings";
-import type { IconName } from "metabase/ui";
+import { getPermissionsBasePath } from "metabase/common/components/PermissionsBasePath/base-path";
+import {
+  LegacyPermissionsModal,
+  type PermissionsGraphDiff,
+  ToolbarButton,
+  clearSaveError as clearPermissionsSaveError,
+  getIsHelpReferenceOpen,
+  isEmbeddingHubPermissions,
+  showRevisionChangedModal,
+  toggleHelpReference,
+} from "metabase/permissions";
+import { useDispatch, useSelector } from "metabase/redux";
+import { useNavigate } from "metabase/router";
+import { useUserSetting } from "metabase/settings";
 import {
   Group,
   Button as NewButton,
   Modal as NewModal,
   Text,
 } from "metabase/ui";
-import { useDispatch, useSelector } from "metabase/utils/redux";
-
-import {
-  clearSaveError as clearPermissionsSaveError,
-  toggleHelpReference,
-} from "../../permissions";
-import { showRevisionChangedModal } from "../../selectors/data-permissions/revision";
-import { LegacyPermissionsModal } from "../LegacyPermissionsModal/LegacyPermissionsModal";
-import { ToolbarButton } from "../ToolbarButton";
+import type { IconName } from "metabase-types/api";
 
 import { PermissionsEditBar } from "./PermissionsEditBar";
+import S from "./PermissionsPageLayout.module.css";
 import { PermissionsTabs } from "./PermissionsTabs";
 
 export type PermissionsPageTab =
@@ -57,10 +56,9 @@ type PermissionsPageLayoutProps = {
   saveError?: string;
   clearSaveError?: () => void;
   navigateToLocation?: (location: string) => void;
-  route: Route;
   navigateToTab?: (tab: string) => void;
   helpContent?: ReactNode;
-  showSplitPermsModal?: boolean;
+  canShowSplitPermsModal?: boolean;
 };
 
 const CloseSidebarButtonWithDefault = ({
@@ -78,21 +76,29 @@ export function PermissionsPageLayout({
   isDirty,
   onSave,
   onLoad,
-  route,
   helpContent,
-  showSplitPermsModal: _showSplitPermsModal = false,
+  canShowSplitPermsModal = false,
 }: PermissionsPageLayoutProps) {
-  const [showSplitPermsModal, { turnOff: disableSplitPermsModal }] =
-    useToggle(_showSplitPermsModal);
+  const [showModalSetting, setShowModalSetting] = useUserSetting(
+    "show-updated-permission-modal",
+    { shouldDebounce: false },
+  );
+  // Stops the split permissions modal from reopening after the user dismisses it once,
+  // even if the save fails
+  const [isSplitPermsModalDismissed, setIsSplitPermsModalDismissed] =
+    useState(false);
+  const showSplitPermsModal =
+    canShowSplitPermsModal && !!showModalSetting && !isSplitPermsModalDismissed;
 
   const saveError = useSelector((state) => state.admin.permissions.saveError);
   const showRefreshModal = useSelector(showRevisionChangedModal);
 
   const isHelpReferenceOpen = useSelector(getIsHelpReferenceOpen);
   const dispatch = useDispatch();
+  const navigate = useNavigate();
 
   const navigateToTab = (tab: PermissionsPageTab) =>
-    dispatch(push(`/admin/permissions/${tab}`));
+    navigate(`${getPermissionsBasePath()}/${tab}`);
 
   const clearSaveError = () => {
     dispatch(clearPermissionsSaveError());
@@ -103,10 +109,8 @@ export function PermissionsPageLayout({
   }, [dispatch]);
 
   const handleDimissSplitPermsModal = () => {
-    disableSplitPermsModal();
-    dispatch(
-      updateUserSetting({ key: "show-updated-permission-modal", value: false }),
-    );
+    setIsSplitPermsModalDismissed(true);
+    setShowModalSetting(false);
   };
 
   return (
@@ -121,7 +125,7 @@ export function PermissionsPageLayout({
           />
         )}
 
-        <LeaveRouteConfirmModal isEnabled={Boolean(isDirty)} route={route} />
+        <LeaveRouteConfirmModal isEnabled={Boolean(isDirty)} />
 
         <ConfirmModal
           opened={saveError != null}
@@ -130,13 +134,17 @@ export function PermissionsPageLayout({
           title={t`There was an error saving`}
           message={saveError}
           confirmButtonText={t`OK`}
-          confirmButtonProps={{ variant: "outline" }}
+          confirmButtonProps={{ variant: "default", color: "neutral" }}
           closeButtonText={null}
         />
 
-        <TabsContainer className={CS.borderBottom}>
+        <TabsContainer>
           <PermissionsTabs tab={tab} onChangeTab={navigateToTab} />
-          <ToolbarButtonsContainer>
+          <ToolbarButtonsContainer
+            className={
+              isEmbeddingHubPermissions() ? S.hubToolbarButtons : undefined
+            }
+          >
             {helpContent && !isHelpReferenceOpen && (
               <ToolbarButton
                 text={t`Permissions help`}

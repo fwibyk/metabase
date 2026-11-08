@@ -1,14 +1,11 @@
 import type { CyHttpMessages } from "cypress/types/net-stubbing";
 
 import {
-  entityPickerModal,
   miniPicker,
-  miniPickerBrowseAll,
   popover,
 } from "e2e/support/helpers/e2e-ui-elements-helpers";
 import type { NotebookStepType } from "metabase/querying/notebook/types";
-import type { IconName } from "metabase/ui";
-
+import type { IconName } from "metabase-types/api";
 export function notebookButton() {
   return cy
     .findByTestId("qb-header-action-panel")
@@ -186,40 +183,6 @@ export function joinTable(
     popover().findByText(lhsColumnName).click();
     popover().findByText(rhsColumnName).click();
   }
-}
-
-/**
- * Open a saved question and join it with another saved question.
- *
- * Depends on a `startNewQuestion()` helper to work properly!
- *
- * @todo Either decouple this dependency or use `startNewQuestion()` directly here.
- *
- * @example
- * startNewQuestion();
- * selectSavedQuestionsToJoin("Q1", "Q2");
- */
-export function selectSavedQuestionsToJoin(
-  firstQuestionName: string,
-  secondQuestionName: string,
-) {
-  cy.intercept("GET", "/api/table/*/query_metadata").as("joinedTableMetadata");
-  miniPickerBrowseAll().click();
-  entityPickerModal().within(() => {
-    cy.findByText("Our analytics").click();
-    cy.findByText(firstQuestionName).click();
-  });
-
-  cy.wait("@joinedTableMetadata");
-
-  // join to question b
-  cy.icon("join_left_outer").click();
-
-  miniPickerBrowseAll().click();
-  entityPickerModal().within(() => {
-    cy.findByText("Our analytics").click();
-    cy.findByText(secondQuestionName).click();
-  });
 }
 
 export function selectFilterOperator(operatorName: string) {

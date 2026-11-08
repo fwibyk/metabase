@@ -5,13 +5,14 @@ import _ from "underscore";
 import NoResults from "assets/img/metrics_bot.svg";
 import { skipToken } from "metabase/api";
 import { EmptyState } from "metabase/common/components/EmptyState";
+import { ExternalLink } from "metabase/common/components/ExternalLink";
 import { ForwardRefLink, Link } from "metabase/common/components/Link";
 import { DelayedLoadingAndErrorWrapper } from "metabase/common/components/LoadingAndErrorWrapper/DelayedLoadingAndErrorWrapper";
+import { trackMetricCreateStarted } from "metabase/common/data-studio/analytics";
 import { useDocsUrl } from "metabase/common/hooks";
-import { useFetchMetrics } from "metabase/common/hooks/use-fetch-metrics";
-import { trackMetricCreateStarted } from "metabase/data-studio/analytics";
+import { canUserCreateQueries } from "metabase/current-user";
 import { PLUGIN_CONTENT_VERIFICATION, PLUGIN_LIBRARY } from "metabase/plugins";
-import { canUserCreateQueries } from "metabase/selectors/user";
+import { useSelector } from "metabase/redux";
 import {
   ActionIcon,
   Box,
@@ -24,14 +25,14 @@ import {
   Title,
   Tooltip,
 } from "metabase/ui";
-import { useSelector } from "metabase/utils/redux";
-import * as Urls from "metabase/utils/urls";
+import * as Urls from "metabase/urls";
 
 import S from "../components/BrowseContainer.module.css";
 
 import { MetricsTable } from "./MetricsTable";
 import { trackNewMetricInitiated } from "./analytics";
 import type { MetricFilterSettings, MetricResult } from "./types";
+import { useFetchMetrics } from "./use-fetch-metrics";
 
 const {
   contentVerificationEnabled,
@@ -47,7 +48,7 @@ export function BrowseMetrics() {
   const isEmpty = !isLoading && !error && !metrics?.length;
   const titleId = useMemo(() => _.uniqueId("browse-metrics"), []);
 
-  const libraryMetricCollection =
+  const { data: libraryMetricCollection } =
     PLUGIN_LIBRARY.useGetLibraryChildCollectionByType({
       type: "library-metrics",
     });
@@ -67,7 +68,7 @@ export function BrowseMetrics() {
       flex={1}
       direction="column"
       wrap="nowrap"
-      pt="md"
+      pt="lg"
       aria-labelledby={titleId}
     >
       <Flex
@@ -84,13 +85,13 @@ export function BrowseMetrics() {
             justify="space-between"
             align="center"
           >
-            <Title order={2} c="text-primary" id={titleId}>
+            <Title order={1} c="text-primary" id={titleId}>
               <Group gap="sm">
                 <Icon size={24} c="icon-brand" name="metric" />
                 {t`Metrics`}
               </Group>
             </Title>
-            <Group gap="xs">
+            <Group gap="xxs">
               {canCreateMetric && (
                 <Tooltip label={t`Create a new metric`} position="bottom">
                   <ActionIcon
@@ -120,7 +121,7 @@ export function BrowseMetrics() {
       </Flex>
       <Flex className={S.browseMain} direction="column" wrap="nowrap" flex={1}>
         <Flex maw="64rem" mx="auto" w="100%">
-          <Stack mb="lg" gap="md" w="100%">
+          <Stack mb="xl" gap="lg" w="100%">
             {isEmpty ? (
               <MetricsEmptyState
                 canCreateMetric={canCreateMetric}
@@ -161,16 +162,16 @@ function MetricsEmptyState({
           title={t`Create Metrics to define the official way to calculate important numbers for your team`}
           message={
             <Box>
-              <Text mt="sm" maw="25rem">
+              <Text lh="1.25rem" mt="sm" maw="25rem">
                 {t`Metrics are like pre-defined calculations: create your aggregations once, save them as metrics, and use them whenever you need to analyze your data.`}
               </Text>
-              <Flex pt="md" align="center" justify="center" gap="md">
+              <Flex pt="lg" align="center" justify="center" gap="lg">
                 {showMetabaseLinks && (
-                  <Link
-                    target="_blank"
-                    to={metricsDocsLink}
-                    variant="brandBold"
-                  >{t`Read the docs`}</Link>
+                  <Button
+                    component={ExternalLink}
+                    href={metricsDocsLink}
+                    variant="subtle"
+                  >{t`Read the docs`}</Button>
                 )}
                 {canCreateMetric && (
                   <Button
@@ -241,6 +242,7 @@ function useFilteredMetrics(metricFilters: MetricFilterSettings) {
 
   const isLoading = hasVerifiedMetrics.isLoading || metricsResult.isLoading;
   const error = hasVerifiedMetrics.error || metricsResult.error;
+  // Unjustified type cast. FIXME
   const metrics = metricsResult.data?.data as MetricResult[] | undefined;
 
   return {

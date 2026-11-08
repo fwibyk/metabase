@@ -4,12 +4,14 @@
   "com.google.cloud"                 {:resource "apache2_0.txt"}
   "com.google.cloud.sql"             {:resource "apache2_0.txt"}
   "com.google.code.gson"             {:resource "apache2_0.txt"}
+  "com.github.jknack"                {:resource "apache2_0.txt"}
   "com.google.guava"                 {:resource "apache2_0.txt"}
   "com.google.http-client"           {:resource "apache2_0.txt"}
   "com.google.protobuf"              {:resource "apache2_0.txt"}
   "com.onelogin"                     {:resource "MIT.txt"}
   "com.vladsch.flexmark"             {:resource "BSD.txt"}
   "io.netty"                         {:resource "apache2_0.txt"}
+  "org.apache.datasketches"          {:resource "apache2_0.txt"}
   "org.apache.hadoop"                {:resource "apache2_0.txt"}
   "org.clojure"                      {:resource "EPL.txt"}
   "org.eclipse.jetty"                {:resource "apache2_0.txt"}
@@ -61,7 +63,6 @@
  "net.openhft"                 {"zero-allocation-hashing" {:resource "apache2_0.txt"}}
  "net.redhogs.cronparser"      {"cron-parser-core" {:resource "MIT.txt"}}
  "net.shibboleth.utilities"    {"java-support" {:resource "apache2_0.txt"}}
- "net.thisptr"                 {"jackson-jq" {:resource "apache2_0.txt"}}
  "org.antlr"                   {"antlr-runtime"  {:resource "BSD.txt"}
                                 "antlr4-runtime" {:resource "BSD.txt"}}
  "org.codehaus.mojo"           {"animal-sniffer-annotations" {:resource "MIT.txt"}}

@@ -1,5 +1,3 @@
-import { Route } from "react-router";
-
 import { setupEnterpriseOnlyPlugin } from "__support__/enterprise";
 import {
   setupCollectionsEndpoints,
@@ -10,16 +8,15 @@ import {
   setupUserKeyValueEndpoints,
 } from "__support__/server-mocks";
 import { mockSettings } from "__support__/settings";
+import { createMockState } from "__support__/state";
 import { renderWithProviders } from "__support__/ui";
-import { createMockState } from "metabase/redux/store/mocks";
+import { Route } from "metabase/router";
 import type {
   Collection,
   RemoteSyncEntity,
   TokenFeatures,
 } from "metabase-types/api";
 import {
-  createMockDirtyCardEntity,
-  createMockDirtyTransformEntity,
   createMockLibraryCollection,
   createMockSettings,
   createMockTokenFeatures,
@@ -50,13 +47,21 @@ const createRemoteSyncSettings = ({
 
 const setupRemoteSyncSettingsEndpoints = (
   settings: Partial<RemoteSyncSettings> = {},
-  tokenFeatures?: Partial<TokenFeatures>,
+  {
+    tokenFeatures,
+    transformsEnabled = false,
+    transformsSetupComplete = false,
+  }: Pick<
+    StoreStateOptions,
+    "tokenFeatures" | "transformsEnabled" | "transformsSetupComplete"
+  > = {},
 ) => {
-  const remoteSyncSettings = createRemoteSyncSettings(settings);
   setupPropertiesEndpoints(
-    createMockSettings({
-      ...remoteSyncSettings,
-      "token-features": createMockTokenFeatures(tokenFeatures),
+    createSettingsValues({
+      remoteSyncSettings: settings,
+      tokenFeatures,
+      transformsEnabled,
+      transformsSetupComplete,
     }),
   );
 };
@@ -98,29 +103,57 @@ const setupNavbarEndpoints = (isOpened = true) => {
 
 interface StoreStateOptions {
   isAdmin?: boolean;
+  canAccessTransforms?: boolean;
   remoteSyncSettings?: Partial<RemoteSyncSettings>;
   tokenFeatures?: Partial<TokenFeatures>;
+  transformsEnabled?: boolean;
+  transformsSetupComplete?: boolean;
 }
+
+const createSettingsValues = ({
+  remoteSyncSettings = {},
+  tokenFeatures,
+  transformsEnabled = false,
+  transformsSetupComplete = false,
+}: Pick<
+  StoreStateOptions,
+  | "remoteSyncSettings"
+  | "tokenFeatures"
+  | "transformsEnabled"
+  | "transformsSetupComplete"
+> = {}) =>
+  createMockSettings({
+    ...createRemoteSyncSettings(remoteSyncSettings),
+    "transforms-enabled": transformsEnabled,
+    "transforms-setup-complete": transformsSetupComplete,
+    "token-features": createMockTokenFeatures(tokenFeatures),
+  });
 
 const createStoreState = ({
   isAdmin = true,
+  canAccessTransforms = false,
   remoteSyncSettings = {},
   tokenFeatures,
+  transformsEnabled = false,
+  transformsSetupComplete = false,
 }: StoreStateOptions = {}) => {
-  const settings = createRemoteSyncSettings(remoteSyncSettings);
-
   return createMockState({
     currentUser: createMockUser({
       is_superuser: isAdmin,
       permissions: {
         can_access_data_model: isAdmin,
         can_access_db_details: false,
+        can_access_transforms: canAccessTransforms,
       },
     }),
-    settings: mockSettings({
-      ...settings,
-      "token-features": createMockTokenFeatures(tokenFeatures),
-    }),
+    settings: mockSettings(
+      createSettingsValues({
+        remoteSyncSettings,
+        tokenFeatures,
+        transformsEnabled,
+        transformsSetupComplete,
+      }),
+    ),
   });
 };
 
@@ -128,42 +161,33 @@ interface SetupOpts {
   remoteSyncEnabled?: boolean;
   remoteSyncBranch?: string | null;
   isAdmin?: boolean;
-  hasDirtyChanges?: boolean;
-  hasTransformDirtyChanges?: boolean;
+  canAccessTransforms?: boolean;
+  dirty?: RemoteSyncEntity[];
   remoteSyncTransforms?: boolean;
   isNavbarOpened?: boolean;
   enterprisePlugins?: Parameters<typeof setupEnterpriseOnlyPlugin>[0][];
   tokenFeatures?: Partial<TokenFeatures>;
+  transformsEnabled?: boolean;
+  transformsSetupComplete?: boolean;
 }
 
 export const setup = ({
   remoteSyncEnabled = true,
   remoteSyncBranch = null,
   isAdmin = true,
-  hasDirtyChanges = false,
-  hasTransformDirtyChanges = false,
+  canAccessTransforms = false,
+  dirty = [],
   remoteSyncTransforms = false,
   isNavbarOpened = true,
   enterprisePlugins,
   tokenFeatures,
+  transformsEnabled = false,
+  transformsSetupComplete = false,
 }: SetupOpts = {}) => {
-  // Build collections list
-  const collections: Collection[] = [];
-  if (hasDirtyChanges) {
-    collections.push(createMockLibraryCollection());
-  }
-  if (hasTransformDirtyChanges) {
-    collections.push(createMockTransformsCollection());
-  }
-
-  // Build dirty entities list
-  const dirty: RemoteSyncEntity[] = [];
-  if (hasDirtyChanges) {
-    dirty.push(createMockDirtyCardEntity());
-  }
-  if (hasTransformDirtyChanges) {
-    dirty.push(createMockDirtyTransformEntity());
-  }
+  const collections = [
+    createMockLibraryCollection(),
+    createMockTransformsCollection(),
+  ];
 
   const remoteSyncSettings: Partial<RemoteSyncSettings> = {
     enabled: remoteSyncEnabled,
@@ -173,49 +197,42 @@ export const setup = ({
   };
 
   setupSettingsEndpoints([]);
-  setupRemoteSyncSettingsEndpoints(remoteSyncSettings, tokenFeatures);
+  setupRemoteSyncSettingsEndpoints(remoteSyncSettings, {
+    tokenFeatures,
+    transformsEnabled,
+    transformsSetupComplete,
+  });
   setupDirtyEndpoints({ dirty, collections });
   setupNavbarEndpoints(isNavbarOpened);
   setupLibraryEndpoints(false);
+  setupUserKeyValueEndpoints({
+    namespace: "user_acknowledgement",
+    key: "upsell-remote-sync-dev-instance",
+    value: false,
+  });
 
   const state = createStoreState({
     isAdmin,
+    canAccessTransforms,
     remoteSyncSettings,
     tokenFeatures,
+    transformsEnabled,
+    transformsSetupComplete,
   });
 
   if (enterprisePlugins) {
     enterprisePlugins.forEach(setupEnterpriseOnlyPlugin);
   }
 
-  const hasUpsell = !remoteSyncEnabled;
-
-  if (hasUpsell) {
-    renderWithProviders(
-      <Route
-        path="/"
-        component={() => (
-          <DataStudioLayout>
-            <div data-testid="content">{"Content"}</div>
-          </DataStudioLayout>
-        )}
-      />,
-      {
-        storeInitialState: state,
-        withRouter: true,
-      },
-    );
-  } else {
-    renderWithProviders(
-      <DataStudioLayout>
-        <div data-testid="content">{"Content"}</div>
-      </DataStudioLayout>,
-      {
-        storeInitialState: state,
-        withRouter: false,
-      },
-    );
-  }
+  renderWithProviders(
+    <Route path="/" element={<DataStudioLayout />}>
+      <Route index element={<div data-testid="content">{"Content"}</div>} />
+    </Route>,
+    {
+      storeInitialState: state,
+      withRouter: true,
+    },
+  );
 };
 
 export const DEFAULT_EE_SETTINGS: Partial<SetupOpts> = {
@@ -230,5 +247,6 @@ export const DEFAULT_EE_SETTINGS: Partial<SetupOpts> = {
     advanced_permissions: true,
     library: true,
     dependencies: true,
+    "schema-viewer": true,
   },
 };

@@ -39,7 +39,9 @@ describe("RemoteSyncSettingsForm", () => {
       setup({ remoteSyncType: "read-only" });
 
       expect(screen.getByText("Branch to sync with")).toBeInTheDocument();
-      expect(screen.getByLabelText(/Sync branch/i)).toBeInTheDocument();
+      expect(
+        screen.getByRole("textbox", { name: "Sync branch" }),
+      ).toBeInTheDocument();
       expect(screen.getByLabelText(/Auto-sync with git/i)).toBeInTheDocument();
     });
 
@@ -94,7 +96,7 @@ describe("RemoteSyncSettingsForm", () => {
         screen.getByRole("heading", { name: "Branch to sync with" }),
       ).toBeInTheDocument();
       expect(
-        screen.getByRole("switch", { name: "Auto-sync with git" }),
+        screen.getByRole("switch", { name: /Auto-sync with git/ }),
       ).toBeInTheDocument();
     });
   });
@@ -224,50 +226,25 @@ describe("RemoteSyncSettingsForm", () => {
         expect(libraryToggle).toBeChecked();
       });
 
-      it("should respect existing sync state when remote sync is already enabled", async () => {
-        const libraryCollection = createMockLibraryCollection({
-          id: 999,
-          name: "Library",
-          is_remote_synced: false,
-        });
-
+      it("should allow enabling an unsynced library but not disabling it when remote sync is already enabled", async () => {
         setup({
           remoteSyncType: "read-write",
           remoteSyncEnabled: true,
           remoteSyncUrl: "https://github.com/test/repo.git",
           variant: "settings-modal",
-          libraryCollection,
+          libraryCollection: createMockLibraryCollection({
+            id: 999,
+            is_remote_synced: false,
+          }),
         });
 
-        await waitFor(() => {
-          expect(screen.getByText("Content to sync")).toBeInTheDocument();
-        });
-
-        const libraryToggle = screen.getByLabelText("Sync Library");
+        const libraryToggle = await screen.findByLabelText("Sync Library");
         expect(libraryToggle).not.toBeChecked();
-      });
-
-      it("should allow toggling library sync state", async () => {
-        const libraryCollection = createMockLibraryCollection({
-          id: 999,
-          name: "Library",
-        });
-
-        setup({
-          remoteSyncType: "read-write",
-          variant: "settings-modal",
-          libraryCollection,
-        });
-
-        await waitFor(() => {
-          expect(screen.getByText("Content to sync")).toBeInTheDocument();
-        });
-
-        const libraryToggle = screen.getByLabelText("Sync Library");
-        expect(libraryToggle).toBeChecked();
+        expect(libraryToggle).toBeEnabled();
 
         await userEvent.click(libraryToggle);
-        expect(libraryToggle).not.toBeChecked();
+        expect(libraryToggle).toBeChecked();
+        expect(libraryToggle).toBeDisabled();
       });
     });
 
@@ -277,6 +254,7 @@ describe("RemoteSyncSettingsForm", () => {
           remoteSyncType: "read-write",
           variant: "settings-modal",
           libraryCollection: null,
+          hasLibraryFeature: true,
         });
 
         await waitFor(() => {
@@ -293,6 +271,7 @@ describe("RemoteSyncSettingsForm", () => {
           remoteSyncEnabled: false,
           variant: "settings-modal",
           libraryCollection: null,
+          hasLibraryFeature: true,
         });
 
         await waitFor(() => {
@@ -303,22 +282,163 @@ describe("RemoteSyncSettingsForm", () => {
         expect(libraryToggle).toBeChecked();
       });
 
-      it("should allow toggling library sync state when library does not exist", async () => {
+      it("should keep library locked on when library does not exist", async () => {
         setup({
           remoteSyncType: "read-write",
           variant: "settings-modal",
           libraryCollection: null,
+          hasLibraryFeature: true,
+        });
+
+        const libraryToggle = await screen.findByLabelText("Sync Library");
+        expect(libraryToggle).toBeChecked();
+        expect(libraryToggle).toBeDisabled();
+      });
+
+      it("should sync an existing unsynced library and transforms when saving admin settings", async () => {
+        PLUGIN_TRANSFORMS.isEnabled = true;
+        setup({
+          remoteSyncType: "read-write",
+          remoteSyncEnabled: false,
+          remoteSyncTransforms: false,
+          libraryCollection: createMockLibraryCollection({
+            id: 777,
+            is_remote_synced: false,
+          }),
+          hasLibraryFeature: true,
+        });
+
+        await userEvent.type(
+          await screen.findByLabelText(/Repository URL/i),
+          "https://github.com/foo/bar.git",
+        );
+        await userEvent.click(
+          screen.getByRole("button", { name: /Set up remote sync/i }),
+        );
+
+        const puts = await findRequests("PUT");
+        const settingsRequest = puts.find((request) =>
+          request.url.includes("/api/ee/remote-sync/settings"),
+        );
+        expect(settingsRequest?.body).toMatchObject({
+          "remote-sync-transforms": true,
+          collections: { 777: true },
+        });
+        PLUGIN_TRANSFORMS.isEnabled = false;
+      });
+      it("should show library toggle in admin settings when library does not exist", async () => {
+        setup({
+          remoteSyncType: "read-write",
+          libraryCollection: null,
+          hasLibraryFeature: true,
+        });
+
+        expect(
+          await screen.findByLabelText("Sync Library"),
+        ).toBeInTheDocument();
+      });
+
+      it("should check existing library by default in admin settings during first-time setup", async () => {
+        setup({
+          remoteSyncType: "read-write",
+          remoteSyncEnabled: false,
+          libraryCollection: createMockLibraryCollection({
+            is_remote_synced: false,
+          }),
+          hasLibraryFeature: true,
+        });
+
+        expect(await screen.findByLabelText("Sync Library")).toBeChecked();
+      });
+
+      it("should check transforms by default in admin settings during first-time setup", async () => {
+        PLUGIN_TRANSFORMS.isEnabled = true;
+        setup({
+          remoteSyncType: "read-write",
+          remoteSyncEnabled: false,
+          libraryCollection: null,
+          hasLibraryFeature: true,
+        });
+
+        expect(await screen.findByLabelText("Sync Transforms")).toBeChecked();
+        PLUGIN_TRANSFORMS.isEnabled = false;
+      });
+
+      it("should neither create library nor change transforms sync when setting up read-only sync", async () => {
+        PLUGIN_TRANSFORMS.isEnabled = true;
+        setup({
+          remoteSyncType: "read-only",
+          remoteSyncEnabled: false,
+          libraryCollection: null,
+          hasLibraryFeature: true,
+        });
+
+        await userEvent.type(
+          screen.getByLabelText(/Repository URL/i),
+          "https://github.com/foo/bar.git",
+        );
+        await userEvent.click(
+          screen.getByRole("button", { name: /Set up remote sync/i }),
+        );
+
+        const puts = await findRequests("PUT");
+        const settingsRequest = puts.find((request) =>
+          request.url.includes("/api/ee/remote-sync/settings"),
+        );
+        expect(settingsRequest?.body).not.toHaveProperty(
+          "remote-sync-transforms",
+        );
+        const posts = await findRequests("POST");
+        expect(
+          posts.filter((request) => request.url.includes("/api/ee/library")),
+        ).toHaveLength(0);
+        PLUGIN_TRANSFORMS.isEnabled = false;
+      });
+
+      it("should not show library toggle without library feature", async () => {
+        setup({
+          remoteSyncType: "read-write",
+          variant: "settings-modal",
+          libraryCollection: null,
+          hasLibraryFeature: false,
         });
 
         await waitFor(() => {
           expect(screen.getByText("Content to sync")).toBeInTheDocument();
         });
 
-        const libraryToggle = screen.getByLabelText("Sync Library");
-        expect(libraryToggle).toBeChecked();
+        expect(screen.queryByLabelText("Sync Library")).not.toBeInTheDocument();
+      });
 
-        await userEvent.click(libraryToggle);
-        expect(libraryToggle).not.toBeChecked();
+      it("should create library and sync it when saving admin settings", async () => {
+        setup({
+          remoteSyncType: "read-write",
+          remoteSyncEnabled: false,
+          libraryCollection: null,
+          hasLibraryFeature: true,
+          createdLibraryCollection: createMockLibraryCollection({ id: 555 }),
+        });
+
+        expect(await screen.findByLabelText("Sync Library")).toBeChecked();
+        await userEvent.type(
+          screen.getByLabelText(/Repository URL/i),
+          "https://github.com/foo/bar.git",
+        );
+        await userEvent.click(
+          screen.getByRole("button", { name: /Set up remote sync/i }),
+        );
+
+        const posts = await findRequests("POST");
+        expect(
+          posts.filter((request) => request.url.includes("/api/ee/library")),
+        ).toHaveLength(1);
+        const puts = await findRequests("PUT");
+        const settingsRequest = puts.find((request) =>
+          request.url.includes("/api/ee/remote-sync/settings"),
+        );
+        expect(settingsRequest?.body).toMatchObject({
+          collections: { 555: true },
+        });
       });
     });
 
@@ -383,46 +503,25 @@ describe("RemoteSyncSettingsForm", () => {
         expect(transformsToggle).toBeChecked();
       });
 
-      it("should respect existing sync state when remote sync is already enabled", async () => {
+      it("should allow enabling transforms but not disabling them when remote sync is already enabled", async () => {
         PLUGIN_TRANSFORMS.isEnabled = true;
-        const libraryCollection = createMockLibraryCollection({ id: 999 });
-
         setup({
           remoteSyncType: "read-write",
           remoteSyncEnabled: true,
           remoteSyncUrl: "https://github.com/test/repo.git",
           remoteSyncTransforms: false,
           variant: "settings-modal",
-          libraryCollection,
+          libraryCollection: createMockLibraryCollection({ id: 999 }),
         });
 
-        await waitFor(() => {
-          expect(screen.getByText("Content to sync")).toBeInTheDocument();
-        });
-
-        const transformsToggle = screen.getByLabelText("Sync Transforms");
+        const transformsToggle =
+          await screen.findByLabelText("Sync Transforms");
         expect(transformsToggle).not.toBeChecked();
-      });
-
-      it("should allow toggling transforms sync state", async () => {
-        PLUGIN_TRANSFORMS.isEnabled = true;
-        const libraryCollection = createMockLibraryCollection({ id: 999 });
-
-        setup({
-          remoteSyncType: "read-write",
-          variant: "settings-modal",
-          libraryCollection,
-        });
-
-        await waitFor(() => {
-          expect(screen.getByText("Content to sync")).toBeInTheDocument();
-        });
-
-        const transformsToggle = screen.getByLabelText("Sync Transforms");
-        expect(transformsToggle).toBeChecked();
+        expect(transformsToggle).toBeEnabled();
 
         await userEvent.click(transformsToggle);
-        expect(transformsToggle).not.toBeChecked();
+        expect(transformsToggle).toBeChecked();
+        expect(transformsToggle).toBeDisabled();
       });
     });
   });
@@ -524,6 +623,97 @@ describe("RemoteSyncSettingsForm", () => {
           screen.queryByText(/Only HTTPS URLs are supported/),
         ).not.toBeInTheDocument();
       });
+    });
+  });
+
+  describe("test connection button", () => {
+    it("should be disabled when no URL is provided", async () => {
+      setup({
+        remoteSyncType: "read-only",
+        remoteSyncUrl: "",
+        remoteSyncEnabled: false,
+      });
+
+      expect(
+        screen.getByRole("button", { name: /Test connection/i }),
+      ).toBeDisabled();
+    });
+
+    it("should be enabled when a URL is provided", async () => {
+      setup({
+        remoteSyncType: "read-only",
+        remoteSyncUrl: "https://github.com/test/repo.git",
+        remoteSyncEnabled: true,
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /Test connection/i }),
+        ).toBeEnabled();
+      });
+    });
+
+    it("should POST only the URL and token to the test-connection endpoint", async () => {
+      setup({
+        remoteSyncType: "read-only",
+        remoteSyncUrl: "https://github.com/test/repo.git",
+        remoteSyncToken: "ghp_abc123",
+        remoteSyncBranch: "main",
+        remoteSyncEnabled: true,
+      });
+
+      const testButton = await screen.findByRole("button", {
+        name: /Test connection/i,
+      });
+      await waitFor(() => expect(testButton).toBeEnabled());
+      await userEvent.click(testButton);
+
+      await waitFor(async () => {
+        const posts = await findRequests("POST");
+        const testRequest = posts.find((r) =>
+          r.url.includes("/api/ee/remote-sync/test-connection"),
+        );
+        expect(testRequest).toBeDefined();
+        expect(testRequest?.body).toEqual({
+          "remote-sync-url": "https://github.com/test/repo.git",
+          "remote-sync-token": "ghp_abc123",
+        });
+      });
+    });
+
+    it("should show the connection error in the failure icon's tooltip", async () => {
+      setup({
+        remoteSyncType: "read-only",
+        remoteSyncUrl: "https://github.com/test/repo.git",
+        remoteSyncToken: "ghp_bad",
+        remoteSyncEnabled: true,
+        testConnectionError: {
+          status: 400,
+          message: "Authentication failed: Please check your git credentials",
+        },
+      });
+
+      const testButton = await screen.findByRole("button", {
+        name: /Test connection/i,
+      });
+      await waitFor(() => expect(testButton).toBeEnabled());
+      await userEvent.click(testButton);
+
+      await waitFor(async () => {
+        const posts = await findRequests("POST");
+        const testRequest = posts.find((r) =>
+          r.url.includes("/api/ee/remote-sync/test-connection"),
+        );
+        expect(testRequest).toBeDefined();
+      });
+
+      await userEvent.hover(await screen.findByLabelText("Connection failed"));
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(
+        "Authentication failed: Please check your git credentials",
+      );
+      expect(screen.getByLabelText(/Repository URL/i)).toHaveValue(
+        "https://github.com/test/repo.git",
+      );
     });
   });
 
@@ -637,6 +827,126 @@ describe("RemoteSyncSettingsForm", () => {
       expect(settingsRequest?.body).toHaveProperty("collections", {
         "20": true,
       });
+    });
+  });
+
+  describe("environment variable overrides", () => {
+    it("should disable both sync mode radio options and show env var description when remote-sync-type is set by env", async () => {
+      setup({
+        remoteSyncType: "read-write",
+        envSettings: ["remote-sync-type"],
+      });
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Read-only")).toBeDisabled();
+      });
+      expect(screen.getByLabelText("Read-write")).toBeDisabled();
+      expect(screen.getByText("Using MB_REMOTE_SYNC_TYPE")).toBeInTheDocument();
+    });
+
+    it("should not disable sync mode radio options when remote-sync-type is not set by env", async () => {
+      setup({
+        remoteSyncType: "read-write",
+      });
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Read-write")).toBeChecked();
+      });
+
+      expect(screen.getByLabelText("Read-only")).toBeEnabled();
+      expect(screen.getByLabelText("Read-write")).toBeEnabled();
+    });
+
+    it("should hide the disable button when remote-sync-enabled is set by env", async () => {
+      setup({
+        remoteSyncEnabled: true,
+        remoteSyncUrl: "https://github.com/test/repo.git",
+        remoteSyncType: "read-write",
+        envSettings: ["remote-sync-enabled"],
+      });
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Read-write")).toBeChecked();
+      });
+
+      expect(
+        screen.queryByRole("button", { name: /Disable remote sync/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should make URL and token fields read-only when set by env", async () => {
+      setup({
+        remoteSyncUrl: "https://github.com/test/repo.git",
+        remoteSyncToken: "ghp_abc123",
+        envSettings: ["remote-sync-url", "remote-sync-token"],
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText("Using MB_REMOTE_SYNC_URL"),
+        ).toBeInTheDocument();
+      });
+
+      expect(screen.getByLabelText(/Repository URL/i)).toHaveAttribute(
+        "readonly",
+      );
+      expect(
+        screen.getByText("Using MB_REMOTE_SYNC_TOKEN"),
+      ).toBeInTheDocument();
+    });
+
+    it("should make branch field read-only when remote-sync-branch is set by env", async () => {
+      setup({
+        remoteSyncType: "read-only",
+        remoteSyncBranch: "main",
+        envSettings: ["remote-sync-branch"],
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText("Using MB_REMOTE_SYNC_BRANCH"),
+        ).toBeInTheDocument();
+      });
+
+      expect(
+        screen.getByRole("textbox", { name: "Sync branch" }),
+      ).toHaveAttribute("readonly");
+    });
+  });
+
+  describe("DevInstanceUpsell", () => {
+    it("should show the upsell when not a dev instance and upsell has not been dismissed", async () => {
+      setup({ isDevInstance: false, upsellDismissed: false });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText("Need a dedicated development environment?"),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it("should not show the upsell when it has been dismissed", async () => {
+      setup({ isDevInstance: false, upsellDismissed: true });
+
+      await waitFor(() => {
+        expect(screen.getByText("Git settings")).toBeInTheDocument();
+      });
+
+      expect(
+        screen.queryByText("Need a dedicated development environment?"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should not show the upsell when it is a dev instance", async () => {
+      setup({ isDevInstance: true, upsellDismissed: false });
+
+      await waitFor(() => {
+        expect(screen.getByText("Git settings")).toBeInTheDocument();
+      });
+
+      expect(
+        screen.queryByText("Need a dedicated development environment?"),
+      ).not.toBeInTheDocument();
     });
   });
 

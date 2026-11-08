@@ -36,7 +36,7 @@ The group can view, edit, move, delete, and pin items saved in this collection, 
 
 ### View access
 
-The group can see all the questions, dashboards, and models in the collection, as well as [events and timelines](../exploration-and-organization/events-and-timelines.md).
+The group can see all the questions, dashboards, and models in the collection, as well as [events and timelines](../exploration-and-organization/events-and-timelines.md). Note: Curate access includes View access.
 
 ### No access
 
@@ -46,7 +46,9 @@ The group won't see this collection listed, and they'll lack access to any of th
 
 Collection permissions only apply to viewing and curating existing questions, models, and dashboards. Changing the query on an existing question, or creating a new question, requires that the group have [data permissions](./data.md) for the underlying data.
 
-There is one, important exception: when a group has their data permission set to [Block](./data.md#blocked-view-data-permission) for a database or table, the group won't be able to view questions based on that data, even if they have curate access to the collection where those questions are saved.
+View access to a collection includes access to the query definition of each item saved in it, including the SQL of native questions. If a group can view a question, they can see how that question was built, including through the [Metabase API](../api.html). This is true even if they lack [Create queries](./data.md#create-queries-permissions) permissions for the underlying data, and even if they can't run the query themselves. If you don't want a group to see a query, don't give them access to the collection where that query is saved.
+
+When a group has their data permission set to [Blocked](./data.md#blocked-view-data-permission) for a database or table, the group won't be able to view questions based on that data, even if they have curate access to the collection where those questions are saved. 
 
 ## Dashboards with questions from multiple collections
 
@@ -70,7 +72,15 @@ Just like with data access permissions, collection permissions are _additive_, m
 
 ## Permissions and sub-collections
 
-A group can be given access to a collection located somewhere within one or more sub-collections _without_ having to have access to every collection "above" it. For example, if a group had access to the "Super Secret Collection" that's saved several layers deep within a "Marketing" collection that the group lacks access to, the "Super Secret Collection" would show up at the top-most level that the group _does_ have access to.
+- Changing access to a collection doesn't automatically change access to _existing_ subcollections, but all _new_ subcollections will inherit the access level.
+
+  For example, let's say you have a `Campaigns` collection with a `2025 reports` subcollection, and you change the "Data team" group's access to `Campaigns` from "View" to "Curate". Then by default, Data team will get Curate access to `Campaigns` but will retain only "View" access to `2025 reports`. However, if after these permissions are configured, someone adds a new subcollection `2026 reports`, then Data team will get Curate access to "2026 reports" because new subcollections inherit permissions from the parent collection.
+
+- To change access for existing subcollections as well, toggle **Also change sub-collections** when changing collection access.
+
+- A group can be given access to a collection located somewhere within one or more sub-collections _without_ having to have access to every collection "above" it.
+
+  For example, if a group had access to the "Super Secret Collection" that's saved several layers deep within a "Marketing" collection that the group lacks access to, the "Super Secret Collection" would show up at the top-most level that the group _does_ have access to.
 
 ## Deleting collections
 
@@ -84,7 +94,7 @@ People in groups with Curate access to a collection can pin items in the collect
 
 To pin an item, select the **pin icon** next to the item's name.
 
-Note that collections themselves can't be pinned. If you're running on a [Pro or Enterprise plan](https://www.metabase.com/pricing/), admins can designate [Official Collections][official-collections].
+Note that collections themselves can't be pinned. If you're running on a [Pro or Enterprise plan](https://www.metabase.com/pricing), admins can designate [Official Collections][official-collections].
 
 ## Special collections
 
@@ -106,7 +116,9 @@ A personal collection works just like any other collection except that its permi
 
 ### Library collection
 
-See [Data Studio > Library](../data-studio/library.md)
+See [Permissions for the Library and its subcollections](../data-modeling/semantic-layer/library.md#library-permissions).
+
+Do not use collection permissions for **Library > Data** to control access to data in published tables. Use [Data permissions](data.md) instead.
 
 ### External collections
 

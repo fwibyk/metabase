@@ -208,7 +208,10 @@
 ;; Ein Nutzer kann sich die Rolle nicht selbst geben (der Claim ist signiert und stammt aus
 ;; Keycloak). Aber eine Keycloak-Rolle, die zufaellig so heisst, oder eine einmalige Fehlzuweisung
 ;; haette dauerhaft gewirkt. Rechte auf dieser Ebene gehoeren nicht an einen Rollennamen.
-(def ^:private gesperrte-gruppennamen #{"administrators" "all users"})
+;;
+;; Ab 0.65 kommen zwei weitere eingebaute Gruppen hinzu: "Data Analysts" (Aufnahme wirft in OSS 402,
+;; das Recht haengt am Kennzeichen `is_data_analyst`) und "All tenant users" (Mandanten, Enterprise).
+(def ^:private gesperrte-gruppennamen #{"administrators" "all users" "data analysts" "all tenant users"})
 
 (defn sync-groups!
   "Bringt die Metabase-Gruppen des Nutzers auf die Rollen aus dem Token.
@@ -297,13 +300,14 @@
   seiner Sitzung arbeiten — der Pruefpfad schreibt die Handlungen dann dem falschen Nutzer zu.
 
   Der unpraefixierte Name bleibt ausschliesslich fuer die lokale Entwicklung ohne TLS, wo der
-  Browser ein `__Secure-`-Cookie verwirft. `u/https?` wertet dafuer `X-Forwarded-Proto` aus — genau
-  die Kopfzeile, die der Proxy ueberschreibend setzt."
+  Browser ein `__Secure-`-Cookie verwirft. `u/https-state` wertet dafuer `X-Forwarded-Proto` aus — genau
+  die Kopfzeile, die der Proxy ueberschreibend setzt. `:unknown` (nur `Origin` deutet auf HTTPS) zaehlt
+  wie HTTPS: hier wird ein Schutz hinzugefuegt, nicht weggelassen (so empfiehlt es der Upstream)."
   [request]
   (let [mit-praefix (get-in request [:cookies sso-token-cookie-secure :value])]
     (cond
-      (not (str/blank? mit-praefix)) mit-praefix
-      (u/https? request)             nil
+      (not (str/blank? mit-praefix))                  mit-praefix
+      (#{:https :unknown} (u/https-state request))   nil
       :else                          (get-in request [:cookies sso-token-cookie-plain :value]))))
 
 (defn- clear-sso-token-cookie
@@ -332,7 +336,9 @@
     (t2/insert! :model/Session {:id          session-id
                                 :session_key session-key
                                 :user_id     user-id})
-    {:key  session-key
+    ;; Ab 0.65 prueft `set-session-cookies` gegen ::metabase.session.schema/session (geschlossen, `:id` Pflicht).
+    {:id   session-id
+     :key  session-key
      :type :normal}))
 
 ;;; ---- Handler --------------------------------------------------------------

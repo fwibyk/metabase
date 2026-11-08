@@ -1,6 +1,7 @@
 (ns metabase-enterprise.remote-sync.models.remote-sync-object-test
   "Unit tests for the remote-sync-object namespace.
   Tests the public methods: dirty? and dirty-objects."
+  {:clj-kondo/config '{:linters {:deprecated-var {:exclude {metabase.test.data/mbql-query {:namespaces [metabase-enterprise.remote-sync.models.remote-sync-object-test]}}}}}}
   (:require
    [clojure.test :refer :all]
    [metabase-enterprise.remote-sync.models.remote-sync-object :as rs-object]
@@ -331,7 +332,6 @@
     (testing "when no dirty items exist"
       (is (false? (rs-object/dirty?)))
       (is (empty? (rs-object/dirty-objects))))
-
     (testing "when dirty items exist"
       (mt/with-temp
         [:model/Collection collection {:name "Test Collection"
@@ -454,7 +454,7 @@
 (deftest dirty-objects-all-model-types-including-new-test
   (testing "dirty-objects handles all supported model types including Table, Field, and Segment"
     ;; Mock excluded-model-types to return empty set so all model types (including NativeQuerySnippet) are included
-    (with-redefs [spec/excluded-model-types (constantly #{})]
+    (mt/with-dynamic-fn-redefs [spec/excluded-model-types (constantly #{})]
       (mt/with-temp
         [:model/Collection collection {:name "Test Collection"
                                        :location "/"}
@@ -538,3 +538,21 @@
               models (set (map :model dirty-items))]
           (is (= 8 (count dirty-items)))
           (is (= #{"collection" "card" "dashboard" "document" "nativequerysnippet" "table" "field" "segment"} models)))))))
+
+(deftest dirty-objects-action-card-ids-test
+  (testing "dirty actions carry their model card, nil without a model, and no card id once deleted"
+    (mt/with-temp
+      [:model/Card             model       {:type :model :dataset_query (mt/native-query {:query "SELECT 1"})}
+       :model/Action           with-model  {:type :implicit :name "With model" :model_id (:id model)}
+       :model/Action           data-action {:type :query :name "Data action"}
+       :model/RemoteSyncObject _           {:model_type "Action" :model_id (:id with-model) :model_name "With model"
+                                            :status "create" :status_changed_at (java.time.OffsetDateTime/now)}
+       :model/RemoteSyncObject _           {:model_type "Action" :model_id (:id data-action) :model_name "Data action"
+                                            :status "create" :status_changed_at (java.time.OffsetDateTime/now)}
+       :model/RemoteSyncObject _           {:model_type "Action" :model_id Integer/MAX_VALUE :model_name "Deleted"
+                                            :status "delete" :status_changed_at (java.time.OffsetDateTime/now)}]
+      (let [by-name (into {} (map (juxt :name identity)) (rs-object/dirty-objects))]
+        (is (= (:id model) (:card_id (by-name "With model"))))
+        (is (=? {:card_id nil} (by-name "Data action")))
+        (is (contains? (by-name "Data action") :card_id))
+        (is (not (contains? (by-name "Deleted") :card_id)))))))

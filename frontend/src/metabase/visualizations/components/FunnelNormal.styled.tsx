@@ -1,6 +1,6 @@
-// eslint-disable-next-line no-restricted-imports
+// eslint-disable-next-line eslint-js/no-restricted-imports
 import { css } from "@emotion/react";
-// eslint-disable-next-line no-restricted-imports
+// eslint-disable-next-line eslint-js/no-restricted-imports
 import styled from "@emotion/styled";
 
 import { isWebkit } from "metabase/utils/browser";
@@ -18,7 +18,7 @@ interface FunnelStepProps {
 export const FunnelStep = styled.div<FunnelStepProps>`
   width: 100%;
   min-width: 20px;
-  border-right: 1px solid var(--mb-color-border);
+  border-right: 1px solid var(--mb-color-border-neutral);
   display: flex;
   flex-direction: column;
 

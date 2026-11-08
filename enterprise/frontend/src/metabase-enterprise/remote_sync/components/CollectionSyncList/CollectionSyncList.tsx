@@ -60,15 +60,20 @@ export const CollectionSyncList = ({
 
   const syncRows = useMemo(() => {
     const syncMap: CollectionSyncPreferences = values[COLLECTIONS_KEY] ?? {};
-    const rowsItems = collections.map((collection) => (
-      <CollectionSyncRow
-        key={collection.id}
-        collection={collection}
-        isChecked={syncMap[collection.id] ?? false}
-        onToggle={handleToggle}
-        isReadOnly={isReadOnly}
-      />
-    ));
+    const rowsItems = collections.map((collection) => {
+      const isChecked = syncMap[collection.id] ?? false;
+      return (
+        <CollectionSyncRow
+          key={collection.id}
+          collection={collection}
+          isChecked={isChecked}
+          onToggle={handleToggle}
+          isReadOnly={
+            isReadOnly || (collection.type === "library" && isChecked)
+          }
+        />
+      );
+    });
 
     if (showLibraryPlaceholder) {
       rowsItems.unshift(
@@ -107,14 +112,14 @@ export const CollectionSyncList = ({
 
   if (isLoading) {
     return (
-      <Flex justify="center" py="lg">
-        <Loader data-testid="loading-indicator" />
+      <Flex justify="center" py="xl">
+        <Loader />
       </Flex>
     );
   }
 
   if (error) {
-    return <Text c="error">{error}</Text>;
+    return <Text c="feedback-negative">{error}</Text>;
   }
 
   if (!syncRows.length) {

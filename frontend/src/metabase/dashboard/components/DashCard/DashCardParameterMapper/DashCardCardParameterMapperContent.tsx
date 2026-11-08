@@ -10,6 +10,7 @@ import {
   showVirtualDashCardInfoText,
 } from "metabase/dashboard/utils";
 import type { ParameterMappingOption } from "metabase/parameters/utils/mapping-options";
+import { useDispatch } from "metabase/redux";
 import {
   Box,
   Ellipsified,
@@ -24,7 +25,6 @@ import {
   isQuestionDashCard,
   isVirtualDashCard,
 } from "metabase/utils/dashboard";
-import { useDispatch } from "metabase/utils/redux";
 import type Question from "metabase-lib/v1/Question";
 import { isTemporalUnitParameter } from "metabase-lib/v1/parameters/utils/parameter-type";
 import type {
@@ -213,7 +213,7 @@ export const DashCardCardParameterMapperContent = ({
           <Ellipsified>{headerContent}</Ellipsified>
         </Title>
       )}
-      <Flex align="center" justify="center" gap="xs" pos="relative">
+      <Flex align="center" justify="center" gap="xxs" pos="relative">
         <DashCardCardParameterMapperButton
           key={editingParameter?.id}
           handleChangeTarget={handleChangeTarget}

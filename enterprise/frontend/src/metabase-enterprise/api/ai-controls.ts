@@ -1,8 +1,10 @@
 import type {
+  McpToolPermissionsResponse,
   MetabotGroupLimit,
   MetabotInstanceLimit,
   MetabotPermissionsResponse,
   MetabotTenantLimit,
+  UpdateMcpToolPermissionsRequest,
   UpdateMetabotPermissionsRequest,
 } from "metabase-types/api";
 
@@ -31,6 +33,72 @@ export const aiControlsApi = EnterpriseApi.injectEndpoints({
         body,
       }),
       invalidatesTags: [listTag("ai-controls-permissions")],
+    }),
+    enableAdvancedAIControlsPermissions: builder.mutation<void, void>({
+      query: () => ({
+        method: "POST",
+        url: "/api/ee/ai-controls/permissions/advanced",
+      }),
+      invalidatesTags: [listTag("ai-controls-permissions")],
+    }),
+    disableAdvancedAIControlsPermissions: builder.mutation<void, void>({
+      query: () => ({
+        method: "DELETE",
+        url: "/api/ee/ai-controls/permissions/advanced",
+      }),
+      invalidatesTags: [listTag("ai-controls-permissions")],
+    }),
+    getMcpToolPermissions: builder.query<McpToolPermissionsResponse, void>({
+      query: () => ({
+        method: "GET",
+        url: "/api/ee/ai-controls/mcp-permissions",
+      }),
+      providesTags: () => [listTag("ai-controls-mcp-permissions")],
+    }),
+    updateMcpToolPermissions: builder.mutation<
+      McpToolPermissionsResponse,
+      UpdateMcpToolPermissionsRequest
+    >({
+      query: (body) => ({
+        method: "PUT",
+        url: "/api/ee/ai-controls/mcp-permissions",
+        body,
+      }),
+      // The PUT answers with the GET body; a refetch would show the pre-save state first.
+      onQueryStarted: async (_body, { dispatch, queryFulfilled }) => {
+        try {
+          const { data } = await queryFulfilled;
+          dispatch(
+            aiControlsApi.util.updateQueryData(
+              "getMcpToolPermissions",
+              undefined,
+              () => data,
+            ),
+          );
+        } catch {
+          // the caller's unwrap() reports the failure
+        }
+      },
+    }),
+    enableAdvancedMcpToolPermissions: builder.mutation<
+      McpToolPermissionsResponse,
+      void
+    >({
+      query: () => ({
+        method: "POST",
+        url: "/api/ee/ai-controls/mcp-permissions/advanced",
+      }),
+      invalidatesTags: [listTag("ai-controls-mcp-permissions")],
+    }),
+    disableAdvancedMcpToolPermissions: builder.mutation<
+      McpToolPermissionsResponse,
+      void
+    >({
+      query: () => ({
+        method: "DELETE",
+        url: "/api/ee/ai-controls/mcp-permissions/advanced",
+      }),
+      invalidatesTags: [listTag("ai-controls-mcp-permissions")],
     }),
     getAIControlsInstanceLimit: builder.query<MetabotInstanceLimit, void>({
       query: () => ({
@@ -95,6 +163,12 @@ export const aiControlsApi = EnterpriseApi.injectEndpoints({
 export const {
   useGetAIControlsGroupPermissionsQuery,
   useUpdateAIControlsGroupPermissionsMutation,
+  useEnableAdvancedAIControlsPermissionsMutation,
+  useDisableAdvancedAIControlsPermissionsMutation,
+  useGetMcpToolPermissionsQuery,
+  useUpdateMcpToolPermissionsMutation,
+  useEnableAdvancedMcpToolPermissionsMutation,
+  useDisableAdvancedMcpToolPermissionsMutation,
   useGetAIControlsInstanceLimitQuery,
   useUpdateAIControlsInstanceLimitMutation,
   useGetAIControlsGroupLimitsQuery,

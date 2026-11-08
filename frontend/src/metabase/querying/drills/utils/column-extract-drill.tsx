@@ -1,7 +1,7 @@
 import { c } from "ttag";
 
+import { useDispatch } from "metabase/redux";
 import { setUIControls } from "metabase/redux/query-builder";
-import { useDispatch } from "metabase/utils/redux";
 import { ClickActionsView } from "metabase/visualizations/components/ClickActions";
 import type {
   ClickActionPopoverProps,
@@ -39,6 +39,7 @@ export const columnExtractDrill: Drill<Lib.ColumnExtractDrillThruInfo> = ({
     );
 
     function handleClick(action: RegularClickAction) {
+      // Unjustified type cast. FIXME
       const { extraction } = action.extra?.() as {
         extraction: Lib.ColumnExtraction;
       };

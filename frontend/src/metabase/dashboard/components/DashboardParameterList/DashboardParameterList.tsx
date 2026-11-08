@@ -1,5 +1,4 @@
-import cx from "classnames";
-import { type ComponentProps, forwardRef, useMemo } from "react";
+import { type ComponentProps, forwardRef } from "react";
 
 import {
   setEditingParameter,
@@ -7,12 +6,11 @@ import {
   setParameterValue,
   setParameterValueToDefault,
 } from "metabase/dashboard/actions";
-import { DASHBOARD_PARAMETERS_PDF_EXPORT_NODE_CLASSNAME } from "metabase/dashboard/constants";
 import { useDashboardContext } from "metabase/dashboard/context";
+import { useLinkedFilterParameters } from "metabase/dashboard/hooks";
 import { ParametersList } from "metabase/parameters/components/ParametersList";
-import { useDispatch } from "metabase/utils/redux";
+import { useDispatch } from "metabase/redux";
 import type { UiParameter } from "metabase-lib/v1/parameters/types";
-import { getValuePopulatedParameters } from "metabase-lib/v1/parameters/utils/parameter-values";
 
 export interface DashboardParameterListProps extends Pick<
   ComponentProps<typeof ParametersList>,
@@ -49,23 +47,13 @@ export const DashboardParameterList = forwardRef<
     isEditing,
     dashboard,
     hideParameters,
-    parameters: dashboardParameters,
-    parameterValues,
   } = useDashboardContext();
-
-  const linkedFilterParameters = useMemo(
-    () =>
-      getValuePopulatedParameters({
-        parameters: dashboardParameters,
-        values: parameterValues,
-      }),
-    [dashboardParameters, parameterValues],
-  );
+  const linkedFilterParameters = useLinkedFilterParameters();
 
   return (
     <ParametersList
       ref={ref}
-      className={cx(DASHBOARD_PARAMETERS_PDF_EXPORT_NODE_CLASSNAME, className)}
+      className={className}
       parameters={parameters}
       linkedFilterParameters={linkedFilterParameters}
       editingParameter={editingParameter}

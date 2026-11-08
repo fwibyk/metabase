@@ -1,45 +1,74 @@
 import _ from "underscore";
 
-import { invalidateNotificationsApiCache, revisionApi } from "metabase/api";
-import { Databases } from "metabase/entities/databases";
-import { updateModelIndexes } from "metabase/entities/model-indexes/actions";
-import { Questions } from "metabase/entities/questions";
-import { loadMetadataForCard } from "metabase/questions/actions";
-import { openUrl } from "metabase/redux/app";
 import {
-  API_UPDATE_QUESTION,
+  cardApi,
+  databaseApi,
+  invalidateNotificationsApiCache,
+  revisionApi,
+  timelineApi,
+} from "metabase/api";
+import { listTag } from "metabase/api/tags";
+import { runRtkEndpoint } from "metabase/api/utils/run-rtk-endpoint";
+import {
+  cardIsEquivalent,
+  cardQueryIsEquivalent,
+} from "metabase/common/utils/card";
+import {
+  getShallowDatabases,
+  selectQuestionFromCard,
+} from "metabase/metadata-store";
+import { loadMetadataForCard } from "metabase/questions/actions";
+import { createThunkAction } from "metabase/redux";
+import { openUrl } from "metabase/redux/app";
+import { createQuestionCard, updateQuestionCard } from "metabase/redux/cards";
+import {
   REVERT_CARD_TO_REVISION,
+  questionUpdated,
+} from "metabase/redux/query-builder";
+import type { Dispatch, GetState } from "metabase/redux/store";
+import {
+  LIST_TIMELINES_REQUEST,
+  getTransformedTimelines,
+  selectListTimelines,
+} from "metabase/timelines/panel/selectors";
+import * as Urls from "metabase/urls";
+import { clone } from "metabase/utils/clone";
+import { isNotNull } from "metabase/utils/types";
+import {
+  getCollectionTimelinesVisibility,
+  getRecordedTimelineEventsVisibility,
+} from "metabase/visualizations/lib/timeline-events-visibility";
+import {
+  canDisplayTimelineEvents,
+  getCardAfterVisualizationClick,
+  getRegisteredDefaultSize,
+} from "metabase/viz-core";
+import * as Lib from "metabase-lib";
+import Question from "metabase-lib/v1/Question";
+import { isAdHocModelOrMetricQuestion } from "metabase-lib/v1/metadata/utils/models";
+import NativeQuery from "metabase-lib/v1/queries/NativeQuery";
+import type {
+  Card,
+  CardId,
+  DashboardTabId,
+  DatasetQuery,
+} from "metabase-types/api";
+
+import {
+  trackNewQuestionSaved,
+  trackQuestionTimelineEventsSaved,
+} from "../../analytics";
+import { updateModelIndexes } from "../../model-indexes/actions";
+import {
+  API_CREATE_QUESTION,
+  RELOAD_CARD,
+  SET_CARD_AND_RUN,
   SOFT_RELOAD_CARD,
   clearQueryResult,
   onCloseSidebars,
   resetQB,
   setParameterValue,
-} from "metabase/redux/query-builder";
-import type { Dispatch, GetState } from "metabase/redux/store";
-import { getMetadata } from "metabase/selectors/metadata";
-import { clone } from "metabase/utils/clone";
-import { shouldOpenInBlankWindow } from "metabase/utils/dom";
-import { entityCompatibleQuery } from "metabase/utils/entities";
-import { createThunkAction } from "metabase/utils/redux";
-import { isNotNull } from "metabase/utils/types";
-import * as Urls from "metabase/utils/urls";
-import { getCardAfterVisualizationClick } from "metabase/visualizations/lib/utils";
-import * as Lib from "metabase-lib";
-import Question from "metabase-lib/v1/Question";
-import { isAdHocModelOrMetricQuestion } from "metabase-lib/v1/metadata/utils/models";
-import NativeQuery from "metabase-lib/v1/queries/NativeQuery";
-import {
-  cardIsEquivalent,
-  cardQueryIsEquivalent,
-} from "metabase-lib/v1/queries/utils/card";
-import type {
-  Card,
-  DashboardTabId,
-  Database,
-  DatasetQuery,
-} from "metabase-types/api";
-
-import { trackNewQuestionSaved } from "../../analytics";
+} from "../../store/actions";
 import {
   getCard,
   getIsResultDirty,
@@ -49,7 +78,8 @@ import {
   getQuestion,
   getSubmittableQuestion,
   isBasedOnExistingQuestion,
-} from "../../selectors";
+} from "../../store/selectors";
+import { isLegacyTimelineEventsSource } from "../../utils/timeline-events";
 import { runDirtyQuestionQuery, runQuestionQuery } from "../querying";
 import { updateUrl } from "../url";
 import { zoomInRow } from "../zoom";
@@ -62,15 +92,14 @@ export const softReloadCard = createThunkAction(SOFT_RELOAD_CARD, () => {
   return async (dispatch, getState) => {
     const outdatedCard = getCard(getState());
 
-    const action = await dispatch(
-      Questions.actions.fetch({ id: outdatedCard?.id }, { reload: true }),
+    return runRtkEndpoint(
+      { id: outdatedCard?.id },
+      dispatch,
+      cardApi.endpoints.getCard,
     );
-
-    return Questions.HACK_getObjectFromAction(action);
   };
 });
 
-export const RELOAD_CARD = "metabase/qb/RELOAD_CARD";
 export const reloadCard = createThunkAction(RELOAD_CARD, () => {
   return async (dispatch, getState) => {
     const outdatedQuestion = getQuestion(getState());
@@ -81,10 +110,11 @@ export const reloadCard = createThunkAction(RELOAD_CARD, () => {
       return;
     }
 
-    const action = await dispatch(
-      Questions.actions.fetch({ id: outdatedQuestion.id() }, { reload: true }),
+    const card = await runRtkEndpoint(
+      { id: outdatedQuestion.id() },
+      dispatch,
+      cardApi.endpoints.getCard,
     );
-    const card = Questions.HACK_getObjectFromAction(action);
 
     dispatch(loadMetadataForCard(card));
 
@@ -101,7 +131,6 @@ export const reloadCard = createThunkAction(RELOAD_CARD, () => {
  *     - clicking in the entity details view
  *     - `navigateToNewCardInsideQB` is being called (see below)
  */
-export const SET_CARD_AND_RUN = "metabase/qb/SET_CARD_AND_RUN";
 export const setCardAndRun = (
   nextCard: Card,
   { shouldUpdateUrl = true } = {},
@@ -173,7 +202,7 @@ export const navigateToNewCardInsideQB = createThunkAction(
           previousCard,
         );
         const url = Urls.serializedQuestion(cardAfterClick);
-        if (shouldOpenInBlankWindow(url, { blankOnMetaOrCtrlKey: true })) {
+        if (Urls.shouldOpenInBlankWindow(url, { blankOnMetaOrCtrlKey: true })) {
           dispatch(openUrl(url));
         } else {
           dispatch(onCloseSidebars());
@@ -213,15 +242,59 @@ export const setDatasetQuery =
     dispatch(updateQuestion(question.setDatasetQuery(datasetQuery)));
   };
 
-type OnCreateOptions = { dashboardTabId?: DashboardTabId | undefined };
+export type OnCreateOptions = {
+  dashboardTabId?: DashboardTabId | undefined;
+  sourceCardId?: CardId | undefined;
+  sourceQuestion?: Question | undefined;
+};
 
-export const API_CREATE_QUESTION = "metabase/qb/API_CREATE_QUESTION";
+// Record the displayed selection so the saved question shows the same events on a dashboard.
+const needsTimelineEventsRecording = (question: Question) =>
+  getRecordedTimelineEventsVisibility(question.settings()) == null &&
+  canDisplayTimelineEvents(question.display());
+
+const recordCollectionTimelineEvents = async (
+  question: Question,
+  dispatch: Dispatch,
+  getState: GetState,
+) => {
+  await dispatch(
+    timelineApi.endpoints.listTimelines.initiate(LIST_TIMELINES_REQUEST, {
+      forceRefetch: false,
+      subscribe: false,
+    }),
+  );
+  // Record an empty collection too, only a failed request leaves the selection unrecorded.
+  return selectListTimelines(getState()).isSuccess
+    ? question.updateSettings(
+        getCollectionTimelinesVisibility(
+          getTransformedTimelines(getState()),
+          question.collectionId(),
+        ),
+      )
+    : question;
+};
+
 export const apiCreateQuestion = (
   question: Question,
   options?: OnCreateOptions,
 ) => {
   return async (dispatch: Dispatch, getState: GetState) => {
     let submittableQuestion = getSubmittableQuestion(getState(), question);
+    if (needsTimelineEventsRecording(submittableQuestion)) {
+      submittableQuestion = isLegacyTimelineEventsSource(
+        options?.sourceQuestion ?? submittableQuestion,
+      )
+        ? submittableQuestion.updateSettings({
+            "timeline.selected_timeline_ids": [],
+            "timeline.excluded_timeline_event_ids": [],
+          })
+        : await recordCollectionTimelineEvents(
+            submittableQuestion,
+            dispatch,
+            getState,
+          );
+    }
     // Saving models with list view setting as a question in not allowed for now,
     // so we change it back to table.
     if (
@@ -236,9 +309,9 @@ export const apiCreateQuestion = (
       options,
     );
 
-    const databases: Database[] = Databases.selectors.getList(getState());
-    if (databases && !databases.some((d) => d.is_saved_questions)) {
-      dispatch({ type: Databases.actionTypes.INVALIDATE_LISTS_ACTION });
+    const databases = Object.values(getShallowDatabases(getState()));
+    if (!databases.some((database) => database.is_saved_questions)) {
+      dispatch(databaseApi.util.invalidateTags([listTag("database")]));
     }
 
     trackNewQuestionSaved(
@@ -246,6 +319,7 @@ export const apiCreateQuestion = (
       createdQuestion,
       isBasedOnExistingQuestion(getState()),
     );
+    trackQuestionTimelineEventsSaved(createdQuestion);
 
     // Saving a card, locks in the current display as though it had been
     // selected in the UI.
@@ -253,9 +327,9 @@ export const apiCreateQuestion = (
     dispatch({ type: API_CREATE_QUESTION, payload: createdCard });
 
     await dispatch(loadMetadataForCard(createdCard));
-    const createdQuestionWithMetadata = new Question(
+    const createdQuestionWithMetadata = selectQuestionFromCard(
+      getState(),
       createdCard,
-      getMetadata(getState()),
     );
 
     const isModel = question.type() === "model";
@@ -275,7 +349,6 @@ export const apiCreateQuestion = (
   };
 };
 
-export { API_UPDATE_QUESTION };
 export const apiUpdateQuestion = (
   question: Question,
   { rerunQuery }: { rerunQuery?: boolean } = {},
@@ -294,7 +367,17 @@ export const apiUpdateQuestion = (
       rerunQuery = rerunQuery ?? isResultDirty ?? false;
     }
 
-    const submittableQuestion = getSubmittableQuestion(getState(), question);
+    let submittableQuestion = getSubmittableQuestion(getState(), question);
+    if (
+      needsTimelineEventsRecording(submittableQuestion) &&
+      !isLegacyTimelineEventsSource(originalQuestion)
+    ) {
+      submittableQuestion = await recordCollectionTimelineEvents(
+        submittableQuestion,
+        dispatch,
+        getState,
+      );
+    }
 
     // When viewing a dataset, its dataset_query is swapped with a clean query using the dataset as a source table
     // (it's necessary for datasets to behave like tables opened in simple mode)
@@ -311,14 +394,13 @@ export const apiUpdateQuestion = (
       },
     );
 
+    trackQuestionTimelineEventsSaved(updatedQuestion, originalQuestion);
+
     // invalidate question notifications
     // (some of the old alerts might be removed during update)
     dispatch(invalidateNotificationsApiCache());
 
-    await dispatch({
-      type: API_UPDATE_QUESTION,
-      payload: updatedQuestion.card(),
-    });
+    await dispatch(questionUpdated(updatedQuestion.card()));
 
     if (isModel) {
       // this needs to happen after the question update completes in case we have changed the type
@@ -354,7 +436,7 @@ export const revertToRevision = createThunkAction(
   REVERT_CARD_TO_REVISION,
   (cardId, revision) => {
     return async (dispatch) => {
-      await entityCompatibleQuery(
+      await runRtkEndpoint(
         {
           id: cardId,
           entity: "card",
@@ -375,13 +457,18 @@ async function reduxCreateQuestion(
   dispatch: Dispatch,
   options?: OnCreateOptions,
 ) {
-  const action = await dispatch(
-    Questions.actions.create({
+  const display = question.display();
+  const size = getRegisteredDefaultSize(display);
+  // Unjustified type cast. FIXME
+  const card = (await dispatch(
+    createQuestionCard({
       ...question.card(),
       dashboard_tab_id: options?.dashboardTabId,
+      source_card_id: options?.sourceCardId,
+      ...(size && { size: { size_x: size.width, size_y: size.height } }),
     }),
-  );
-  return question.setCard(Questions.HACK_getObjectFromAction(action));
+  )) as Card;
+  return question.setCard(card);
 }
 
 async function reduxUpdateQuestion(
@@ -398,8 +485,9 @@ async function reduxUpdateQuestion(
 
   const card = _.omit(fullCard, ...keysToOmit);
 
-  const action = await dispatch(
-    Questions.actions.update({ id: question.id() }, card),
-  );
-  return question.setCard(Questions.HACK_getObjectFromAction(action));
+  // Unjustified type cast. FIXME
+  const updatedCard = (await dispatch(
+    updateQuestionCard({ id: question.id(), ...card }),
+  )) as Card;
+  return question.setCard(updatedCard);
 }

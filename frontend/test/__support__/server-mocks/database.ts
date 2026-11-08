@@ -1,9 +1,16 @@
 import fetchMock from "fetch-mock";
 import _ from "underscore";
 
+import { shouldSchemaBePassedAsQueryParam } from "metabase/api";
 import { SAVED_QUESTIONS_DATABASE } from "metabase/databases/constants";
 import { isTypePK } from "metabase-lib/v1/types/utils/isa";
-import type { Database, DatabaseUsageInfo } from "metabase-types/api";
+import type {
+  Database,
+  DatabaseId,
+  DatabaseUsageInfo,
+  Engine,
+  SchemaName,
+} from "metabase-types/api";
 
 import { PERMISSION_ERROR } from "./constants";
 import { setupTableEndpoints } from "./table";
@@ -31,10 +38,44 @@ export function setupDatabaseEndpoints(db: Database) {
   setupSchemaEndpoints(db);
   setupDatabaseIdFieldsEndpoints({ database: db });
   db.tables?.forEach((table) => setupTableEndpoints({ ...table, db }));
+  setupUpdateDatabaseEndpoint(db);
+}
 
+export function setupUpdateDatabaseEndpoint(db: Database) {
   fetchMock.put(`path:/api/database/${db.id}`, async (call) => {
     const body = await call?.request?.json();
     return { ...db, ...body };
+  });
+}
+
+export function setupUpdateDatabaseEndpointError(databaseId: Database["id"]) {
+  fetchMock.put(`path:/api/database/${databaseId}`, { status: 500 });
+}
+
+export function setupDatabaseNotFoundEndpoint(databaseId: DatabaseId) {
+  fetchMock.get(`path:/api/database/${databaseId}`, {
+    status: 404,
+    body: "Not found.",
+  });
+}
+
+export function setupCreateDatabaseEndpointError({
+  status,
+  body,
+}: {
+  status: number;
+  body: string | Record<string, unknown>;
+}) {
+  fetchMock.post(
+    "path:/api/database",
+    { status, body },
+    { name: "create-database" },
+  );
+}
+
+export function setupDatabaseHealthcheckEndpoint(databaseId: Database["id"]) {
+  fetchMock.get(`path:/api/database/${databaseId}/healthcheck`, {
+    body: { status: "ok" },
   });
 }
 
@@ -45,10 +86,28 @@ export function setupDatabaseUsageInfoEndpoint(
   fetchMock.get(`path:/api/database/${db.id}/usage_info`, usageInfo);
 }
 
+export function setupEnginesEndpoint(engines: Record<string, Engine>) {
+  fetchMock.get("path:/api/setting/engines", engines);
+}
+
 export function setupDatabaseListEndpoint(databases: Database[]) {
   fetchMock.get(
     "path:/api/database",
     { data: databases, total: databases.length },
+    { name: "database-list" },
+  );
+}
+
+export function setupDatabaseListEndpointError({
+  status,
+  body,
+}: {
+  status: number;
+  body: Record<string, unknown>;
+}) {
+  fetchMock.get(
+    "path:/api/database",
+    { status, body },
     { name: "database-list" },
   );
 }
@@ -89,12 +148,23 @@ export const setupSchemaEndpoints = (db: Database) => {
   fetchMock.get(`path:/api/database/${db.id}/syncable_schemas`, schemaNames);
 
   schemaNames.forEach((schema) => {
-    fetchMock.get(
-      `path:/api/database/${db.id}/schema/${encodeURIComponent(schema)}`,
-      schemas[schema],
-      { name: `database-${db.id}-schema-${schema}` },
-    );
+    const isQueryParam = shouldSchemaBePassedAsQueryParam(schema);
+    fetchMock.get({
+      url: isQueryParam
+        ? `path:/api/database/${db.id}/schema/`
+        : `path:/api/database/${db.id}/schema/${encodeURIComponent(schema)}`,
+      ...(isQueryParam && { query: { schema } }),
+      response: schemas[schema],
+      name: `database-${db.id}-schema-${schema}`,
+    });
   });
+};
+
+export const setupListDatabaseSchemasEndpoint = (
+  databaseId: DatabaseId,
+  schemaNames: SchemaName[],
+) => {
+  fetchMock.get(`path:/api/database/${databaseId}/schemas`, schemaNames);
 };
 
 export function setupDatabaseIdFieldsEndpoints({

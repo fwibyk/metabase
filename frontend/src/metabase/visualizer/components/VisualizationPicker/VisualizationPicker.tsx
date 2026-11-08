@@ -1,12 +1,11 @@
 import { useMemo } from "react";
 
-import { Center, Icon, SegmentedControl } from "metabase/ui";
-import visualizations from "metabase/visualizations";
+import { EntityIcon } from "metabase/common/components/EntityIcon";
+import { SegmentedControl } from "metabase/ui";
+import { visualizations } from "metabase/viz-core";
 import type { VisualizationDisplay } from "metabase-types/api";
 
 import { trackVisualizerDataChanged } from "../analytics";
-
-import S from "./VisualizationPicker.module.css";
 
 interface VisualizationPickerProps {
   value: VisualizationDisplay | null;
@@ -24,38 +23,30 @@ export function VisualizationPicker({
           label: viz.getUiName(),
           value: vizType,
           icon: viz.iconName,
+          iconUrl: viz.iconUrl,
         };
       });
   }, []);
 
-  const selectedOption = useMemo(
-    () => options.find((option) => option.value === value),
-    [value, options],
-  );
-
   return (
     <>
       <SegmentedControl
-        classNames={{
-          label: S.SegmentedControlLabel,
-        }}
-        value={selectedOption?.value}
-        data={options.map((o, i) => ({
+        value={value ?? undefined}
+        data={options.map((o) => ({
           value: o.value,
-          label: (
-            <Center
-              key={i}
-              onClick={() => {
-                trackVisualizerDataChanged("visualizer_viz_type_changed");
-
-                onChange(o.value);
-              }}
-              p="sm"
-            >
-              <Icon data-testid={o.value} name={o.icon} />
-            </Center>
+          ariaLabel: o.label,
+          icon: (
+            <EntityIcon
+              data-testid={o.value}
+              name={o.icon}
+              iconUrl={o.iconUrl}
+            />
           ),
         }))}
+        onChange={(vizType) => {
+          trackVisualizerDataChanged("visualizer_viz_type_changed");
+          onChange(vizType);
+        }}
         data-testid="viz-picker-main"
       />
     </>

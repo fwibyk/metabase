@@ -1,5 +1,6 @@
 import { t } from "ttag";
 
+import upsellWhitelabelImage from "assets/img/upsell-whitelabel.png?url";
 import { ExternalLink } from "metabase/common/components/ExternalLink";
 import { UpsellBigCard } from "metabase/common/components/upsells/components";
 import S from "metabase/common/components/upsells/components/Upsells.module.css";
@@ -7,8 +8,8 @@ import { useUpsellLink } from "metabase/common/components/upsells/components/use
 import { UPGRADE_URL } from "metabase/common/components/upsells/constants";
 import { useHasTokenFeature } from "metabase/common/hooks";
 import { PLUGIN_ADMIN_SETTINGS } from "metabase/plugins";
+import { useSelector } from "metabase/redux";
 import { getDocsUrl } from "metabase/selectors/settings";
-import { useSelector } from "metabase/utils/redux";
 
 export const UpsellWhitelabel = ({ source }: { source: string }) => {
   const isWhitelabeled = useHasTokenFeature("whitelabel");
@@ -43,7 +44,7 @@ export const UpsellWhitelabel = ({ source }: { source: string }) => {
       buttonText={t`Try for free`}
       buttonLink={UPGRADE_URL}
       source={source}
-      illustrationSrc="app/assets/img/upsell-whitelabel.png"
+      illustrationSrc={upsellWhitelabelImage}
       onClick={triggerUpsellFlow}
     >
       {t`Customize your internal or customer-facing analytics with your brand name, logo, colors, font and more, and hide giveaway Metabase elements.`}

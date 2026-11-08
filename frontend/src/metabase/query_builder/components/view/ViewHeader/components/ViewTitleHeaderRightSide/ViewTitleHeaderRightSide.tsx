@@ -3,24 +3,25 @@ import type React from "react";
 import { useCallback } from "react";
 import { t } from "ttag";
 
-import { QuestionSharingMenu } from "metabase/embedding/components/SharingMenu";
-import { AIQuestionAnalysisButton } from "metabase/metabot/components/AIQuestionAnalysisButton";
-import { canAnalyzeQuestion } from "metabase/metabot/utils/chart-analysis";
+import { getUserCanWriteToCollections } from "metabase/current-user";
 import { useRegisterShortcut } from "metabase/palette/hooks/useRegisterShortcut";
-import { canExploreResults } from "metabase/query_builder/components/view/ViewHeader/utils";
 import { RunButtonWithTooltip } from "metabase/querying/components/QueryVisualization/RunButtonWithTooltip";
-import { MODAL_TYPES, type QueryModalType } from "metabase/querying/constants";
-import type { DatasetEditorTab, QueryBuilderMode } from "metabase/redux/store";
-import { getUserCanWriteToCollections } from "metabase/selectors/user";
+import { MODAL_TYPES } from "metabase/querying/constants";
+import { useSelector } from "metabase/redux";
+import type {
+  DatasetEditorTab,
+  QueryBuilderMode,
+  QueryModalType,
+} from "metabase/redux/store";
 import { Box, Button, Flex, Tooltip } from "metabase/ui";
 import { SERVER_ERROR_TYPES } from "metabase/utils/errors";
-import { useSelector } from "metabase/utils/redux";
 import MetabaseSettings from "metabase/utils/settings";
 import * as Lib from "metabase-lib";
 import type Question from "metabase-lib/v1/Question";
 import type { Dataset } from "metabase-types/api";
 
 import ViewTitleHeaderS from "../../ViewTitleHeader.module.css";
+import { canExploreResults } from "../../utils";
 import { ExploreResultsLink } from "../ExploreResultsLink";
 import { FilterHeaderButton } from "../FilterHeaderButton";
 import { QuestionActions } from "../QuestionActions";
@@ -28,9 +29,11 @@ import { QuestionNotebookButton } from "../QuestionNotebookButton";
 import { QuestionSummarizeWidget } from "../QuestionSummarizeWidget";
 import { ToggleNativeQueryPreview } from "../ToggleNativeQueryPreview";
 
+import { QuestionSharingMenu } from "./QuestionSharingMenu/QuestionSharingMenu";
+
 interface ViewTitleHeaderRightSideProps {
   question: Question;
-  result: Dataset;
+  result?: Dataset;
   queryBuilderMode: QueryBuilderMode;
   isBookmarked: boolean;
   isModelOrMetric: boolean;
@@ -214,7 +217,6 @@ export function ViewTitleHeaderRightSide({
             )}
             iconSize={16}
             onlyIcon
-            medium
             isRunning={isRunning}
             isDirty={isResultDirty}
             onRun={() => runQuestionQuery({ ignoreCache: true })}
@@ -226,9 +228,6 @@ export function ViewTitleHeaderRightSide({
       {!isShowingNotebook && (hasSaveButton || isSaved) && (
         <QuestionSharingMenu question={question} />
       )}
-      {!isShowingNotebook && canAnalyzeQuestion(question.card().display) ? (
-        <AIQuestionAnalysisButton />
-      ) : null}
       {isSaved && (
         <QuestionActions
           question={question}
@@ -245,8 +244,6 @@ export function ViewTitleHeaderRightSide({
           <Button
             className={ViewTitleHeaderS.SaveButton}
             data-testid="qb-save-button"
-            px="md"
-            py="sm"
             variant="subtle"
             aria-disabled={isSaveDisabled || undefined}
             data-disabled={isSaveDisabled || undefined}

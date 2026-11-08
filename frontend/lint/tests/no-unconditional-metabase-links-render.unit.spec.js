@@ -1,16 +1,8 @@
-import { RuleTester } from "eslint";
-
 import rule from "../eslint-plugin-metabase/rules/no-unconditional-metabase-links-render";
 
-const ruleTester = new RuleTester({
-  languageOptions: {
-    ecmaVersion: 2015,
-    sourceType: "module",
-    parserOptions: {
-      ecmaFeatures: { jsx: true },
-    },
-  },
-});
+import { createRuleTester } from "./rule-tester";
+
+const ruleTester = createRuleTester();
 
 // Only importing `getShowMetabaseLinks` is not enough to pass the rule.
 // This doesn't necessarily mean that the link would be definitely conditionally
@@ -21,7 +13,7 @@ const ruleTester = new RuleTester({
 const VALID_CASES = [
   {
     code: `
-import { useSelector } from "metabase/utils/redux";
+import { useSelector } from "metabase/redux";
 import { getDocsUrl } from "metabase/selectors/settings";
 import { getShowMetabaseLinks } from "metabase/selectors/whitelabel";
 
@@ -31,7 +23,7 @@ const docsLink = useSelector(state =>
   },
   {
     code: `
-import { useSelector } from "metabase/utils/redux";
+import { useSelector } from "metabase/redux";
 import { getLearnUrl } from "metabase/selectors/settings";
 import { getShowMetabaseLinks } from "metabase/selectors/whitelabel";
 
@@ -76,7 +68,7 @@ const INVALID_CASES = [
   {
     name: "Detect getDocsUrl()",
     code: `
-import { useSelector } from "metabase/utils/redux";
+import { useSelector } from "metabase/redux";
 import { getDocsUrl } from "metabase/selectors/settings";
 
 const docsLink = useSelector(state =>
@@ -88,7 +80,7 @@ const docsLink = useSelector(state =>
   {
     name: "Detect getLearnUrl()",
     code: `
-import { useSelector } from "metabase/utils/redux";
+import { useSelector } from "metabase/redux";
 import { getLearnUrl } from "metabase/selectors/settings";
 
 const docsLink = useSelector(state =>

@@ -1,14 +1,14 @@
 import { renderHook } from "@testing-library/react";
 
+import { mainReducers as reducers } from "__support__/entities-store";
 import {
   setupCardDataset,
   setupFieldEndpoints,
 } from "__support__/server-mocks";
+import { createMockState } from "__support__/state";
 import { waitFor } from "__support__/ui";
-import { mainReducers as reducers } from "metabase/reducers-main";
-import { createMockState } from "metabase/redux/store/mocks";
+import { MetabaseReduxProvider } from "metabase/redux";
 import { getStore } from "metabase/store";
-import { MetabaseReduxProvider } from "metabase/utils/redux";
 import type { FieldId, RowValue } from "metabase-types/api";
 import { createMockField, createMockTable } from "metabase-types/api/mocks";
 
@@ -34,7 +34,7 @@ function setup({ fieldId, rows }: SetupOpts) {
     }
   }
 
-  const store = getStore(reducers, undefined, createMockState());
+  const store = getStore(reducers, createMockState());
 
   function Wrapper({ children }: { children: React.ReactNode }) {
     return (

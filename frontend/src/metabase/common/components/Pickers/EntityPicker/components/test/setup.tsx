@@ -1,20 +1,33 @@
 import fetchMock from "fetch-mock";
 
+import { setupEnterpriseOnlyPlugin } from "__support__/enterprise";
 import {
   setupCollectionByIdEndpoint,
   setupCollectionItemsEndpoint,
   setupCollectionsEndpoints,
   setupDatabasesEndpoints,
+  setupListDataAppsEndpoint,
   setupRecentViewsAndSelectionsEndpoints,
   setupRootCollectionItemsEndpoint,
+  setupSearchEndpoints,
 } from "__support__/server-mocks";
+import { mockSettings } from "__support__/settings";
+import { createMockState } from "__support__/state";
 import {
   mockGetBoundingClientRect,
   renderWithProviders,
   waitForLoaderToBeRemoved,
 } from "__support__/ui";
-import { ROOT_COLLECTION } from "metabase/entities/collections";
-import type { Database, RecentItem, SearchResult } from "metabase-types/api";
+import { ROOT_COLLECTION } from "metabase/common/collections/constants";
+import type {
+  Collection,
+  CollectionItem,
+  DataApp,
+  Database,
+  LibraryCollection,
+  RecentItem,
+  SearchResult,
+} from "metabase-types/api";
 import {
   createMockCollection,
   createMockCollectionItem,
@@ -24,6 +37,7 @@ import {
   createMockSearchResult,
   createMockSearchResults,
   createMockTable,
+  createMockTokenFeatures,
 } from "metabase-types/api/mocks";
 
 import {
@@ -95,6 +109,26 @@ const mockSearchResults = createMockSearchResults({
       id: 610,
     }),
   ],
+});
+
+const createMockLibraryCollectionItem = (
+  collection: Collection,
+): LibraryCollection => ({
+  ...createMockCollectionItem({
+    id: Number(collection.id),
+    name: collection.name,
+    description: collection.description,
+    archived: collection.archived,
+    model: "collection",
+    type: collection.type,
+    can_write: collection.can_write,
+    location: collection.location,
+    effective_location: collection.effective_location,
+    here: collection.here,
+    below: collection.below,
+    collection_id: collection.parent_id ?? null,
+  }),
+  effective_children: [],
 });
 const mockRecentItems = [
   createMockRecentCollectionItem({
@@ -318,9 +352,29 @@ export type SetupOpts = Partial<EntityPickerModalProps> & {
   recentItems?: RecentItem[];
   searchResults?: SearchResult[];
   databases?: Database[];
+  additionalCollections?: Collection[];
+  additionalCollectionItemEndpoints?: Array<{
+    collection: Pick<Collection, "id">;
+    collectionItems: CollectionItem[];
+  }>;
+  libraryCollection?: Collection;
+  libraryCollectionItems?: CollectionItem[];
+  /** The data apps the user can read; turns on the data apps feature. */
+  dataApps?: DataApp[];
+  dataAppsDelayMs?: number;
 };
 
-export const setup = async ({ databases, ...rest }: SetupOpts = {}) => {
+export const setup = async ({
+  additionalCollections = [],
+  additionalCollectionItemEndpoints = [],
+  databases,
+  libraryCollection,
+  libraryCollectionItems,
+  dataApps,
+  dataAppsDelayMs,
+  searchResults,
+  ...rest
+}: SetupOpts = {}) => {
   process.env.OVERSCAN = "20"; // for VirtualizedList overscan
   mockGetBoundingClientRect();
   setupRecentViewsAndSelectionsEndpoints(mockRecentItems, [
@@ -330,16 +384,65 @@ export const setup = async ({ databases, ...rest }: SetupOpts = {}) => {
 
   setupDatabasesEndpoints(databases ?? mockDatabases);
 
+  const libraryCollectionItem = libraryCollection
+    ? createMockLibraryCollectionItem(libraryCollection)
+    : undefined;
+
+  const hasLibrary = libraryCollectionItem !== undefined;
+  const hasDataAppsFeature = dataApps !== undefined;
+  const state =
+    hasLibrary || hasDataAppsFeature
+      ? createMockState({
+          settings: mockSettings({
+            "token-features": createMockTokenFeatures({
+              library: hasLibrary,
+              "data-apps": hasDataAppsFeature,
+            }),
+          }),
+        })
+      : undefined;
+
+  if (hasLibrary) {
+    setupEnterpriseOnlyPlugin("library");
+  }
+  if (dataApps) {
+    setupEnterpriseOnlyPlugin("data-apps");
+    setupListDataAppsEndpoint(dataApps, dataAppsDelayMs);
+  }
+  fetchMock.get(
+    "path:/api/ee/library",
+    libraryCollectionItem ?? {
+      message: "not found",
+    },
+  );
+
   // Setup collections
   setupCollectionsEndpoints({
-    collections: [collection1, collection2, nestedCollection],
+    collections: [
+      collection1,
+      collection2,
+      nestedCollection,
+      ...additionalCollections,
+    ],
     rootCollection,
   });
 
   // Setup collection by ID endpoints
   setupCollectionByIdEndpoint({
-    collections: [collection1, collection2, nestedCollection],
+    collections: [
+      collection1,
+      collection2,
+      nestedCollection,
+      ...additionalCollections,
+    ],
   });
+
+  if (libraryCollection && libraryCollectionItems) {
+    setupCollectionItemsEndpoint({
+      collection: libraryCollection,
+      collectionItems: libraryCollectionItems,
+    });
+  }
 
   // Setup collection items endpoints for the tree structure
   setupRootCollectionItemsEndpoint({
@@ -361,7 +464,15 @@ export const setup = async ({ databases, ...rest }: SetupOpts = {}) => {
     collectionItems: nestedCollectionItems,
   });
 
-  fetchMock.get("path:/api/search", mockSearchResults);
+  for (const endpoint of additionalCollectionItemEndpoints) {
+    setupCollectionItemsEndpoint(endpoint);
+  }
+
+  if (searchResults) {
+    setupSearchEndpoints(searchResults);
+  } else {
+    fetchMock.get("path:/api/search", mockSearchResults);
+  }
   fetchMock.get("path:/api/user/recipients", { data: [] });
   const onChange = jest.fn();
   const onClose = jest.fn();
@@ -383,6 +494,7 @@ export const setup = async ({ databases, ...rest }: SetupOpts = {}) => {
       ]}
       {...rest}
     />,
+    { storeInitialState: state },
   );
 
   await waitForLoaderToBeRemoved();

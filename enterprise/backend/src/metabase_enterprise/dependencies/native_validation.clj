@@ -1,6 +1,7 @@
 (ns metabase-enterprise.dependencies.native-validation
   (:require
    [clojure.string :as str]
+   [metabase.database-routing.core :as database-routing]
    [metabase.driver :as driver]
    [metabase.driver.sql :as driver.sql]
    [metabase.lib.core :as lib]
@@ -22,9 +23,10 @@
   parameter substitution must happen INSIDE the *compile-with-inline-parameters* binding
   to produce inline literals instead of ? placeholders."
   [query :- ::lib.schema/query]
-  (let [with-params (lib/add-parameters-for-template-tags query)
-        compiled    (qp.compile/compile-with-inline-parameters with-params)]
-    (lib/native-query with-params (:query compiled))))
+  (database-routing/with-anonymous-router-access
+    (let [with-params (lib/add-parameters-for-template-tags query)
+          compiled    (qp.compile/compile-with-inline-parameters with-params)]
+      (lib/native-query with-params (:query compiled)))))
 
 (defn- has-substitutable-template-tags?
   "Returns true if the query has any card or table template tags that need
@@ -54,20 +56,21 @@
   "Compile a query replacing card and table references with placeholder table names.
    Card refs like {{#1}} are replaced with mb__validat_card__1.
    Table refs like {{table_one}} are replaced with mb__validat_table__N.
+   Only the refs in the query's own SQL are replaced; those inside its snippets expand with them.
 
    Returns the compiled native-only-query, or nil if the original SQL contains
    the placeholder prefix (collision guard)."
   [query]
   (let [stage     (first (:stages query))
         sql       (:native stage)
-        ttags     (:template-tags stage)
-        card-tags  (into {} (filter #(= (:type (val %)) :card)) ttags)
-        table-tags (into {} (filter #(= (:type (val %)) :table)) ttags)]
+        own-tags   (filter #(str/includes? sql (str "{{" (:name %) "}}")) (:template-tags stage))
+        card-tags  (filter #(= (:type %) :card) own-tags)
+        table-tags (filter #(= (:type %) :table) own-tags)]
     (when-not (or (str/includes? sql card-placeholder-prefix)
                   (str/includes? sql table-placeholder-prefix))
       (let [;; Replace card tags
             sql-after-cards
-            (reduce (fn [s [tag-name tag]]
+            (reduce (fn [s {tag-name :name, :as tag}]
                       (str/replace s
                                    (str "{{" tag-name "}}")
                                    (str card-placeholder-prefix (:card-id tag))))
@@ -76,7 +79,7 @@
 
             ;; Replace table tags
             modified-sql
-            (reduce (fn [s [tag-name tag]]
+            (reduce (fn [s {tag-name :name, :as tag}]
                       (str/replace s
                                    (str "{{" tag-name "}}")
                                    (str table-placeholder-prefix (:table-id tag))))
@@ -84,7 +87,7 @@
                     table-tags)
 
             remaining-tags
-            (into {} (remove #(#{:card :table} (:type (val %)))) ttags)
+            (into [] (remove (set (concat card-tags table-tags))) (:template-tags stage))
 
             modified-query
             (-> query
@@ -151,6 +154,7 @@
   [driver mp table-spec]
   (:table (sql-tools/find-table-or-transform
            driver
+           (lib.metadata/database mp)
            (lib.metadata/tables mp)
            (lib.metadata/transforms mp)
            table-spec)))
@@ -304,17 +308,26 @@
                      (compile-query query))]
       (driver/native-result-metadata driver compiled))))
 
+(defn- placeholder-dep?
+  "Whether `dep` is a card or table placeholder that [[compile-toplevel-query]] put in place of a template tag."
+  [dep]
+  (when-let [table-name (-> dep :unresolved-table :table)]
+    (or (parse-card-placeholder table-name)
+        (table-placeholder? table-name))))
+
 (mu/defn native-query-deps :- [:set
                                [:or
                                 ::driver/native-query-deps.table-dep
                                 ::driver/native-query-deps.transform-dep
+                                ::driver/native-query-deps.unresolved-table-dep
                                 [:map {:closed true} [:snippet ::lib.schema.id/snippet]]
                                 [:map {:closed true} [:card ::lib.schema.id/card]]]]
-  "Returns the upstream dependencies of a native query, as a set of `{:kind id}` pairs."
+  "Returns the upstream dependencies of a native query, as a set of `{:kind id}` pairs, with a card it references
+  standing in as a placeholder table so that the card's own tables stay out of them."
   [driver :- :keyword
    query  :- ::lib.schema/native-only-query]
-  (let [compiled (compile-query query)]
-    (into (driver/native-query-deps driver compiled)
+  (let [compiled (or (compile-toplevel-query query) (compile-query query))]
+    (into (into #{} (remove placeholder-dep?) (driver/native-query-deps driver compiled))
           ;; TODO (Cam 10/1/25) -- Even this much MBQL manipulation outside of Lib is illegal. Move this sort of stuff
           ;; into Lib.
           (keep #(case (:type %)

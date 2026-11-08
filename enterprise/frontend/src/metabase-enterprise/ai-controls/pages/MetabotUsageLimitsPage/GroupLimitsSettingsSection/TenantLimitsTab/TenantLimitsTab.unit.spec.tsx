@@ -1,5 +1,6 @@
 import userEvent from "@testing-library/user-event";
 
+import { findRequests } from "__support__/server-mocks";
 import { setupUpdateAIControlsTenantLimitEndpoint } from "__support__/server-mocks/metabot";
 import { renderWithProviders, screen, waitFor } from "__support__/ui";
 import type {
@@ -84,6 +85,18 @@ describe("TenantLimitsTab", () => {
     expect(screen.getByText(/Max total.*messages/)).toBeInTheDocument();
   });
 
+  it("shows 'million' unit beside each input when limitType is tokens", () => {
+    setup({ limitType: "tokens" });
+
+    expect(screen.getAllByText("million").length).toBe(defaultTenants.length);
+  });
+
+  it("shows 'messages' unit beside each input when limitType is messages", () => {
+    setup({ limitType: "messages" });
+
+    expect(screen.getAllByText("messages").length).toBe(defaultTenants.length);
+  });
+
   it("populates inputs from existing tenant limits", () => {
     setup({
       tenantLimits: [
@@ -92,8 +105,8 @@ describe("TenantLimitsTab", () => {
       ],
     });
 
-    expect(screen.getByDisplayValue("1 million")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("10 million")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("1")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("10")).toBeInTheDocument();
   });
 
   it("shows 'Unlimited' placeholder when instance limit is null", () => {
@@ -143,7 +156,33 @@ describe("TenantLimitsTab", () => {
     });
     await userEvent.type(acmeInput, "300");
 
-    expect(acmeInput).toHaveValue("300 million");
+    expect(acmeInput).toHaveValue("300");
+  });
+
+  it("saves a zero limit for the tenant the user edits", async () => {
+    setup();
+
+    await userEvent.type(
+      screen.getByLabelText("Max total monthly tokens for Acme Corp"),
+      "0",
+    );
+
+    await waitFor(async () => {
+      const requests = await findRequests("PUT");
+      expect(
+        requests.map(({ url, body }): { url: string; body: unknown } => ({
+          url,
+          body,
+        })),
+      ).toEqual([
+        {
+          url: expect.stringMatching(
+            new RegExp(`/api/ee/ai-controls/usage/tenant/${tenant1.id}$`),
+          ),
+          body: { max_usage: 0 },
+        },
+      ]);
+    });
   });
 
   it("shows error when value exceeds the instance limit", async () => {

@@ -1,11 +1,15 @@
 // NOTE: If we make changes to the algorithm or default values below we should change
 // [the backend version](https://github.com/metabase/metabase/blob/master/src/metabase/dashboards/autoplace.clj).
 
+import { DEFAULT_CARD_SIZE_JSON } from "cljs/metabase.dashboards.constants";
+
 // If you change this, please change `default-grid-width` in
 // https://github.com/metabase/metabase/blob/master/src/metabase/dashboards/autoplace.clj
 export const GRID_WIDTH = 24;
 export const GRID_ASPECT_RATIO = 10 / 9;
 
+// The dashboard grid skeleton's mobile container query repeats this value,
+// because CSS can't read it. Keep the two in sync.
 const MOBILE_BREAKPOINT = 752;
 
 export const GRID_BREAKPOINTS = {
@@ -18,9 +22,17 @@ export const GRID_COLUMNS = {
   mobile: 1,
 };
 
-// If you change this, please change `default-card-size` in
-// https://github.com/metabase/metabase/blob/master/src/metabase/dashboards/autoplace.clj
-export const DEFAULT_CARD_SIZE = { width: 4, height: 4 };
+/** The gaps between dashcards, as `[horizontal, vertical]` pixels. */
+export const GRID_MARGINS: Record<
+  keyof typeof GRID_BREAKPOINTS,
+  [number, number]
+> = {
+  desktop: [6, 6],
+  mobile: [6, 10],
+};
+
+/** @type {{ width: number, height: number }} */
+export const DEFAULT_CARD_SIZE = DEFAULT_CARD_SIZE_JSON;
 
 export const MIN_ROW_HEIGHT = 40;
 

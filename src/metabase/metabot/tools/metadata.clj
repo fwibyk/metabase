@@ -3,15 +3,21 @@
   (:require
    [clojure.string :as str]
    [medley.core :as m]
+   [metabase.metabot.curation :as curation]
+   [metabase.metabot.metadata-perms :as metabot.perms]
    [metabase.metabot.scope :as scope]
+   [metabase.metabot.self.core :as self.core]
    [metabase.metabot.tools.entity-details :as entity-details-tools]
    [metabase.metabot.tools.field-stats :as field-stats-tools]
+   [metabase.metabot.tools.resources :as resources-tools]
    [metabase.metabot.tools.shared :as shared]
    [metabase.metabot.tools.shared.instructions :as instructions]
-   [metabase.metabot.tools.shared.llm-representations :as llm-rep]
+   [metabase.metabot.tools.shared.llm-shape :as llm-shape]
+   [metabase.metabot.tools.util :as metabot.tools.u]
    [metabase.util.i18n :refer [tru]]
    [metabase.util.log :as log]
-   [metabase.util.malli :as mu]))
+   [metabase.util.malli :as mu]
+   [metabase.util.quoting :as quoting]))
 
 (set! *warn-on-reflection* true)
 
@@ -36,8 +42,32 @@
         {:value structured}
         {:error (or output (str "No metadata returned for ID " id))}))
     (catch Exception e
-      (log/error e "Failed to fetch metadata" {:id id})
-      {:error (or (ex-message e) (str "Failed to fetch metadata for ID " id))})))
+      (if (= 404 (:status-code (ex-data e)))
+        (log/debugf "Omitting unresolvable metadata entry: %s %s" id (ex-message e))
+        (log/error e "Failed to fetch metadata" {:id id}))
+      ;; Only an agent error or an API refusal says anything about the ID. Any other message comes from inside
+      ;; Metabase and can carry app DB SQL, so the model reads a fixed sentence instead.
+      {:error (let [message (ex-message e)]
+                (if (and message (or (:agent-error? (ex-data e)) (self.core/api-refusal? e)))
+                  (quoting/quoted message)
+                  (str "Failed to fetch metadata for ID " id ".")))})))
+
+(defn- check-curated-source!
+  "Under [[shared/curated-only?]], reject the source `entity-type` / `entity-id` unless it is curated. Runs after
+  the handler's own existence, read and resource-database checks, so a missing entity still reads as missing."
+  [entity-type entity-id]
+  (when (shared/curated-only?)
+    (curation/check-curated-subject! (str (name entity-type) " " entity-id)
+                                     (case entity-type
+                                       :table  ["table" entity-id]
+                                       :model  ["card" entity-id]
+                                       :metric ["metric" entity-id]))))
+
+(defn- curated-only-details
+  "Under [[shared/curated-only?]], a card's details omit its definition (`:query_json`), as `read_resource`'s do."
+  [result]
+  (cond-> result
+    (shared/curated-only?) (update :structured-output dissoc :query_json)))
 
 (defn get-metadata
   "Fetch metadata for tables, models, and metrics.
@@ -48,60 +78,70 @@
   (try
     (doseq [[ids label] [[table-ids "table"] [model-ids "model"] [metric-ids "metric"]]]
       (validate-id-count ids label))
-    (let [table-results (mapv #(safe-fetch
-                                (fn [table-id]
-                                  (entity-details-tools/get-table-details
-                                   {:entity-type :table
-                                    :entity-id table-id
-                                    :with-fields? true
-                                    :with-field-values? false
-                                    :with-related-tables? false
-                                    :with-metrics? false
-                                    :with-default-temporal-breakout? false
-                                    :with-measures? true
-                                    :with-segments? true}))
-                                %)
-                              table-ids)
-          model-results (mapv #(safe-fetch
-                                (fn [model-id]
-                                  (entity-details-tools/get-table-details
-                                   {:entity-type :model
-                                    :entity-id model-id
-                                    :with-fields? true
-                                    :with-field-values? false
-                                    :with-related-tables? false
-                                    :with-metrics? false
-                                    :with-default-temporal-breakout? false
-                                    :with-measures? true
-                                    :with-segments? true}))
-                                %)
-                              model-ids)
-          metric-results (mapv #(safe-fetch
-                                 (fn [metric-id]
-                                   (entity-details-tools/get-metric-details
-                                    {:metric-id metric-id
-                                     :with-default-temporal-breakout? false
-                                     :with-field-values? false
-                                     :with-queryable-dimensions? false
-                                     :with-segments? true}))
-                                 %)
-                               metric-ids)
-          tables (->> table-results (keep :value) vec)
-          models (->> model-results (keep :value) vec)
-          metrics (->> metric-results (keep :value) vec)
-          errors (->> (concat table-results model-results metric-results)
-                      (keep :error)
-                      vec)]
-      {:structured-output {:result-type :metadata
-                           :tables tables
-                           :models models
-                           :metrics metrics
-                           :errors errors}})
+    (metabot.perms/with-cache
+      (let [table-results (mapv #(safe-fetch
+                                  (fn [table-id]
+                                    (resources-tools/check-table-resource-database table-id)
+                                    ;; an inactive table is missing, as the details treat it, not uncurated
+                                    (when (shared/curated-only?)
+                                      (metabot.tools.u/get-table table-id :db_id))
+                                    (check-curated-source! :table table-id)
+                                    (curated-only-details
+                                     (entity-details-tools/get-table-details
+                                      {:entity-type :table
+                                       :entity-id table-id
+                                       :with-fields? true
+                                       :with-field-values? false
+                                       :with-related-tables? false
+                                       :with-metrics? false
+                                       :with-default-temporal-breakout? false
+                                       :with-measures? true
+                                       :with-segments? true})))
+                                  %)
+                                table-ids)
+            model-results (mapv #(safe-fetch
+                                  (fn [model-id]
+                                    (resources-tools/check-card-resource-database model-id)
+                                    (check-curated-source! :model model-id)
+                                    (curated-only-details
+                                     (entity-details-tools/get-table-details
+                                      {:entity-type :model
+                                       :entity-id model-id
+                                       :with-fields? true
+                                       :with-field-values? false
+                                       :with-related-tables? false
+                                       :with-metrics? false
+                                       :with-default-temporal-breakout? false
+                                       :with-measures? true
+                                       :with-segments? true})))
+                                  %)
+                                model-ids)
+            metric-results (mapv #(safe-fetch
+                                   (fn [metric-id]
+                                     (resources-tools/check-card-resource-database metric-id)
+                                     (check-curated-source! :metric metric-id)
+                                     (curated-only-details
+                                      (entity-details-tools/get-metric-details
+                                       {:metric-id metric-id
+                                        :with-default-temporal-breakout? false
+                                        :with-field-values? false
+                                        :with-queryable-dimensions? false
+                                        :with-segments? true})))
+                                   %)
+                                 metric-ids)
+            tables (->> table-results (keep :value) vec)
+            models (->> model-results (keep :value) vec)
+            metrics (->> metric-results (keep :value) vec)
+            errors (->> (concat table-results model-results metric-results)
+                        (keep :error)
+                        vec)]
+        {:structured-output {:result-type :metadata
+                             :tables tables
+                             :models models
+                             :metrics metrics
+                             :errors errors}}))
     (catch Exception e
-      (log/error e "Failed to fetch metadata")
-      (if (:agent-error? (ex-data e))
-        {:output (ex-message e)}
-        {:output (str "Failed to fetch metadata: " (or (ex-message e) "Unknown error"))}))))
+      (metabot.tools.u/handle-agent-error e))))
 
 (defn- format-with-instructions
   [data instruction-text]
@@ -112,23 +152,24 @@
   [{:keys [metrics models]}]
   (let [content (str (when (seq metrics)
                        (str "<metrics>\n"
-                            (str/join "\n" (map llm-rep/metric->xml metrics))
+                            (str/join "\n" (map llm-shape/metric->xml metrics))
                             "\n</metrics>\n"))
                      (when (seq models)
                        (str "<metabase-models>\n"
-                            (str/join "\n" (map llm-rep/model->xml models))
+                            (str/join "\n" (map llm-shape/model->xml models))
                             "\n</metabase-models>")))]
     (format-with-instructions content instructions/answer-sources-instructions)))
 
 (defn- format-metadata-output
   [structured]
-  (llm-rep/get-metadata-result->xml structured))
+  (llm-shape/get-metadata-result->xml structured))
 
 (defn- format-field-metadata-output
   ;; NOTE: keep in sync with read_resource.clj/format-content :field-metadata branch
-  [{:keys [field_id value_metadata]}]
+  [{:keys [field_id value_metadata portable_fk table_reference]}]
   (format-with-instructions
-   (llm-rep/field-metadata->xml {:field_id field_id :value_metadata value_metadata})
+   (llm-shape/field-metadata->xml {:field_id field_id :value_metadata value_metadata
+                                   :portable_fk portable_fk :table_reference table_reference})
    instructions/field-metadata-instructions))
 
 (defn- add-output
@@ -142,10 +183,17 @@
   "List all data sources (metrics and models) available to the metabot instance."
   [_args :- [:map {:closed true}]]
   (add-output
-   (entity-details-tools/answer-sources {:metabot-id         shared/*metabot-id*
-                                         :with-field-values? false
-                                         :with-measures?     true
-                                         :with-segments?     true})
+   (cond-> (entity-details-tools/answer-sources {:metabot-id         shared/*metabot-id*
+                                                 :with-field-values? false
+                                                 :with-measures?     true
+                                                 :with-segments?     true})
+     ;; under curated-only a card's details omit its definition, as read_resource's do
+     (shared/curated-only?)
+     (update :structured-output
+             (fn [so]
+               (-> so
+                   (update :metrics (fn [rows] (mapv #(dissoc % :query_json) rows)))
+                   (update :models (fn [rows] (mapv #(dissoc % :query_json) rows)))))))
    format-answer-sources-output))
 
 (def ^:private list-available-fields-schema
@@ -167,7 +215,7 @@
 
 (def ^:private get-field-values-schema
   [:map {:closed true}
-   [:data_source [:enum "table" "model" "metric"]]
+   [:data_source [:enum "table" "model" "metric" "question" "report"]]
    [:source_id :int]
    [:field_id [:or :int :string]]])
 
@@ -176,6 +224,22 @@
   get-field-values-tool
   "Return metadata for a given field of a given data source."
   [{:keys [data_source source_id field_id]} :- get-field-values-schema]
+  ;; mu/defn schemas aren't enforced in production, so `data_source` may be any string the LLM
+  ;; sends -- fall through to `field-values`'s own agent-facing error instead of throwing here.
+  (case data_source
+    "table"                                (resources-tools/check-table-resource-database source_id)
+    ("model" "metric" "question" "report") (resources-tools/check-card-resource-database source_id)
+    nil)
+  (when (shared/curated-only?)
+    ;; an inactive table is missing, as `field-values` treats it, not uncurated
+    (when (= data_source "table")
+      (metabot.tools.u/get-table source_id :db_id))
+    (curation/check-curated-subject! (str data_source " " source_id)
+                                     (case data_source
+                                       "table"                       ["table" source_id]
+                                       "metric"                      ["metric" source_id]
+                                       ("model" "question" "report") ["card" source_id]
+                                       nil)))
   (add-output
    (field-stats-tools/field-values {:entity-type data_source
                                     :entity-id source_id

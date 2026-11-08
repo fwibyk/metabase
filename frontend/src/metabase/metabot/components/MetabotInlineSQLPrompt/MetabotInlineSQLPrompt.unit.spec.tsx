@@ -1,0 +1,121 @@
+import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
+
+import { setupEnterprisePlugins } from "__support__/enterprise";
+import {
+  setupLlmProviderTypesEndpoint,
+  setupLlmProvidersEndpoint,
+  setupUserMetabotPermissionsEndpoint,
+} from "__support__/server-mocks";
+import { mockSettings } from "__support__/settings";
+import { createMockState } from "__support__/state";
+import { renderWithProviders, screen } from "__support__/ui";
+import { createMockUser } from "metabase-types/api/mocks";
+
+import { MetabotInlineSQLPrompt } from "./MetabotInlineSQLPrompt";
+
+const defaultProps: ComponentProps<typeof MetabotInlineSQLPrompt> = {
+  databaseId: 1,
+  onClose: jest.fn(),
+  isLoading: false,
+  error: undefined,
+  generate: jest.fn(),
+  cancelRequest: jest.fn(),
+  suggestionModels: [],
+  getSourceSql: jest.fn(() => "select 1"),
+  value: "",
+  onValueChange: jest.fn(),
+};
+
+interface SetupOpts {
+  props?: Partial<ComponentProps<typeof MetabotInlineSQLPrompt>>;
+  isAdmin?: boolean;
+  isConfigured?: boolean;
+}
+
+function setup({
+  props,
+  isAdmin = true,
+  isConfigured = false,
+}: SetupOpts = {}) {
+  const settings = mockSettings({
+    "llm-metabot-configured?": isConfigured,
+    "metabot-enabled?": true,
+  });
+
+  setupUserMetabotPermissionsEndpoint();
+  setupEnterprisePlugins();
+
+  const { rerender } = renderWithProviders(
+    <MetabotInlineSQLPrompt {...defaultProps} {...props} />,
+    {
+      storeInitialState: createMockState({
+        settings,
+        currentUser: createMockUser({ is_superuser: isAdmin }),
+      }),
+    },
+  );
+
+  return {
+    rerender: (nextProps: SetupOpts["props"]) =>
+      rerender(<MetabotInlineSQLPrompt {...defaultProps} {...nextProps} />),
+  };
+}
+
+describe("MetabotInlineSQLPrompt", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("shows a configure link instead of submit controls when disabled", async () => {
+    setup();
+
+    expect(
+      await screen.findByText(/To use SQL generation, please/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("metabot-inline-sql-generate"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "connect to a model" }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the AI provider configuration modal from the configure link", async () => {
+    setupLlmProvidersEndpoint();
+    setupLlmProviderTypesEndpoint();
+    setup();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "connect to a model" }),
+    );
+
+    expect(
+      await screen.findByTestId("ai-provider-configuration-modal"),
+    ).toBeInTheDocument();
+  });
+
+  it("disables the generate button until a prompt is typed", async () => {
+    const { rerender } = setup({ isConfigured: true });
+
+    expect(
+      await screen.findByTestId("metabot-inline-sql-generate"),
+    ).toBeDisabled();
+
+    rerender({ value: "   " });
+    expect(screen.getByTestId("metabot-inline-sql-generate")).toBeDisabled();
+
+    rerender({ value: "select all users" });
+    expect(screen.getByTestId("metabot-inline-sql-generate")).toBeEnabled();
+  });
+
+  it("shows the admin message when the user cannot configure AI", async () => {
+    setup({ isAdmin: false });
+
+    expect(
+      await screen.findByText(
+        "Ask your admin to connect to a model to use SQL generation.",
+      ),
+    ).toBeInTheDocument();
+  });
+});

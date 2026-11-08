@@ -4,18 +4,23 @@
 (def data-model
   "Schema model types"
   ["Database"
+   "Dimension"
    "Field"
    "FieldUserSettings"
    "Measure"
    "Segment"
    "Table"
+   "TableUserSettings"
    "Channel"])
 
 (def data-model-in-collection
-  "Data model types that can be found in collections (via published tables).
-   These are extracted by ID when discovered via descendants, even if no-data-model is set."
+  "Data model types that can be found in collections (via published tables), extracted by ID when discovered via
+   descendants even if no-data-model is set."
   ["Table"
+   "TableUserSettings"
    "Field"
+   "FieldUserSettings"
+   "Dimension"
    "Segment"])
 
 (def content
@@ -29,17 +34,27 @@
    "NativeQuerySnippet"
    "Timeline"])
 
+(def elidable-content-models
+  "Content models a reference may name without the target being in the archive or the destination. Such references
+  are dropped on import instead of failing the load."
+  #{"Timeline"})
+
 (def exported-models
   "The list of all models exported by serialization by default. Used for production code and by tests."
   (concat data-model
           content
-          ["FieldValues"
+          ["CustomVizPlugin"
+           "DataApp"
+           "EmbeddingTheme"
+           "FieldValues"
            "Metabot"
+           "OsiAiContext"
            "PythonLibrary"
            "Setting"
            "Transform"
            "TransformJob"
-           "TransformTag"]))
+           "TransformTag"
+           "TransformTest"]))
 
 (def inlined-models
   "An additional list of models which are inlined into parent entities for serialization.
@@ -47,20 +62,23 @@
   For example, the models should also have their entity_id fields populated (if they have one)."
   ["DashboardCard"
    "DashboardTab"
-   "Dimension"
    "ParameterCard"
    "DashboardCardSeries"
    "MetabotPrompt"
+   "TableIndex"
    "TimelineEvent"
    "TransformJobTransformTag"
    "TransformTransformTag"])
 
 (def excluded-models
   "List of models which are not going to be serialized ever."
-  ["AiUsageLog"
+  ["AgentApiCallLog"
+   "AiUsageLog"
    "AnalysisFinding"
    "AnalysisFindingError"
+   "AnalysisFindingStatus"
    "ApiKey"
+   "ApiKeyUsageLog"
    "ApplicationPermissionsRevision"
    "AuditLog"
    "AuthIdentity"
@@ -74,21 +92,40 @@
    "Comment"
    "CommentReaction"
    "ConnectionImpersonation"
+   "ContentDiagnosticsFinding"
    "ContentTranslation"
    "DashboardBookmark"
+   "DataComplexityScore"
    "DataPermissions"
    "DatabaseRouter"
    "Dependency"
    "DependencyStatus"
    "DocumentBookmark"
-   "HTTPAction"
+   "EmbeddingSdkReact18Host"
+   "Exploration"
+   "ExplorationBlock"
+   "ExplorationBookmark"
+   "ExplorationPage"
+   "ExplorationQuery"
+   "ExplorationQueryResult"
+   "ExplorationThread"
+   "ExplorationThreadTimeline"
    "ImplicitAction"
+   "ImpersonationQueryCache"
    "LoginHistory"
+   "McpFeedback"
+   "McpGroupPermission"
+   "McpQueryHandle"
+   "McpSessionLog"
+   "McpToolCallLog"
    "MetabotConversation"
+   "MetabotFeedback"
    "MetabotGroupLimit"
    "MetabotInstanceLimit"
    "MetabotMessage"
    "MetabotPermissions"
+   "MetabotSourceFeedback"
+   "MetabotUsedTable"
    "ModelIndex"
    "ModelIndexValue"
    "ModerationReview"
@@ -100,6 +137,7 @@
    "OAuthAccessToken"
    "OAuthAuthorizationCode"
    "OAuthClient"
+   "OAuthClientEvent"
    "OAuthRefreshToken"
    "Permissions"
    "PermissionsGroup"
@@ -121,6 +159,7 @@
    "ReplacementRun"
    "RemoteSyncObject"
    "RemoteSyncTask"
+   "ResultMetadataStatus"
    "Revision"
    "Sandbox"
    "SearchIndexMetadata"
@@ -128,13 +167,23 @@
    "SecurityAdvisory"
    "SemanticSearchTokenTracking"
    "Session"
+   "SourceDimensionDaily"
+   "SourceDimensionProfileDaily"
+   "SourceMetricDaily"
+   "SourceSegmentCompositeDaily"
+   "SourceSegmentDaily"
+   "SsoRelayState"
+   "StoredResult"
+   "StoredResultUse"
    "SupportAccessGrantLog"
    "TaskHistory"
    "TaskRun"
    "Tenant"
+   "TransformDagRun"
    "TransformJobRun"
    "TransformRun"
    "TransformRunCancelation"
+   "TransformTestRun"
    "Undo"
    "User"
    "UserKeyValue"

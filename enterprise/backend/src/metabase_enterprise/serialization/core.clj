@@ -5,6 +5,7 @@
    [metabase-enterprise.serialization.v2.ingest]
    [metabase-enterprise.serialization.v2.load]
    [metabase-enterprise.serialization.v2.storage]
+   [metabase-enterprise.serialization.v2.storage.files]
    [metabase-enterprise.serialization.v2.storage.util]
    [potemkin :as p]))
 
@@ -14,6 +15,7 @@
   metabase-enterprise.serialization.v2.ingest/keep-me
   metabase-enterprise.serialization.v2.load/keep-me
   metabase-enterprise.serialization.v2.storage/keep-me
+  metabase-enterprise.serialization.v2.storage.files/keep-me
   metabase-enterprise.serialization.v2.storage.util/keep-me)
 
 (p/import-vars
@@ -23,19 +25,30 @@
   make-targets-of-type
   extract]
  [metabase-enterprise.serialization.v2.ingest
+  entity-file-path?
   legal-top-level-paths
+  replaced-top-level-paths
+  shared-top-level-paths
   strip-labels
   Ingestable
   ingest-yaml
   ingest-list
   ingest-one
   ingest-errors
+  read-resources
   read-timestamps
   parse-key]
  [metabase-enterprise.serialization.v2.load
   load-metabase!]
  [metabase-enterprise.serialization.v2.storage
   store!]
+ [metabase-enterprise.serialization.v2.storage.files
+  file-writer]
  [metabase-enterprise.serialization.v2.storage.util
+  entity-file-path
+  entity-yaml
   resolve-storage-path
-  slugify-name])
+  resource-files
+  slugify-name
+  without-resources
+  yaml-file-path])

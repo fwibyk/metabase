@@ -7,6 +7,7 @@ import {
   setupRemappedFieldValueEndpoint,
 } from "__support__/server-mocks";
 import {
+  act,
   createMockClipboardData,
   renderWithProviders,
   screen,
@@ -204,6 +205,23 @@ describe("StringFilterValuePicker", () => {
 
       await userEvent.click(screen.getByText("Gadget"));
       expect(onChange).toHaveBeenCalledWith(["Gadget"]);
+    });
+
+    it("should search the list of values by substring (metabase#20551)", async () => {
+      await setupStringPicker({
+        query,
+        stageIndex,
+        column,
+        values: [],
+        fieldId,
+        fieldValues: PRODUCT_CATEGORY_VALUES,
+      });
+
+      await userEvent.type(screen.getByPlaceholderText("Search the list"), "i");
+      expect(screen.getByText("Doohickey")).toBeInTheDocument();
+      expect(screen.getByText("Gizmo")).toBeInTheDocument();
+      expect(screen.getByText("Widget")).toBeInTheDocument();
+      expect(screen.queryByText("Gadget")).not.toBeInTheDocument();
     });
 
     it("should allow to update selected values", async () => {
@@ -773,7 +791,11 @@ describe("StringFilterValuePicker", () => {
 
       const input = screen.getByRole("combobox", { name: "Filter value" });
       await userEvent.type(input, "a@b.com");
-      input.blur();
+      // blurring commits the typed value; wrap it so the resulting state
+      // updates in MultiAutocomplete are flushed inside act()
+      act(() => {
+        input.blur();
+      });
       expect(onChange).toHaveBeenLastCalledWith(["a@b.com"]);
     });
 

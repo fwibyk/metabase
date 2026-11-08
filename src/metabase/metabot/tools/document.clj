@@ -1,23 +1,24 @@
 (ns metabase.metabot.tools.document
   "Document-generation specific tool wrappers."
   (:require
+   [metabase.metabot.query-execution :as query-execution]
    [metabase.metabot.scope :as scope]
    [metabase.metabot.table-utils :as table-utils]
    [metabase.metabot.tools.construct :as construct-tools]
    [metabase.metabot.tools.shared :as shared]
    [metabase.metabot.tools.shared.instructions :as instructions]
    [metabase.metabot.tools.sql.create :as create-sql-query-tools]
+   [metabase.metabot.tools.util :as metabot.tools.u]
    [metabase.query-processor.core :as qp]
-   [metabase.util.log :as log]
+   [metabase.query-processor.middleware.catch-exceptions :as qp.catch-exceptions]
    [metabase.util.malli :as mu]
+   [metabase.util.quoting :as quoting]
    [metabase.warehouses.core :as warehouses]))
 
 (set! *warn-on-reflection* true)
 
 (def ^:private chart-type-enum
-  [:enum "table" "bar" "line" "pie" "sunburst" "area" "combo"
-   "row" "pivot" "scatter" "waterfall" "sankey" "scalar"
-   "smartscalar" "gauge" "progress" "funnel" "object" "map"])
+  (into [:enum] shared/chart-types))
 
 (defn- parse-reference
   [[k v]]
@@ -68,23 +69,29 @@
   (let [instruction-text (str "The SQL query could not be processed by Metabase.\n"
                               "\n"
                               "Error details:\n"
-                              error-message "\n"
+                              (quoting/quoted error-message) "\n"
                               "\n"
                               "Please fix the query and call `document_construct_sql_chart` again with corrected SQL.\n")]
     {:output       (sql-chart-error-output instruction-text)
      :instructions instruction-text}))
 
 (defn- check-query
-  "If the query is valid, return nil. If not, return the error message."
+  "If one row of the query runs, return nil.
+  If the query or its database is at fault, return the error message.
+  Rethrow a failure inside Metabase, such as an app DB lookup, so the tool executor logs it.
+  The model never reads its text."
   [query]
   (try
-    (qp/process-query query)
+    (qp/process-query (assoc query :constraints {:max-results 1 :max-results-bare-rows 1}))
     nil
     (catch Exception e
-      (ex-message e))))
+      (if (query-execution/caller-facing-failure? (qp.catch-exceptions/exception-response e))
+        (ex-message e)
+        (throw e)))))
 
-(mu/defn ^{:tool-name "document_schema_collect"
-           :scope     scope/agent-document-read}
+(mu/defn ^{:tool-name    "document_schema_collect"
+           :scope        scope/agent-document-read
+           :capabilities #{:permission-write-sql-queries}}
   document-schema-collect-tool
   "Collects the schema of a database in order to construct a SQL query.
 
@@ -116,15 +123,15 @@
                                "</result>\n"
                                "<instructions>\n"
                                "NEXT: construct a SQL query based on the user's instructions and this schema.\n"
-                               "THEN: call `document_construct_sql_chart` with SQL and chart settings.\n"
+                               "THEN: call `document_construct_sql_chart` with SQL and chart settings, passing "
+                               "database_id=" database-id " (the id of the database above).\n"
                                "SQL engine: " (:engine db) ".\n"
                                "</instructions>")]
           {:output output
            :structured-output {:database_id database-id
                                :sql_engine  (:engine db)}})))
     (catch Exception e
-      (log/error e "Error collecting document schema")
-      {:output (str "Failed to collect schema: " (or (ex-message e) "Unknown error"))})))
+      (metabot.tools.u/handle-agent-or-api-error e))))
 
 (def ^:private sql-chart-schema
   [:map {:closed true}
@@ -137,8 +144,9 @@
    [:viz_settings [:map {:closed true}
                    [:chart_type chart-type-enum]]]])
 
-(mu/defn ^{:tool-name "document_construct_sql_chart"
-           :scope     scope/agent-document-create}
+(mu/defn ^{:tool-name    "document_construct_sql_chart"
+           :scope        scope/agent-document-create
+           :capabilities #{:permission-write-sql-queries}}
   document-construct-sql-chart-tool
   "Construct SQL-backed chart draft payload for document insertion."
   [{:keys [database_id name description analysis approach sql viz_settings]} :- sql-chart-schema]
@@ -171,20 +179,15 @@
                             :query         query
                             :result-type   :chart-draft}]
             {:output "Draft chart payload generated from SQL query."
-             :structured-output structured
-             :final-response? true}))))
+             :structured-output structured}))))
     (catch Exception e
-      (log/error e "Error constructing SQL chart draft")
-      (if (:agent-error? (ex-data e))
-        {:output (ex-message e)}
-        {:output (str "Failed to construct SQL chart draft: " (or (ex-message e) "Unknown error"))}))))
+      (metabot.tools.u/handle-agent-error e))))
 
 (def ^:private model-chart-schema
   [:map {:closed true}
    [:name :string]
    [:description :string]
-   [:source_entity [:map [:type :string] [:id :int]]]
-   [:program :map]
+   [:query construct-tools/LLMQueryArgument]
    [:viz_settings [:map {:closed true}
                    [:chart_type chart-type-enum]]]])
 
@@ -192,12 +195,13 @@
            :scope     scope/agent-document-create}
   document-construct-model-chart-tool
   "Construct notebook/model-backed chart draft payload for document insertion."
-  [{:keys [name description source_entity program viz_settings]} :- model-chart-schema]
+  [{:keys [name description query viz_settings]} :- model-chart-schema]
   (try
     (let [chart-type (get viz_settings :chart_type)
           result     (construct-tools/construct-notebook-query-tool
-                      {:source_entity source_entity
-                       :program program
+                      {:query query
+                       :title name
+                       :description description
                        :visualization {:chart_type chart-type}})
           structured (or (:structured-output result) (:structured_output result))
           query-id   (:query-id structured)
@@ -212,13 +216,9 @@
                              :chart_type    chart-type
                              :query_id      query-id
                              :query         dataset-query
-                             :result-type   :chart-draft}
-         :final-response? true}
+                             :result-type   :chart-draft}}
         ;; Preserve tool error messaging from construct_notebook_query path.
         (or result
             {:output "Failed to construct model chart draft."})))
     (catch Exception e
-      (log/error e "Error constructing model chart draft")
-      (if (:agent-error? (ex-data e))
-        {:output (ex-message e)}
-        {:output (str "Failed to construct model chart draft: " (or (ex-message e) "Unknown error"))}))))
+      (metabot.tools.u/handle-agent-error e))))

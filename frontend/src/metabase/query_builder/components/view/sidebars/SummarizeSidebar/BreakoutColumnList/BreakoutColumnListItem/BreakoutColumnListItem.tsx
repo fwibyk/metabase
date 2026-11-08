@@ -4,15 +4,13 @@ import type React from "react";
 import { useCallback } from "react";
 import { t } from "ttag";
 
-import { Button } from "metabase/common/components/Button";
 import {
   HoverParent,
   QueryColumnInfoIcon,
-} from "metabase/common/components/MetadataInfo/ColumnInfoIcon";
-import { ColumnBucketPickerPopover } from "metabase/common/components/QueryColumnPicker/ColumnBucketPickerPopover";
-import { useTranslateContent } from "metabase/i18n/hooks";
-import { Tooltip } from "metabase/ui";
-import { Box, type BoxProps, Flex } from "metabase/ui";
+} from "metabase/common/components/MetadataInfo/QueryColumnInfoIcon";
+import { useTranslateContent } from "metabase/content-translation/hooks";
+import { ColumnBucketPickerPopover } from "metabase/querying/common/components/QueryColumnPicker/ColumnBucketPickerPopover";
+import { Box, type BoxProps, Button, Flex, Icon, Tooltip } from "metabase/ui";
 import * as Lib from "metabase-lib";
 
 import BreakoutColumnListItemS from "./BreakoutColumnListItem.module.css";
@@ -124,7 +122,7 @@ export function BreakoutColumnListItem({
           query={query}
           stageIndex={stageIndex}
           column={item.column}
-          color="summarize"
+          color="core-summarize"
           isEditing={isSelected}
           hasChevronDown
           hasBinning
@@ -135,12 +133,13 @@ export function BreakoutColumnListItem({
               : onAddBreakout(column)
           }
         />
+        {/* TODO: replace with ActionIcon (GDGT-2457) */}
         {isSelected && (
           <Button
-            className={BreakoutColumnListItemS.RemoveButton}
-            icon="close"
-            onlyIcon
-            borderless
+            variant="transparent"
+            size="compact-md"
+            w="2rem"
+            leftSection={<Icon c="icon-primary-inverse" name="close" />}
             onClick={handleRemoveColumn}
             aria-label={t`Remove dimension`}
           />
@@ -148,11 +147,13 @@ export function BreakoutColumnListItem({
       </Flex>
       {!isSelected && (
         <Tooltip label={t`Add grouping`}>
+          {/* TODO: replace with ActionIcon (GDGT-2457) */}
           <Button
+            variant="subtle"
+            color="neutral"
+            size="sm"
             className={BreakoutColumnListItemS.AddButton}
-            icon="add"
-            onlyIcon
-            borderless
+            leftSection={<Icon name="add" />}
             aria-label={t`Add dimension`}
             onClick={handleAddClick}
           />

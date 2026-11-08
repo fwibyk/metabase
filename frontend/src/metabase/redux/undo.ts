@@ -3,9 +3,9 @@ import { createRef } from "react";
 import type { Action } from "redux-actions";
 import _ from "underscore";
 
+import { createAction, createThunkAction } from "metabase/redux";
 import type { State } from "metabase/redux/store";
 import type { Undo } from "metabase/redux/store/undo";
-import { createAction, createThunkAction } from "metabase/utils/redux";
 
 const ADD_UNDO = "metabase/questions/ADD_UNDO";
 const DISMISS_UNDO = "metabase/questions/DISMISS_UNDO";
@@ -14,7 +14,7 @@ const PERFORM_UNDO = "metabase/questions/PERFORM_UNDO";
 
 let nextUndoId = 0;
 
-export const addUndo = createThunkAction(ADD_UNDO, (undo) => {
+export const addUndo = createThunkAction(ADD_UNDO, (undo: Partial<Undo>) => {
   return (dispatch, getState) => {
     const { icon = "check_filled", timeout = 5000, canDismiss = true } = undo;
     const id = undo.id ?? nextUndoId++;
@@ -39,6 +39,7 @@ export const addUndo = createThunkAction(ADD_UNDO, (undo) => {
       ref: createRef(),
       icon,
       canDismiss,
+      timeout,
       timeoutId,
       startedAt: Date.now(),
     };
@@ -53,21 +54,34 @@ export const pauseUndo = createAction(PAUSE_UNDO, (undo: Undo) => {
 });
 
 const RESUME_UNDO = "metabase/questions/RESUME_UNDO";
-export const resumeUndo = createThunkAction(RESUME_UNDO, (undo) => {
-  const restTime = undo.timeout - (undo.pausedAt - undo.startedAt);
+export const resumeUndo = createThunkAction(
+  RESUME_UNDO,
+  (undoId: Undo["id"]) => {
+    return (dispatch, getState) => {
+      // The undo may already be gone, e.g. a toast still animating out after
+      // being dismissed, in which case there's nothing to resume.
+      const current = getUndo(getState(), undoId);
+      if (
+        !current?.timeout ||
+        current.pausedAt == null ||
+        current.startedAt == null
+      ) {
+        return undoId;
+      }
 
-  return (dispatch) => {
-    return {
-      ...undo,
-      pausedAt: null,
-      timeoutId: setTimeout(
-        () => dispatch(dismissUndo({ undoId: undo.id })),
-        restTime,
-      ),
-      timeout: restTime,
+      const restTime = current.timeout - (current.pausedAt - current.startedAt);
+      return {
+        ...current,
+        pausedAt: null,
+        timeoutId: setTimeout(
+          () => dispatch(dismissUndo({ undoId: current.id })),
+          restTime,
+        ),
+        timeout: restTime,
+      };
     };
-  };
-});
+  },
+);
 
 function getUndo(state: State, undoId: Undo["id"]) {
   return _.findWhere(state.undo, { id: undoId });
@@ -201,7 +215,7 @@ export function undoReducer(
     }
 
     return state.map((undo) => {
-      if (undo.id === payload.id) {
+      if (undo.id === payload.id && undo.pausedAt == null) {
         return {
           ...undo,
           pausedAt: Date.now(),

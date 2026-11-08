@@ -1,12 +1,12 @@
-import { Route } from "react-router";
-
 import {
+  setupDatabaseListEndpoint,
   setupPropertiesEndpoints,
   setupUserMetabotPermissionsEndpoint,
 } from "__support__/server-mocks";
 import { mockSettings } from "__support__/settings";
+import { createMockState } from "__support__/state";
 import { renderWithProviders, screen } from "__support__/ui";
-import { createMockState } from "metabase/redux/store/mocks";
+import { Route } from "metabase/router";
 import type { TokenFeatures } from "metabase-types/api";
 import {
   createMockSettings,
@@ -24,6 +24,7 @@ type SetupOpts = {
 const setup = ({ isAdmin = true, tokenFeatures = {} }: SetupOpts = {}) => {
   setupPropertiesEndpoints(createMockSettings());
   setupUserMetabotPermissionsEndpoint();
+  setupDatabaseListEndpoint([]);
   const state = createMockState({
     currentUser: createMockUser({ is_superuser: isAdmin }),
     settings: mockSettings({
@@ -32,11 +33,14 @@ const setup = ({ isAdmin = true, tokenFeatures = {} }: SetupOpts = {}) => {
   });
 
   const path = "/transforms";
-  renderWithProviders(<Route path={path} component={EnableTransformsPage} />, {
-    storeInitialState: state,
-    withRouter: true,
-    initialRoute: path,
-  });
+  renderWithProviders(
+    <Route path={path} element={<EnableTransformsPage />} />,
+    {
+      storeInitialState: state,
+      withRouter: true,
+      initialRoute: path,
+    },
+  );
 };
 
 const ADMINS_ONLY_COPY = "Only Admins can create and run transforms";

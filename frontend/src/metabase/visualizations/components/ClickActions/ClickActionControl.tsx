@@ -1,11 +1,11 @@
-import { Box, Button, Icon, Tooltip } from "metabase/ui";
-import { useDispatch } from "metabase/utils/redux";
+import { useDispatch } from "metabase/redux";
+import { Box, Button, Icon, Text, Tooltip } from "metabase/ui";
 import {
   type ClickAction,
   isCustomClickAction,
   isCustomClickActionWithView,
+  isRegularClickAction,
 } from "metabase/visualizations/types";
-import { isRegularClickAction } from "metabase/visualizations/types";
 
 import S from "./ClickActionControl.module.css";
 
@@ -49,9 +49,8 @@ export const ClickActionControl = ({
     case "token-filter":
       return (
         <Button
-          variant="outline"
-          fz="xl"
-          size="xs"
+          variant="subtle"
+          size="sm"
           onClick={handleClick}
           className={S.tokenFilterActionButton}
           leftSection={
@@ -71,9 +70,8 @@ export const ClickActionControl = ({
     case "token":
       return (
         <Button
-          variant="outline"
-          size="xs"
-          fz="sm"
+          variant="subtle"
+          size="sm"
           className={S.tokenFilterActionTokenButton}
           onClick={handleClick}
         >
@@ -85,38 +83,42 @@ export const ClickActionControl = ({
       return (
         <Tooltip label={action.tooltip}>
           <Button
-            variant="outline"
-            fz="xl"
-            size="xs"
+            variant="subtle"
+            size="sm"
             className={S.tokenFilterActionButton}
             data-testid={`click-actions-sort-control-${action.name}`}
+            leftSection={
+              typeof action.icon === "string" ? (
+                <Icon size={14} name={action.icon} />
+              ) : undefined
+            }
             onClick={handleClick}
-          >
-            {typeof action.icon === "string" && (
-              <Icon size={14} name={action.icon} />
-            )}
-          </Button>
+          />
         </Tooltip>
       );
 
     case "formatting":
       return (
         <Tooltip label={action.tooltip}>
-          <Button variant="outline" fz="xl" size="xs" onClick={handleClick}>
-            {typeof action.icon === "string" && (
-              <Icon size={16} name={action.icon} />
-            )}
-          </Button>
+          <Button
+            size="sm"
+            leftSection={
+              typeof action.icon === "string" ? (
+                <Icon name={action.icon} />
+              ) : undefined
+            }
+            onClick={handleClick}
+          />
         </Tooltip>
       );
 
     case "horizontal":
       return (
         <Button
-          size="xs"
           p="0.5rem"
           mx="-0.5rem"
-          variant="inverse"
+          variant="subtle"
+          color="neutral"
           classNames={{
             root: S.horizontalButton,
             label: S.label,
@@ -143,6 +145,10 @@ export const ClickActionControl = ({
       );
 
     case "info":
-      return <Box className={S.infoControl}>{action.title}</Box>;
+      return (
+        <Text c="text-primary" fw="bold" lh="1.5rem" maw="10.75rem">
+          {action.title}
+        </Text>
+      );
   }
 };

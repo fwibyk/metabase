@@ -15,69 +15,10 @@ describe("scenarios > embedding > modular embedding", () => {
     H.prepareSdkIframeEmbedTest({ signOut: true });
   });
 
-  it("can find the embed.js file", () => {
+  it("can find the embed.js file", { tags: ["@prerelease", "@EE"] }, () => {
     cy.request("http://localhost:4000/app/embed.js").then((response) => {
       expect(response.status).to.eq(200);
       expect(response.body).to.be.a("string").and.not.be.empty;
-    });
-  });
-
-  it("uses the embedding-simple client request header", () => {
-    H.loadSdkIframeEmbedTestPage({
-      elements: [
-        {
-          component: "metabase-dashboard",
-          attributes: {
-            dashboardId: ORDERS_DASHBOARD_ID,
-          },
-        },
-      ],
-    });
-
-    cy.wait("@getDashCardQuery").then(({ request }) => {
-      expect(request?.headers?.["x-metabase-client"]).to.equal(
-        "embedding-simple",
-      );
-    });
-  });
-
-  it("displays a dashboard", () => {
-    const frame = H.loadSdkIframeEmbedTestPage({
-      elements: [
-        {
-          component: "metabase-dashboard",
-          attributes: {
-            dashboardId: ORDERS_DASHBOARD_ID,
-          },
-        },
-      ],
-    });
-
-    cy.wait("@getDashCardQuery");
-
-    frame.within(() => {
-      cy.findByText("Orders in a dashboard").should("be.visible");
-      cy.findByText("Orders").should("be.visible");
-      H.assertTableRowsCount(2000);
-    });
-  });
-
-  it("displays a question", () => {
-    const frame = H.loadSdkIframeEmbedTestPage({
-      elements: [
-        {
-          component: "metabase-question",
-          attributes: {
-            questionId: ORDERS_QUESTION_ID,
-          },
-        },
-      ],
-    });
-
-    cy.wait("@getCardQuery");
-
-    frame.within(() => {
-      H.assertSdkInteractiveQuestionOrdersUsable();
     });
   });
 
@@ -158,24 +99,28 @@ describe("scenarios > embedding > modular embedding", () => {
     });
   });
 
-  it("displays a question using entity id", () => {
-    const frame = H.loadSdkIframeEmbedTestPage({
-      elements: [
-        {
-          component: "metabase-question",
-          attributes: {
-            questionId: ORDERS_QUESTION_ENTITY_ID,
+  it(
+    "displays a question using entity id",
+    { tags: ["@prerelease", "@EE"] },
+    () => {
+      const frame = H.loadSdkIframeEmbedTestPage({
+        elements: [
+          {
+            component: "metabase-question",
+            attributes: {
+              questionId: ORDERS_QUESTION_ENTITY_ID,
+            },
           },
-        },
-      ],
-    });
+        ],
+      });
 
-    cy.wait("@getCardQuery");
+      cy.wait("@getCardQuery");
 
-    frame.within(() => {
-      H.assertSdkInteractiveQuestionOrdersUsable();
-    });
-  });
+      frame.within(() => {
+        H.assertSdkInteractiveQuestionOrdersUsable();
+      });
+    },
+  );
 
   it("displays the exploration template", () => {
     const frame = H.loadSdkIframeEmbedTestPage({
@@ -234,8 +179,8 @@ describe("scenarios > embedding > modular embedding", () => {
 
     cy.log("1. call embed.setAttribute to update the question id");
     frame.window().then((win) => {
-      win
-        .document!.querySelector("metabase-question")!
+      win.document
+        .querySelector("metabase-question")!
         .setAttribute("question-id", ORDERS_COUNT_QUESTION_ID.toString());
     });
 
@@ -318,7 +263,7 @@ describe("scenarios > embedding > modular embedding", () => {
 
     cy.log("2. call setAttribute to show the title");
     frame.window().then((win) => {
-      const element = win.document!.querySelector("metabase-dashboard")!;
+      const element = win.document.querySelector("metabase-dashboard")!;
       element.setAttribute("with-title", "true");
     });
 
@@ -341,6 +286,12 @@ describe("scenarios > embedding > modular embedding", () => {
             },
           },
         ],
+      });
+
+      cy.wait("@getDashCardQuery").then(({ request }) => {
+        expect(request?.headers?.["x-metabase-client"]).to.equal(
+          "embedding-simple",
+        );
       });
 
       frame.within(() => {
@@ -554,6 +505,11 @@ describe("scenarios > embedding > modular embedding", () => {
     });
 
     it("should send an modular embedding usage event", () => {
+      let proxyCallCount = 0;
+      cy.intercept("POST", "/api/analytics-proxy", () => {
+        proxyCallCount++;
+      }).as("analyticsProxy");
+
       cy.signOut();
       cy.visit("http://localhost:4000");
       const frame = H.loadSdkIframeEmbedTestPage({
@@ -732,6 +688,10 @@ describe("scenarios > embedding > modular embedding", () => {
             ],
           },
         ],
+      });
+
+      cy.wrap(null).then(() => {
+        expect(proxyCallCount).to.eq(0);
       });
     });
 

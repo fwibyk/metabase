@@ -3,12 +3,67 @@
    rather than reaching into internal namespaces like [[metabase.mcp.settings]]."
   (:require
    [clojure.string :as str]
-   [metabase.mcp.settings :as mcp.settings]))
+   [metabase.api.macros :as api.macros]
+   [metabase.mcp.paths :as mcp.paths]
+   [metabase.mcp.scope :as mcp.scope]
+   [metabase.mcp.session :as mcp.session]
+   [metabase.mcp.settings :as mcp.settings]
+   [metabase.mcp.ui-surface :as mcp.ui-surface]
+   [metabase.mcp.usage :as mcp.usage]
+   [metabase.mcp.v2.message :as message]
+   [metabase.mcp.v2.registry :as registry]))
+
+(set! *warn-on-reflection* true)
+
+(defn mcp-canonical-path
+  "The advertised MCP URL path, relative to site-url (see [[metabase.mcp.paths/canonical-path]])."
+  []
+  mcp.paths/canonical-path)
+
+(defn mcp-endpoint-paths
+  "Every path serving MCP, canonical plus back-compat aliases
+   (see [[metabase.mcp.paths/endpoint-paths]])."
+  []
+  mcp.paths/endpoint-paths)
 
 (defn cors-origins
   "Returns space-separated CORS origins from both common and custom MCP client settings."
   []
   (mcp.settings/mcp-apps-cors-origins))
+
+(defn mcp-enabled?
+  "Whether the MCP server is enabled (composes [[metabase.llm.settings/ai-features-enabled?]])."
+  []
+  (mcp.settings/mcp-enabled?))
+
+(defn resolve-ui-credential
+  "Resolves a credential issued for an MCP UI resource."
+  [credential]
+  (mcp.session/resolve-ui-credential credential))
+
+(defn ui-credential-on-surface?
+  "Whether an MCP Apps UI credential may authenticate `method` + `uri` at all."
+  [method uri]
+  (mcp.ui-surface/on-surface? method uri))
+
+(defn ui-credential-scope-satisfied?
+  "Whether a UI credential with `claims` holds what `method` + `uri` costs."
+  [method uri claims]
+  (mcp.ui-surface/scope-satisfied? method uri claims))
+
+(defn inline-ui-enabled-for-client?
+  "Whether the admin allows the client named `client-info-name` (from the `initialize` handshake) to render
+   MCP Apps UI. See [[metabase.mcp.settings/inline-ui-enabled-for-client?]]."
+  [client-info-name]
+  (mcp.settings/inline-ui-enabled-for-client? (mcp.usage/detect-client client-info-name)))
+
+(defn check-execute-sql-allowed!
+  "Throw a 403 unless the current user's groups allow the `execute_sql` tool, for raw SQL reaching the REST API other
+   than through that tool."
+  []
+  (when-let [denial (registry/tool-denial "execute_sql" (message/raw "Running a native (SQL) query"))]
+    ;; Not a teaching error: the message record in its ex-data would turn this REST 403 into a stack trace.
+    (throw (ex-info (message/render denial) {:status-code 403}))))
 
 (defn vscode-webview-enabled?
   "Returns true if vscode/cursor is enabled in common MCP apps."
@@ -23,3 +78,32 @@
     (condp #(str/starts-with? %2 %1) raw-origin
       "vscode-webview://" (vscode-webview-enabled?)
       false)))
+
+(defn all-scopes
+  "All supported OAuth scopes, as a sorted set: those declared on agent-api endpoints via defendpoint metadata, plus
+   every scope the v2 MCP surface accepts ([[v2-scopes]])."
+  []
+  (-> (sorted-set)
+      ;; agent-api scopes from defendpoint metadata
+      (into (comp (keep #(get-in % [:form :metadata :scope]))
+                  (filter string?))
+            (vals (api.macros/ns-routes 'metabase.agent-api.api)))
+      ;; The v2 surface's scopes, read from the require-free leaf rather than the registry (see [[v2-scopes]]).
+      (into mcp.scope/v2-surface-scopes)))
+
+(defn v2-scopes
+  "The scopes the v2 MCP surface itself gates on. Excludes the agent-API endpoint scopes
+   [[all-scopes]] also gathers — those belong to a different resource, and advertising them for v2 is
+   what puts per-entity scopes the v2 tools don't use on a v2 client's consent screen.
+
+   Read from the require-free literal in [[metabase.mcp.scope/v2-surface-scopes]], not the registries.
+   The registries report only the tools whose namespaces happen to be loaded.
+   Reaching them from here would also pull `metabot.scope` in wherever this namespace loads (see [[metabase.mcp.scope]]).
+   `v2-surface-scopes-match-metabot-scope-test` keeps the literal in step with what the tools gate on."
+  []
+  mcp.scope/v2-surface-scopes)
+
+(defn v2-baseline-scope?
+  "Is `scope` locked on the consent page?"
+  [scope]
+  (mcp.scope/v2-baseline-scope? scope))

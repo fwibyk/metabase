@@ -97,6 +97,18 @@ describe("GroupLimitsTab", () => {
     expect(screen.getByText(/Max messages per user/)).toBeInTheDocument();
   });
 
+  it("shows 'million' unit beside each input when limitType is tokens", () => {
+    setup({ limitType: "tokens" });
+
+    expect(screen.getAllByText("million").length).toBe(defaultGroups.length);
+  });
+
+  it("shows 'messages' unit beside each input when limitType is messages", () => {
+    setup({ limitType: "messages" });
+
+    expect(screen.getAllByText("messages").length).toBe(defaultGroups.length);
+  });
+
   it("shows 'Group' column header for regular-groups variant", () => {
     setup({ variant: "regular-groups" });
     expect(screen.getByText("Group")).toBeInTheDocument();
@@ -107,6 +119,16 @@ describe("GroupLimitsTab", () => {
     expect(screen.getByText("Tenant group")).toBeInTheDocument();
   });
 
+  it("explains that a user in several groups gets the highest group limit", () => {
+    setup();
+
+    expect(
+      screen.getByText(
+        /If a user belongs to more than one group, they'll be given the highest limit among all the groups they belong to\./,
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("populates inputs from existing group limits", () => {
     setup({
       groupLimits: [
@@ -115,8 +137,8 @@ describe("GroupLimitsTab", () => {
       ],
     });
 
-    expect(screen.getByDisplayValue("100 million")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("50 million")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("100")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("50")).toBeInTheDocument();
   });
 
   it("shows 'Unlimited' placeholder when instance limit is null", () => {
@@ -140,10 +162,10 @@ describe("GroupLimitsTab", () => {
       name: /Administrators/,
     });
     await userEvent.type(adminInput, "1");
-    expect(adminInput).toHaveValue("1 million");
+    expect(adminInput).toHaveValue("1");
     await userEvent.clear(adminInput);
     await userEvent.type(adminInput, "10");
-    expect(adminInput).toHaveValue("10 million");
+    expect(adminInput).toHaveValue("10");
   });
 
   it("shows error message when error is present", () => {

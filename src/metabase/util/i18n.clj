@@ -27,11 +27,13 @@
   normalized-locale-string
   translate])
 
+#_{:clj-kondo/ignore [:metabase/discourage-dynamic-vars]}
 (def ^:dynamic *user-locale*
   "Bind this to a string, keyword, or `Locale` to set the locale for the current User. To get the locale we should
   *use*, use the `user-locale` function instead."
   nil)
 
+#_{:clj-kondo/ignore [:metabase/discourage-dynamic-vars]}
 (def ^:dynamic *site-locale-override*
   "Bind this to a string, keyword to override the value returned by `site-locale`. For testing purposes,
   such as when swapping out an application database temporarily, when the setting table may not even exist."
@@ -146,6 +148,7 @@
              {:error/message (str "instance of " (.getCanonicalName klass))}
              (partial instance? klass)])]
     [:or
+     {:json-schema {:type "string"}}
      (instance-of UserLocalizedString)
      (instance-of SiteLocalizedString)]))
 
@@ -248,7 +251,7 @@
                          ;; number of {n} placeholders in format string *not* including ones you make have skipped. e.g. "{0} {2}" -> 2
                          num-args          (count (.getFormats message-format))]
                      (assert (and (<= num-args-by-index 1) (<= num-args 1))
-                             (format "(deferred-)trsn/trun only supports a single {0} placeholder for the value `n`"))))]
+                             "(deferred-)trsn/trun only supports a single {0} placeholder for the value `n`")))]
     (validate format-string)
     (validate format-string-pl)))
 

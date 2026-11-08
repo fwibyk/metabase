@@ -1,5 +1,9 @@
 import { useCallback } from "react";
 
+import {
+  canManageSubscriptions as canManageSubscriptionsSelector,
+  getUserIsAdmin,
+} from "metabase/current-user";
 import { setSidebar } from "metabase/dashboard/actions";
 import { dashboardActionButtons } from "metabase/dashboard/components/DashboardHeader/DashboardHeaderButtonRow/action-buttons";
 import type {
@@ -15,12 +19,8 @@ import {
   getIsEditing,
 } from "metabase/dashboard/selectors";
 import { getPulseFormInput } from "metabase/notifications/pulse/selectors";
-import {
-  canManageSubscriptions as canManageSubscriptionsSelector,
-  getUserIsAdmin,
-} from "metabase/selectors/user";
+import { useDispatch, useSelector } from "metabase/redux";
 import { Box } from "metabase/ui";
-import { useDispatch, useSelector } from "metabase/utils/redux";
 
 export const DashboardHeaderButtonRow = ({
   isPublic = false,

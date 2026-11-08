@@ -1,4 +1,4 @@
-import { trackSchemaEvent } from "metabase/utils/analytics";
+import { trackSchemaEvent } from "metabase/analytics";
 
 type MoveToTrashEventDetail =
   | "question"
@@ -11,9 +11,17 @@ type MoveToTrashEventDetail =
   | "snippet"
   | "document"
   | "table"
-  | "transform";
+  | "transform"
+  | "measure"
+  | "exploration"
+  | "action";
 
-type MoveToTrashTriggeredFrom = "collection" | "detail_page" | "cleanup_modal";
+type MoveToTrashTriggeredFrom =
+  | "collection"
+  | "detail_page"
+  | "cleanup_modal"
+  | "content_diagnostics"
+  | "drag_and_drop";
 
 export const archiveAndTrack = async ({
   archive,
@@ -23,7 +31,7 @@ export const archiveAndTrack = async ({
 }: {
   archive: () => Promise<void>;
   model: MoveToTrashEventDetail | "card";
-  modelId: number;
+  modelId: number | null;
   triggeredFrom: MoveToTrashTriggeredFrom;
 }): Promise<void> => {
   const start = new Date().getTime();

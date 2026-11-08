@@ -1,15 +1,29 @@
-import type { State } from "metabase/redux/store";
-import { getUser } from "metabase/selectors/user";
-import { connect } from "metabase/utils/redux";
+import { getIsPasswordUser } from "metabase/account/selectors";
+import { useValidatePassword } from "metabase/common/hooks";
+import { getUser } from "metabase/current-user";
+import { PLUGIN_MULTI_FACTOR_AUTH } from "metabase/plugins";
+import { useSelector } from "metabase/redux";
+import { Stack } from "metabase/ui";
 import { checkNotNull } from "metabase/utils/types";
 
-import { validatePassword } from "../../actions";
 import { UserPasswordForm } from "../../components/UserPasswordForm";
 
-const mapStateToProps = (state: State) => ({
-  user: checkNotNull(getUser(state)),
-  onValidatePassword: validatePassword,
-});
+const UserPasswordApp = () => {
+  const user = checkNotNull(useSelector(getUser));
+  const isPasswordUser = useSelector(getIsPasswordUser);
+  const validatePassword = useValidatePassword();
+
+  return (
+    <Stack gap="xxl">
+      {isPasswordUser && (
+        <Stack gap="lg">
+          <UserPasswordForm user={user} onValidatePassword={validatePassword} />
+        </Stack>
+      )}
+      <PLUGIN_MULTI_FACTOR_AUTH.AccountSecurityPanel />
+    </Stack>
+  );
+};
 
 // eslint-disable-next-line import/no-default-export -- deprecated usage
-export default connect(mapStateToProps)(UserPasswordForm);
+export default UserPasswordApp;

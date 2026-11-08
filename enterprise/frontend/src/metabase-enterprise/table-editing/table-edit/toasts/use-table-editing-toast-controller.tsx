@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 
+import { useDispatch } from "metabase/redux";
 import { addUndo } from "metabase/redux/undo";
-import { useDispatch } from "metabase/utils/redux";
 
 import { ErrorUpdateToast } from "./ErrorUpdateToast";
 
@@ -24,11 +24,9 @@ export function useTableEditingToastController() {
       showErrorToast(error: unknown, onDismiss?: () => void) {
         dispatch(
           addUndo({
-            toastColor: "background-primary-inverse",
             icon: null,
             renderChildren: () => <ErrorUpdateToast error={error} />,
             timeout: null, // removes automatic toast hide
-            undo: false,
             onDismiss,
           }),
         );

@@ -5,9 +5,10 @@ import { useWindowSize } from "react-use";
 
 import type { OmniPickerItem } from "metabase/common/components/Pickers";
 import { ResizeHandle } from "metabase/common/components/ResizeHandle";
-import { useSetting } from "metabase/common/hooks";
-import { NativeQueryEditor } from "metabase/query_builder/components/NativeQueryEditor";
+import { NativeQueryEditor } from "metabase/querying/components/NativeQueryEditor";
 import { Notebook } from "metabase/querying/notebook/components/Notebook";
+import type { QueryModalType } from "metabase/redux/store";
+import { useSetting } from "metabase/settings";
 import { Box } from "metabase/ui";
 import type Question from "metabase-lib/v1/Question";
 import type NativeQuery from "metabase-lib/v1/queries/NativeQuery";
@@ -16,7 +17,6 @@ import type {
   RecentCollectionItem,
 } from "metabase-types/api";
 
-import type { QueryModalType } from "../../../../constants";
 import type {
   QueryEditorDatabasePickerItem,
   SelectionRange,
@@ -34,13 +34,12 @@ const NATIVE_EDITOR_SIDEBAR_FEATURES = {
   snippets: true,
   formatQuery: true,
   variables: true,
-  promptInput: false,
 };
 
 type QueryEditorBodyProps = {
   extraButton?: ReactNode;
+  parametersList: ReactNode;
   question: Question;
-  proposedQuestion: Question | undefined;
   modalSnippet?:
     | NativeQuerySnippet
     | Partial<Omit<NativeQuerySnippet, "id">>
@@ -73,18 +72,18 @@ type QueryEditorBodyProps = {
   onChangeModalSnippet: (snippet: NativeQuerySnippet | null) => void;
   onChangeNativeEditorSelection: (range: SelectionRange[]) => void;
   onOpenModal: (type: QueryModalType) => void;
-  onAcceptProposed?: () => void;
-  onRejectProposed?: () => void;
   editorHeight?: number;
   hideRunButton?: boolean;
+  hidePreview?: boolean;
+  hidePreviewQueryButton?: boolean;
   topBarInnerContent?: ReactNode;
   availableHeight?: number;
 };
 
 export function QueryEditorBody({
   extraButton,
+  parametersList,
   question,
-  proposedQuestion,
   modalSnippet,
   nativeEditorSelectedText,
   readOnly,
@@ -112,10 +111,10 @@ export function QueryEditorBody({
   onChangeModalSnippet,
   onChangeNativeEditorSelection,
   onOpenModal,
-  onAcceptProposed,
-  onRejectProposed,
   editorHeight: editorHeightOverride,
   hideRunButton,
+  hidePreview,
+  hidePreviewQueryButton,
   topBarInnerContent,
   availableHeight,
 }: QueryEditorBodyProps) {
@@ -172,22 +171,17 @@ export function QueryEditorBody({
     return (
       <NativeQueryEditor
         className={cx(S.nativeQueryEditor, {
-          [S.readOnly]: readOnly,
+          [S.fullHeight]: readOnly || hidePreview,
         })}
         availableHeight={availableHeight}
         question={question}
-        proposedQuestion={proposedQuestion}
         query={query}
         placeholder="SELECT * FROM TABLE_NAME"
-        hasTopBar
-        hasRunButton={!readOnly && !hideRunButton}
         isInitiallyOpen
         isNativeEditorOpen
         readOnly={readOnly}
         resizable={resizable}
         canChangeDatabase={canChangeDatabase}
-        hasParametersList
-        hasEditingSidebar
         isRunnable={isRunnable}
         isRunning={isRunning}
         isResultDirty={isResultDirty}
@@ -199,7 +193,6 @@ export function QueryEditorBody({
         databaseIsDisabled={shouldDisableDatabase}
         databaseDisabledTooltip={databaseDisabledTooltip}
         setDatasetQuery={handleNativeQueryChange}
-        sidebarFeatures={NATIVE_EDITOR_SIDEBAR_FEATURES}
         toggleDataReference={onToggleDataReference}
         toggleSnippetSidebar={onToggleSnippetSidebar}
         toggleTemplateTagsEditor={onToggleTemplateTagsSidebar}
@@ -210,11 +203,20 @@ export function QueryEditorBody({
         nativeEditorSelectedText={nativeEditorSelectedText}
         onBlur={onBlur}
         onOpenModal={onOpenModal}
-        onAcceptProposed={onAcceptProposed}
-        onRejectProposed={onRejectProposed}
-        topBarInnerContent={topBarInnerContent}
-        extraButton={extraButton}
-      />
+      >
+        <NativeQueryEditor.TopBar leftContent={parametersList}>
+          {topBarInnerContent}
+          <NativeQueryEditor.Sidebar
+            features={{
+              ...NATIVE_EDITOR_SIDEBAR_FEATURES,
+              previewQuery: !hidePreviewQueryButton,
+            }}
+          />
+          <NativeQueryEditor.VisibilityToggler />
+        </NativeQueryEditor.TopBar>
+        {extraButton}
+        {!readOnly && !hideRunButton && <NativeQueryEditor.RunButton />}
+      </NativeQueryEditor>
     );
   }
 

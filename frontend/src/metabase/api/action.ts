@@ -1,9 +1,16 @@
 import _ from "underscore";
 
 import type {
+  ActionExecutionResult,
   CreateActionRequest,
+  ExecuteActionRequest,
+  ExecuteDashcardActionRequest,
+  ExecuteUnsavedActionRequest,
   GetActionRequest,
   ListActionsRequest,
+  ParametersForActionExecution,
+  PrefetchActionValuesRequest,
+  PrefetchDashcardValuesRequest,
   UpdateActionRequest,
   WritebackAction,
   WritebackActionId,
@@ -49,7 +56,20 @@ export const actionApi = Api.injectEndpoints({
       query: (body) => ({
         method: "PUT",
         url: `/api/action/${body.id}`,
-        body: _.omit(body, "type"), // Changing action type is not supported
+        body: _.pick(body, [
+          "id",
+          "archived",
+          "collection_id",
+          "dataset_query",
+          "description",
+          "kind",
+          "model_id",
+          "name",
+          "parameter_mappings",
+          "parameters",
+          "table_id",
+          "visualization_settings",
+        ]),
       }),
       invalidatesTags: (action, error) =>
         action
@@ -58,6 +78,21 @@ export const actionApi = Api.injectEndpoints({
               idTag("action", action.id),
             ])
           : [],
+      onQueryStarted: async (
+        { id, ...patch },
+        { dispatch, queryFulfilled },
+      ) => {
+        const patchResult = dispatch(
+          actionApi.util.updateQueryData("getAction", { id }, (draft) => {
+            Object.assign(draft, patch);
+          }),
+        );
+        try {
+          await queryFulfilled;
+        } catch {
+          patchResult.undo();
+        }
+      },
     }),
     deleteAction: builder.mutation<WritebackAction, WritebackActionId>({
       query: (id) => ({
@@ -105,6 +140,62 @@ export const actionApi = Api.injectEndpoints({
           idTag("action", id),
         ]),
     }),
+    executeAction: builder.mutation<
+      ActionExecutionResult,
+      ExecuteActionRequest
+    >({
+      query: ({ id, parameters }) => ({
+        method: "POST",
+        url: `/api/action/${id}/execute`,
+        body: { parameters },
+      }),
+    }),
+    executeUnsavedAction: builder.mutation<
+      ActionExecutionResult,
+      ExecuteUnsavedActionRequest
+    >({
+      query: (body) => ({
+        method: "POST",
+        url: "/api/action/execute",
+        body,
+      }),
+    }),
+    prefetchActionValues: builder.query<
+      ParametersForActionExecution,
+      PrefetchActionValuesRequest
+    >({
+      query: ({ id, parameters }) => ({
+        method: "POST",
+        url: `/api/action/${id}/execute/values`,
+        body: { parameters },
+      }),
+      // Prefetch is an imperative fetch-and-discard with row-specific params
+      // that rarely repeat, so there's nothing to gain from caching entries.
+      keepUnusedDataFor: 0,
+    }),
+    executeDashcardAction: builder.mutation<
+      ActionExecutionResult,
+      ExecuteDashcardActionRequest
+    >({
+      query: ({ dashboardId, dashcardId, modelId, parameters }) => ({
+        method: "POST",
+        url: `/api/dashboard/${dashboardId}/dashcard/${dashcardId}/execute`,
+        body: { modelId, parameters },
+      }),
+    }),
+    prefetchDashcardValues: builder.query<
+      ParametersForActionExecution,
+      PrefetchDashcardValuesRequest
+    >({
+      query: ({ dashboardId, dashcardId, parameters }) => ({
+        method: "POST",
+        url: `/api/dashboard/${dashboardId}/dashcard/${dashcardId}/execute/values`,
+        body: { parameters },
+      }),
+      // Prefetch is an imperative fetch-and-discard with per-dashcard params
+      // that rarely repeat, so there's nothing to gain from caching entries.
+      keepUnusedDataFor: 0,
+    }),
   }),
 });
 
@@ -112,10 +203,20 @@ export const {
   useGetActionQuery,
   useListActionsQuery,
   useListPublicActionsQuery,
+  useCreateActionMutation,
+  useUpdateActionMutation,
+  useDeleteActionMutation,
+  useCreateActionPublicLinkMutation,
   useDeleteActionPublicLinkMutation,
+  useExecuteActionMutation,
   endpoints: {
     listPublicActions,
     deleteActionPublicLink,
     createActionPublicLink,
+    executeAction,
+    executeUnsavedAction,
+    prefetchActionValues,
+    executeDashcardAction,
+    prefetchDashcardValues,
   },
 } = actionApi;

@@ -1,17 +1,11 @@
 import type { HTMLAttributes, ReactNode } from "react";
 
-import type { IconName } from "metabase/ui";
-import { Group, Tooltip } from "metabase/ui";
+import { EntityIcon } from "metabase/common/components/EntityIcon";
+import { MarkdownPreview } from "metabase/common/components/MarkdownPreview";
+import { Box, Ellipsified, Group, Icon, Tooltip, rem } from "metabase/ui";
+import type { IconName } from "metabase-types/api";
 
-import {
-  SkeletonDescription,
-  SkeletonIcon,
-  SkeletonIconContainer,
-  SkeletonRoot,
-  SkeletonTitle,
-  SkeletonTooltipIcon,
-  SkeletonTooltipIconContainer,
-} from "./StaticSkeleton.styled";
+import S from "./StaticSkeleton.module.css";
 
 export interface StaticSkeletonProps extends HTMLAttributes<HTMLDivElement> {
   name?: string | null;
@@ -23,6 +17,7 @@ export interface StaticSkeletonProps extends HTMLAttributes<HTMLDivElement> {
 
 export interface StaticSkeletonIconProps {
   name: IconName;
+  iconUrl?: string;
 }
 
 const StaticSkeleton = ({
@@ -36,26 +31,56 @@ const StaticSkeleton = ({
   const defaultedDescription = description || "";
 
   return (
-    <SkeletonRoot {...props}>
+    <Box pos="relative" {...props}>
       {icon && (
         <Tooltip label={tooltip} disabled={!tooltip}>
-          <SkeletonIconContainer>
-            <SkeletonIcon {...icon} />
+          <Box
+            className={S.iconContainer}
+            pos="relative"
+            w="xl"
+            mt="sm"
+            mb="lg"
+          >
+            <EntityIcon
+              {...icon}
+              size="1.5rem"
+              // Use the raw CSS var rather than the `text-secondary` ColorName
+              // so Loki visual snapshots resolve it via stylesheets instead of
+              // inlining a theme value that differs between runs.
+              color="var(--mb-color-text-secondary)"
+              style={{ display: "block" }}
+            />
             {tooltip && (
-              <SkeletonTooltipIconContainer>
-                <SkeletonTooltipIcon name="eye_crossed_out" />
-              </SkeletonTooltipIconContainer>
+              <Box
+                className={S.tooltipIconContainer}
+                pos="absolute"
+                right={-8}
+                bottom={-8}
+                p="xxxs"
+                bg="background_page-primary"
+              >
+                <Icon
+                  className={S.tooltipIcon}
+                  name="eye_crossed_out"
+                  size={12}
+                  display="block"
+                />
+              </Box>
             )}
-          </SkeletonIconContainer>
+          </Box>
         </Tooltip>
       )}
       <Group gap="0.5rem">
-        <SkeletonTitle>{name}</SkeletonTitle>
+        <Ellipsified c="text-primary" fw="bold">
+          {name}
+        </Ellipsified>
         {nameRightSection}
       </Group>
 
-      <SkeletonDescription>{defaultedDescription}</SkeletonDescription>
-    </SkeletonRoot>
+      <Box c="text-secondary" lh={rem(24)}>
+        <MarkdownPreview>{defaultedDescription}</MarkdownPreview>
+      </Box>
+    </Box>
   );
 };
 

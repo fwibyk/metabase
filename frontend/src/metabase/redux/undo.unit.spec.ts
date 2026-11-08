@@ -117,7 +117,7 @@ describe("metabase/redux/undo", () => {
     expect(store.getState().undo.length).toBe(1);
 
     // resume undo (e.g. when mouse left toast)
-    store.dispatch(resumeUndo(store.getState().undo[0]));
+    store.dispatch(resumeUndo(store.getState().undo[0].id));
 
     await act(async () => {
       jest.advanceTimersByTime(timeShiftResumed1);
@@ -162,5 +162,6 @@ const createMockStore = () => {
     // @ts-expect-error rework undo reducer to RTK
     reducer: { undo: undoReducer },
   });
+  // Unjustified type cast. FIXME
   return store as typeof store & { dispatch: Dispatch };
 };

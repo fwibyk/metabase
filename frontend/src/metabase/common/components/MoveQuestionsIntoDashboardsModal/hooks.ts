@@ -2,8 +2,8 @@ import {
   skipToken,
   useListCollectionDashboardQuestionCandidatesQuery,
 } from "metabase/api";
-import { getUserIsAdmin } from "metabase/selectors/user";
-import { useSelector } from "metabase/utils/redux";
+import { getUserIsAdmin } from "metabase/current-user";
+import { useSelector } from "metabase/redux";
 import type { CollectionId } from "metabase-types/api";
 
 export const useHasDashboardQuestionCandidates = (

@@ -21,7 +21,7 @@ export const TransformsSyncRow = ({ isReadOnly }: TransformsSyncRowProps) => {
   };
 
   return (
-    <Box p="md" className={CS.borderRowDivider}>
+    <Box p="lg" className={CS.borderRowDivider}>
       <Flex justify="space-between" align="center">
         <Flex align="center" gap="sm">
           <Icon name="transform" c="text-secondary" />
@@ -29,10 +29,9 @@ export const TransformsSyncRow = ({ isReadOnly }: TransformsSyncRowProps) => {
         </Flex>
         <Flex align="center" gap="sm">
           <Switch
-            size="sm"
             checked={isChecked}
             onChange={(e) => handleToggle(e.currentTarget.checked)}
-            disabled={isReadOnly}
+            disabled={isReadOnly || isChecked}
             aria-label={t`Sync Transforms`}
           />
           <Text>{t`Sync`}</Text>

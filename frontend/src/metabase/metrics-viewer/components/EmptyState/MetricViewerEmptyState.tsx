@@ -1,8 +1,8 @@
 import { t } from "ttag";
 
+import lineChartImage from "assets/img/empty-states/visualizations/line.svg?url";
 import CS from "metabase/css/core/index.css";
 import { Box, Center, Stack, Text, Title } from "metabase/ui";
-import { getSubpathSafeUrl } from "metabase/utils/urls";
 
 function MetricsViewerEmptyStateLayout({
   title,
@@ -11,17 +11,13 @@ function MetricsViewerEmptyStateLayout({
   title: string;
   description: string;
 }): JSX.Element {
-  const imgSrc = getSubpathSafeUrl(
-    "app/assets/img/empty-states/visualizations/line.svg",
-  );
-
   return (
     <Center flex={1}>
       <Stack>
         <Box maw="20rem" mb="1.5rem">
           <img
             className={CS.pointerEventsNone}
-            src={imgSrc}
+            src={lineChartImage}
             alt={t`Line chart illustration`}
           />
         </Box>
@@ -43,7 +39,7 @@ export function MetricsViewerEmptyState(): JSX.Element {
   );
 }
 
-export function MetricsViewerNoTabsEmptyState(): JSX.Element {
+export function MetricsViewerNoDimensionBreakoutEmptyState(): JSX.Element {
   return (
     <MetricsViewerEmptyStateLayout
       title={t`Select a dimension to explore`}

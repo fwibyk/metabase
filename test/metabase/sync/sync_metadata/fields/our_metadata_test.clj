@@ -13,7 +13,7 @@
 ;; `our-metadata` should match up with what we have in the DB
 (deftest does-metadata-match-test
   (mt/with-temp [:model/Database db {:engine ::toucanery/toucanery}]
-    (sync-metadata/sync-db-metadata! db)
+    (sync-metadata/sync-db-metadata! (:id db))
     (is (= #{{:name              "id"
               :database-type     "SERIAL"
               :base-type         :type/Integer
@@ -107,7 +107,6 @@
                                                           :json-unfolding    false
                                                           :database-is-auto-increment false
                                                           :preview-display   true}}}}}}
-
            (let [transactions-table-id   (u/the-id (t2/select-one-pk :model/Table :db_id (u/the-id db), :name "transactions"))
                  remove-ids-and-nil-vals (partial walk/postwalk #(if-not (map? %)
                                                                    %

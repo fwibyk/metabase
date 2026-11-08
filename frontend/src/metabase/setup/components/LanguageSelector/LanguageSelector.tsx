@@ -2,14 +2,10 @@ import { useMemo } from "react";
 import { t } from "ttag";
 import { findWhere } from "underscore";
 
-import { useUpdateSettingMutation } from "metabase/api";
-import {
-  getAvailableLocales,
-  getIsStepCompleted,
-  getLocale,
-} from "metabase/setup/selectors";
+import { useDispatch, useSelector } from "metabase/redux";
+import { useSetting, useUpdateSettingMutation } from "metabase/settings";
+import { getIsStepCompleted, getLocale } from "metabase/setup/selectors";
 import { Select } from "metabase/ui";
-import { useDispatch, useSelector } from "metabase/utils/redux";
 
 import { updateLocale } from "../../actions";
 import { getLocales } from "../../utils";
@@ -17,7 +13,7 @@ import { getLocales } from "../../utils";
 export const LanguageSelector = () => {
   const dispatch = useDispatch();
   const locale = useSelector(getLocale);
-  const localeData = useSelector(getAvailableLocales);
+  const localeData = useSetting("available-locales");
   const [updateSetting] = useUpdateSettingMutation();
   const isUserInfoStepCompleted = useSelector((state) =>
     getIsStepCompleted(state, "user_info"),

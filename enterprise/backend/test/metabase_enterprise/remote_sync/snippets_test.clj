@@ -12,9 +12,16 @@
    [metabase-enterprise.remote-sync.source.protocol :as source.p]
    [metabase-enterprise.remote-sync.spec :as spec]
    [metabase-enterprise.remote-sync.test-helpers :as test-helpers]
+   [metabase-enterprise.serialization.test-util :as ts]
+   [metabase-enterprise.serialization.v2.extract :as extract]
+   [metabase-enterprise.serialization.v2.ingest :as ingest]
+   [metabase-enterprise.serialization.v2.load :as serdes.load]
+   [metabase-enterprise.serialization.v2.storage :as storage]
+   [metabase-enterprise.serialization.v2.storage.files :as storage.files]
    [metabase.collections.models.collection :as collection]
    [metabase.collections.test-utils :as collections.tu]
    [metabase.events.core :as events]
+   [metabase.models.serialization :as serdes]
    [metabase.search.core :as search]
    [metabase.test :as mt]
    [metabase.test.fixtures :as fixtures]
@@ -32,17 +39,17 @@
     (finally
       (t2/delete! :model/RemoteSyncObject))))
 
-#_{:clj-kondo/ignore [:metabase/validate-deftest]}
-(use-fixtures :each (fn [f]
-                      (mt/with-dynamic-fn-redefs [search/reindex! (constantly nil)]
-                        (clean-remote-sync-state f))))
+(use-fixtures :each
+  (fn [f]
+    (mt/with-dynamic-fn-redefs [search/reindex! (constantly nil)]
+      (clean-remote-sync-state f))))
 
 ;;; ------------------------------------------- Event Handler Tests -------------------------------------------
 
 (deftest snippet-event-creates-sync-object-when-library-synced-test
   (testing "Creating a snippet creates a RemoteSyncObject entry when Library is remote-synced"
     (collections.tu/with-library-synced
-      (mt/with-temporary-setting-values [remote-sync-enabled true]
+      (mt/with-temporary-setting-values [remote-sync-enabled true remote-sync-type :read-write]
         (mt/with-temp [:model/NativeQuerySnippet snippet {:name "Test Snippet" :content "SELECT 1"}]
           (events/publish-event! :event/snippet-create {:object snippet :user-id (mt/user->id :rasta)})
           (is (t2/exists? :model/RemoteSyncObject
@@ -64,7 +71,7 @@
 (deftest snippet-event-updates-sync-object-test
   (testing "Updating a snippet updates the RemoteSyncObject entry when Library is synced"
     (collections.tu/with-library-synced
-      (mt/with-temporary-setting-values [remote-sync-enabled true]
+      (mt/with-temporary-setting-values [remote-sync-enabled true remote-sync-type :read-write]
         (mt/with-temp [:model/NativeQuerySnippet snippet {:name "Test Snippet" :content "SELECT 1"}]
           ;; Delete auto-created entry from snippet creation event and set up test state
           (t2/delete! :model/RemoteSyncObject :model_type "NativeQuerySnippet" :model_id (:id snippet))
@@ -83,7 +90,7 @@
 (deftest archived-snippet-marked-for-deletion-test
   (testing "Archiving a snippet marks it for deletion when Library is synced"
     (collections.tu/with-library-synced
-      (mt/with-temporary-setting-values [remote-sync-enabled true]
+      (mt/with-temporary-setting-values [remote-sync-enabled true remote-sync-type :read-write]
         (mt/with-temp [:model/NativeQuerySnippet snippet {:name "Test Snippet" :content "SELECT 1"}]
           ;; Delete auto-created entry from snippet creation event and set up test state
           (t2/delete! :model/RemoteSyncObject :model_type "NativeQuerySnippet" :model_id (:id snippet))
@@ -134,8 +141,7 @@
                        :model/NativeQuerySnippet snippet {:name "Existing Snippet" :content "SELECT 1" :collection_id coll-id}]
           (is (zero? (t2/count :model/RemoteSyncObject :model_type "NativeQuerySnippet"))
               "Should have no snippet tracking entries initially")
-          ;; Enable snippet sync
-          (rs-events/sync-snippet-tracking! true)
+          (rs-events/enable-library-tracking!)
           ;; Verify tracking entries created
           (is (t2/exists? :model/RemoteSyncObject
                           :model_type "Collection"
@@ -168,8 +174,7 @@
           (is (= 2 (t2/count :model/RemoteSyncObject :model_type [:in ["Collection" "NativeQuerySnippet"]]
                              :model_id [:in [coll-id (:id snippet)]]))
               "Should have 2 tracking entries")
-          ;; Disable snippet sync
-          (rs-events/sync-snippet-tracking! false)
+          (rs-events/disable-library-tracking!)
           ;; Verify tracking entries removed
           (is (zero? (t2/count :model/RemoteSyncObject :model_type "NativeQuerySnippet"))
               "Snippet tracking entries should be removed")
@@ -214,13 +219,13 @@
       (mt/with-temp [:model/NativeQuerySnippet snippet {:name "Test Snippet" :content "SELECT 1"}]
         ;; Ensure library exists and is not synced initially
         (when-let [library (collection/library-collection)]
-          (t2/update! :model/Collection (:id library) {:is_remote_synced false}))
+          (t2/update! :model/Collection :id (:id library) {:is_remote_synced false}))
         (t2/delete! :model/RemoteSyncObject :model_type "NativeQuerySnippet")
         (is (zero? (t2/count :model/RemoteSyncObject :model_type "NativeQuerySnippet"))
             "Should have no snippet tracking initially")
         ;; Enable Library sync and verify snippets get tracked
         (when-let [library (collection/library-collection)]
-          (t2/update! :model/Collection (:id library) {:is_remote_synced true})
+          (t2/update! :model/Collection :id (:id library) {:is_remote_synced true})
           (events/publish-event! :event/collection-update
                                  {:object (t2/select-one :model/Collection :id (:id library))
                                   :user-id (mt/user->id :rasta)})
@@ -229,7 +234,7 @@
                           :model_id (:id snippet))
               "Snippet should be tracked after Library becomes synced")
           ;; Disable Library sync and verify snippets get untracked
-          (t2/update! :model/Collection (:id library) {:is_remote_synced false})
+          (t2/update! :model/Collection :id (:id library) {:is_remote_synced false})
           (events/publish-event! :event/collection-update
                                  {:object (t2/select-one :model/Collection :id (:id library))
                                   :user-id (mt/user->id :rasta)})
@@ -258,7 +263,6 @@
 description: null
 entity_id: %s
 slug: %s
-created_at: '2024-08-28T09:46:18.671622Z'
 archived: false
 type: null
 parent_id: null
@@ -417,6 +421,33 @@ is_sample: false
                 (let [files-after-export (get @(:files-atom mock-source) "main")]
                   (is (not (some #(str/includes? % "archived_snippet") (keys files-after-export)))
                       "Archived snippet file should be deleted after export")))
-              (testing "RemoteSyncObject entry is updated to synced after export"
-                (is (= "synced" (:status (t2/select-one :model/RemoteSyncObject :model_type "NativeQuerySnippet" :model_id snippet-id)))
-                    "RemoteSyncObject entry for archived snippet should have synced status")))))))))
+              (testing "the archived snippet's tracking row is dropped after export (it left the synced set)"
+                (is (nil? (t2/select-one :model/RemoteSyncObject :model_type "NativeQuerySnippet" :model_id snippet-id))
+                    "RemoteSyncObject entry for the archived snippet should be deleted")))))))))
+
+;;; --------------------------------------- Serdes Round-Trip Stability ----------------------------------------
+
+(deftest template-tag-ids-survive-export-import-round-trip-test
+  (testing "GHY-4067: a snippet's template-tag ids must not change across an export/import round-trip (no spurious churn)"
+    (mt/with-premium-features #{:serialization}
+      (ts/with-random-dump-dir [dump-dir "remote-sync-snippet-"]
+        (mt/with-temp [:model/Collection {coll-id :id} {:name "Snippets Collection" :namespace :snippets}
+                       :model/NativeQuerySnippet {snippet-id :id snippet-eid :entity_id}
+                       {:name "roundtrip-snippet"
+                        :content "where a = {{field1}} and b = {{field2}}"
+                        :collection_id coll-id}]
+          (let [tag-ids #(update-vals (:template_tags (t2/select-one :model/NativeQuerySnippet :id snippet-id)) :id)
+                before  (tag-ids)]
+            (is (= #{"field1" "field2"} (set (keys before)))
+                "sanity check: the snippet has two template tags")
+            ;; Real export to YAML on disk, then real import back. Ingest keywordizes the tag-name keys,
+            ;; which is what used to defeat template-tag id preservation in the load hook.
+            (storage/store! (serdes/with-cache
+                              (into [] (extract/extract {:targets       [["NativeQuerySnippet" snippet-eid]]
+                                                         :no-settings   true
+                                                         :no-data-model true})))
+                            (storage.files/file-writer dump-dir))
+            (serdes/with-cache
+              (serdes.load/load-metabase! (ingest/ingest-yaml dump-dir)))
+            (is (= before (tag-ids))
+                "template-tag ids should be identical after an export/import round-trip")))))))

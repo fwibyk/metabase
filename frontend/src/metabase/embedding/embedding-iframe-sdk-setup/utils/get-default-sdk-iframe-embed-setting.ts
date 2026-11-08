@@ -9,11 +9,9 @@ import type {
   QuestionEmbedOptions,
   SdkIframeEmbedBaseSettings,
 } from "metabase/embedding/embedding-iframe-sdk/types/embed";
+import type { SdkIframeEmbedSetupExperience } from "metabase/embedding/types";
 
-import type {
-  SdkIframeEmbedSetupExperience,
-  SdkIframeEmbedSetupSettings,
-} from "../types";
+import type { SdkIframeEmbedSetupSettings } from "../types";
 
 import { getCommonEmbedSettings } from "./get-common-embed-settings";
 
@@ -87,6 +85,7 @@ export const getDefaultSdkIframeEmbedSettings = ({
       "metabot",
       (): MetabotEmbedOptions => ({
         componentName: "metabase-metabot",
+        isSaveEnabled: false,
       }),
     )
     .exhaustive();

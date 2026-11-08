@@ -11,6 +11,8 @@ import {
 } from "__support__/server-mocks";
 import { renderWithProviders, screen, waitFor } from "__support__/ui";
 import { UndoListing } from "metabase/common/components/UndoListing";
+import { PLUGIN_EMBEDDING_SDK } from "metabase/plugins";
+import { Route } from "metabase/router";
 import type { SettingKey } from "metabase-types/api";
 import {
   createMockDashboard,
@@ -29,20 +31,42 @@ const generalSettings = {
   "site-url": "https://mysite.biz",
   "admin-email": "help@mysite.biz",
   "anon-tracking-enabled": false,
+  "analytics-pii-retention-enabled": false,
   "redirect-all-requests-to-https": false,
   "humanization-strategy": "simple",
   "enable-xrays": false,
-  "allowed-iframe-hosts": "https://cooldashboards.limo",
   "search-engine": "appdb",
 } as const;
 
-const setup = async (
-  { isCloudPlan }: { isCloudPlan: boolean } = { isCloudPlan: false },
-) => {
+const originalIsEmbeddingSdkEnabled = PLUGIN_EMBEDDING_SDK.isEnabled;
+
+afterEach(() => {
+  PLUGIN_EMBEDDING_SDK.isEnabled = originalIsEmbeddingSdkEnabled;
+});
+
+const setup = async ({
+  isCloudPlan,
+  hasAuditApp,
+  isHosted,
+  hasEmbeddingSdk,
+}: {
+  isCloudPlan?: boolean;
+  hasAuditApp?: boolean;
+  isHosted?: boolean;
+  hasEmbeddingSdk?: boolean;
+} = {}) => {
+  // Direct control, bypassing hasPremiumFeature/MetabaseSettings singleton
+  // timing -- deterministic regardless of what earlier tests in this worker
+  // left behind.
+  PLUGIN_EMBEDDING_SDK.isEnabled = () => hasEmbeddingSdk ?? false;
+
   const settings = createMockSettings({
     ...generalSettings,
+    "is-hosted?": isHosted ?? false,
     "token-features": createMockTokenFeatures({
-      hosting: isCloudPlan,
+      hosting: isCloudPlan ?? false,
+      audit_app: hasAuditApp ?? true,
+      embedding_sdk: hasEmbeddingSdk ?? false,
     }),
   });
 
@@ -60,6 +84,7 @@ const setup = async (
   setupUpdateSettingEndpoint();
   setupSettingsEndpoints(
     Object.entries(settings).map(([key, value]) =>
+      // Unjustified type cast. FIXME
       createMockSettingDefinition({ key: key as SettingKey, value }),
     ),
   );
@@ -71,10 +96,16 @@ const setup = async (
   });
 
   renderWithProviders(
-    <>
-      <GeneralSettingsPage />
-      <UndoListing />
-    </>,
+    <Route
+      path="*"
+      element={
+        <>
+          <GeneralSettingsPage />
+          <UndoListing />
+        </>
+      }
+    />,
+    { withRouter: true, initialRoute: "/admin/settings/general" },
   );
 
   await screen.findByText("Site name");
@@ -88,12 +119,12 @@ describe("GeneralSettingsPage", () => {
       "Site name",
       "Site url",
       "Redirect to HTTPS",
-      "Custom homepage",
+      "Homepage",
       "Email address for help requests",
-      "Anonymous tracking",
+      "Send anonymous tracking data to Metabase",
+      "Collect user data to display in usage analytics",
       "Friendly table and field names",
       "Enable X-Ray features",
-      "Allowed domains for iframes in dashboards",
     ].forEach((text) => {
       expect(screen.getByText(text)).toBeInTheDocument();
     });
@@ -138,6 +169,9 @@ describe("GeneralSettingsPage", () => {
     await screen.findByDisplayValue("Metabasey");
 
     const emailInput = await screen.findByDisplayValue("help@mysite.biz");
+    await waitFor(() => {
+      expect(emailInput).toBeEnabled();
+    });
     await userEvent.clear(emailInput);
     await userEvent.type(emailInput, "support@mySite.biz");
     blur();
@@ -167,12 +201,92 @@ describe("GeneralSettingsPage", () => {
   it("should show Anonymous Tracking input for non-cloud plans", async () => {
     await setup({ isCloudPlan: false });
 
-    expect(screen.getByText("Anonymous tracking")).toBeInTheDocument();
+    expect(
+      screen.getByText("Send anonymous tracking data to Metabase"),
+    ).toBeInTheDocument();
   });
 
   it("should not show Anonymous Tracking input if the plan is cloud", async () => {
     await setup({ isCloudPlan: true });
 
-    expect(screen.queryByText("Anonymous tracking")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Send anonymous tracking data to Metabase"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("should show Collect User Data input when the audit_app token feature is enabled", async () => {
+    await setup({ hasAuditApp: true });
+
+    expect(
+      screen.getByText("Collect user data to display in usage analytics"),
+    ).toBeInTheDocument();
+  });
+
+  it("should not show Collect User Data input when the audit_app token feature is disabled", async () => {
+    await setup({ hasAuditApp: false });
+
+    expect(
+      screen.queryByText("Collect user data to display in usage analytics"),
+    ).not.toBeInTheDocument();
+  });
+
+  describe("Usage tracking section visibility", () => {
+    it("should hide the Usage tracking section on Starter Cloud (hosting without audit_app)", async () => {
+      await setup({ isCloudPlan: true, hasAuditApp: false });
+
+      expect(screen.queryByText("Usage tracking")).not.toBeInTheDocument();
+    });
+
+    it("should show the Usage tracking section on Pro Cloud (hosting with audit_app)", async () => {
+      await setup({ isCloudPlan: true, hasAuditApp: true });
+
+      expect(screen.getByText("Usage tracking")).toBeInTheDocument();
+    });
+
+    it("should show the Usage tracking section on self-hosted OSS (no hosting, no audit_app)", async () => {
+      await setup({ isCloudPlan: false, hasAuditApp: false });
+
+      expect(screen.getByText("Usage tracking")).toBeInTheDocument();
+    });
+
+    it("should show the Usage tracking section on self-hosted EE (no hosting, audit_app)", async () => {
+      await setup({ isCloudPlan: false, hasAuditApp: true });
+
+      expect(screen.getByText("Usage tracking")).toBeInTheDocument();
+    });
+  });
+
+  describe("Version pinning", () => {
+    it("should offer users version pinning when they have a cloud instance with the SDK", async () => {
+      await setup({ isHosted: true, hasEmbeddingSdk: true });
+
+      expect(screen.getByText("Version pinning")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /Metabase Cloud instances are automatically upgraded to new releases/i,
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("link", { name: "Request version pinning" }),
+      ).toBeInTheDocument();
+    });
+
+    it("should not offer version pinning on self-hosted instances", async () => {
+      await setup({ isHosted: false, hasEmbeddingSdk: true });
+
+      expect(screen.queryByText("Version pinning")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("link", { name: "Request version pinning" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should not offer version pinning without the SDK feature", async () => {
+      await setup({ isHosted: true, hasEmbeddingSdk: false });
+
+      expect(screen.queryByText("Version pinning")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("link", { name: "Request version pinning" }),
+      ).not.toBeInTheDocument();
+    });
   });
 });

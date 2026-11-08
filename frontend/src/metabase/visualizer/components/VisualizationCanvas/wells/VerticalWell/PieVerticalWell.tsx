@@ -3,8 +3,8 @@ import cx from "classnames";
 import { type ReactNode, forwardRef } from "react";
 import { t } from "ttag";
 
+import { useDispatch, useSelector } from "metabase/redux";
 import { Box, Ellipsified, Stack, Text } from "metabase/ui";
-import { useDispatch, useSelector } from "metabase/utils/redux";
 import { DROPPABLE_ID } from "metabase/visualizer/constants";
 import { useCanHandleActiveItem } from "metabase/visualizer/hooks/use-can-handle-active-item";
 import {
@@ -50,7 +50,7 @@ function PieMetricWell() {
   };
 
   return (
-    <Box mt="lg">
+    <Box mt="xl">
       <Text>{t`Metric`}</Text>
       <WellBox
         isHighlighted={canHandleActiveItem}
@@ -95,7 +95,7 @@ function PieDimensionWell() {
   };
 
   return (
-    <Box mt="lg">
+    <Box mt="xl">
       <Text>{t`Dimensions`}</Text>
       <WellBox
         isHighlighted={canHandleActiveItem}

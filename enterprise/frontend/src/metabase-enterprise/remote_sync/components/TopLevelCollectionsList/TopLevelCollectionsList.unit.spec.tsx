@@ -4,9 +4,9 @@ import fetchMock from "fetch-mock";
 import { setupEnterpriseOnlyPlugin } from "__support__/enterprise";
 import type { ENTERPRISE_PLUGIN_NAME } from "__support__/enterprise-typed";
 import { mockSettings } from "__support__/settings";
+import { createMockState } from "__support__/state";
 import { renderWithProviders, screen, waitFor } from "__support__/ui";
 import { Form, FormProvider, FormSubmitButton } from "metabase/forms";
-import { createMockState } from "metabase/redux/store/mocks";
 import type { CollectionSyncPreferences } from "metabase-types/api";
 import {
   createMockCollectionItem,
@@ -43,6 +43,7 @@ const createMockLibraryCollection = (
 
 const setupEndpoints = ({
   collections = [createMockTopLevelCollectionItem()],
+  // Unjustified type cast. FIXME
   libraryCollection = null as ReturnType<
     typeof createMockCollectionItem
   > | null,
@@ -391,29 +392,16 @@ describe("TopLevelCollectionsList", () => {
       });
     });
 
-    it("should handle toggling library collection", async () => {
-      const libraryCollection = createMockLibraryCollection({ id: 999 });
-      const { onSubmit } = setup({
+    it("should keep synced library collection locked on", async () => {
+      setup({
         collections: [],
-        libraryCollection,
-        initialSyncMap: { 999: false },
+        libraryCollection: createMockLibraryCollection({ id: 999 }),
+        initialSyncMap: { 999: true },
       });
 
-      await waitFor(() => {
-        expect(screen.getByRole("switch")).toBeInTheDocument();
-      });
-
-      await userEvent.click(screen.getByRole("switch"));
-      await userEvent.click(screen.getByText("Save"));
-
-      await waitFor(() => {
-        expect(onSubmit).toHaveBeenCalledWith(
-          expect.objectContaining({
-            [COLLECTIONS_KEY]: { 999: true },
-          }),
-          expect.anything(),
-        );
-      });
+      const libraryToggle = await screen.findByRole("switch");
+      expect(libraryToggle).toBeChecked();
+      expect(libraryToggle).toBeDisabled();
     });
   });
 

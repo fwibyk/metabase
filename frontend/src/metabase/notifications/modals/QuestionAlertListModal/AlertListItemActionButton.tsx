@@ -1,7 +1,7 @@
 import type { JSX, MouseEventHandler } from "react";
 
-import { Button, Icon, type IconName, Tooltip } from "metabase/ui";
-
+import { Button, Icon, Tooltip } from "metabase/ui";
+import type { IconName } from "metabase-types/api";
 interface Props {
   label: string;
   iconName: IconName;
@@ -14,12 +14,13 @@ export const AlertListItemActionButton = ({
   onClick,
 }: Props): JSX.Element => (
   <Tooltip label={label}>
+    {/* TODO: replace with ActionIcon (GDGT-2457) */}
     <Button
-      color="brand"
+      variant="subtle"
+      color="neutral"
+      size="sm"
       aria-label={label}
       leftSection={<Icon name={iconName} />}
-      size="xs"
-      variant="subtle"
       onClick={onClick}
     />
   </Tooltip>

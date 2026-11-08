@@ -1,11 +1,11 @@
-import { Link } from "react-router";
 import { t } from "ttag";
 
+import { Link } from "metabase/common/components/Link";
+import { getUserIsAdmin } from "metabase/current-user";
 import { PLUGIN_REMOTE_SYNC } from "metabase/plugins";
-import { getUserIsAdmin } from "metabase/selectors/user";
+import { useSelector } from "metabase/redux";
 import { Button, Icon, Menu, Tooltip } from "metabase/ui";
-import { useSelector } from "metabase/utils/redux";
-import * as Urls from "metabase/utils/urls";
+import * as Urls from "metabase/urls";
 
 export function TransformToolsMenu() {
   const isAdmin = useSelector(getUserIsAdmin);
@@ -26,6 +26,7 @@ export function TransformToolsMenu() {
         >
           <Button
             leftSection={<Icon name="gear" />}
+            size="lg"
             disabled={isRemoteSyncReadOnly}
           >
             {t`Tools`}

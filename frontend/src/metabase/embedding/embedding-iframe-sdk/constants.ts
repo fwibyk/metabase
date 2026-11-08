@@ -7,6 +7,7 @@ import type {
   SdkIframeEmbedBaseSettings,
   SdkIframeEmbedSettingKey,
 } from "./types/embed";
+import type { MetabaseConfig } from "./types/modular-embedding";
 
 /**
  * The timeout to wait for a session token from the embed.js script.
@@ -29,7 +30,9 @@ export const ALLOWED_EMBED_SETTING_KEYS_MAP = {
     "jwtProviderUri",
     "pluginsConfig",
     "guestEmbedProviderUri",
-  ] satisfies (keyof SdkIframeEmbedBaseSettings)[],
+    "allowedCustomVisualizations",
+    // Every allowed setting must be documented in `MetabaseConfig`
+  ] satisfies (keyof SdkIframeEmbedBaseSettings & keyof MetabaseConfig)[],
   dashboard: [
     "dashboardId",
     "autoRefreshInterval",
@@ -37,6 +40,7 @@ export const ALLOWED_EMBED_SETTING_KEYS_MAP = {
     "withDownloads",
     "withSubscriptions",
     "initialParameters",
+    "parameters",
     "hiddenParameters",
     "drills",
     "enableEntityNavigation",
@@ -49,6 +53,7 @@ export const ALLOWED_EMBED_SETTING_KEYS_MAP = {
     "withDownloads",
     "withAlerts",
     "initialSqlParameters",
+    "sqlParameters",
     "hiddenParameters",
     "drills",
     "entityTypes",
@@ -67,6 +72,7 @@ export const ALLOWED_EMBED_SETTING_KEYS_MAP = {
     "collectionVisibleColumns",
     "collectionEntityTypes",
     "collectionPageSize",
+    "collectionShowDashboardQuestions",
     "dataPickerEntityTypes",
     "withNewQuestion",
     "withNewDashboard",
@@ -93,6 +99,7 @@ export const ALLOWED_GUEST_EMBED_SETTING_KEYS_MAP = {
     "withTitle",
     "withDownloads",
     "initialParameters",
+    "parameters",
   ] satisfies (keyof DashboardEmbedOptions)[],
   chart: [
     "token",
@@ -100,6 +107,7 @@ export const ALLOWED_GUEST_EMBED_SETTING_KEYS_MAP = {
     "withDownloads",
     "entityTypes",
     "initialSqlParameters",
+    "sqlParameters",
   ] satisfies (keyof QuestionEmbedOptions)[],
   exploration: [] satisfies (keyof ExplorationEmbedOptions)[],
   browser: [] satisfies (keyof BrowserEmbedOptions)[],

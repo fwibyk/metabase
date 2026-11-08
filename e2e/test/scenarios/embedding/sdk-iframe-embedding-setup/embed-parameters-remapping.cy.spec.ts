@@ -19,7 +19,7 @@ describe(suiteTitle, () => {
     cy.signInAsAdmin();
     H.activateToken("pro-self-hosted");
     H.enableTracking();
-    H.updateSetting("enable-embedding-static", true);
+    H.updateSetting("enable-embedding-modular", true);
     H.updateSetting("embedding-secret-key", JWT_SHARED_SECRET);
     H.mockEmbedJsToDevServer();
   });
@@ -154,6 +154,7 @@ describe(suiteTitle, () => {
       navigateToEmbedOptionsStep({
         experience: "dashboard",
         resourceName: "Dashboard with Remapping",
+        preselectGuest: true,
       });
 
       H.setEmbeddingParameter("Internal", "Editable");
@@ -294,6 +295,7 @@ describe(suiteTitle, () => {
       navigateToEmbedOptionsStep({
         experience: "chart",
         resourceName: "Question with Remapping",
+        preselectGuest: true,
       });
 
       H.setEmbeddingParameter("Internal", "Editable");

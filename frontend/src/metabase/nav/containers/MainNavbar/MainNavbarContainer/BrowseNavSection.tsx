@@ -1,14 +1,14 @@
 import { c, t } from "ttag";
 
 import { CollapseSection } from "metabase/common/components/CollapseSection";
-import { useUserSetting } from "metabase/common/hooks";
+import { useUserSetting } from "metabase/settings";
 import { ActionIcon, Icon, Tooltip } from "metabase/ui";
 
 import { PaddedSidebarLink, SidebarHeading } from "../MainNavbar.styled";
 import { trackAddDataModalOpened } from "../analytics";
 import type { SelectedItem } from "../types";
 
-import { useAddDataPermissions } from "./AddDataModal/use-add-data-permission";
+import { useCanAddData } from "./use-can-add-data";
 
 export const BrowseNavSection = ({
   nonEntityItem,
@@ -29,11 +29,10 @@ export const BrowseNavSection = ({
     "expand-browse-in-nav",
   );
 
-  const { canPerformMeaningfulActions } = useAddDataPermissions();
-
+  const canAddData = useCanAddData();
   // ibykus: im eingebetteten iframe die Browse-/Add-Data-Einstiege NICHT verstecken —
   // Erstellen/Navigieren soll wie in einer nicht-eingebetteten Instanz möglich sein.
-  const showAddDataButton = canPerformMeaningfulActions;
+  const showAddDataButton = canAddData;
 
   return (
     <CollapseSection

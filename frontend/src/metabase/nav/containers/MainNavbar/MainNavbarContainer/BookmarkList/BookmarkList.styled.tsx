@@ -1,4 +1,4 @@
-// eslint-disable-next-line no-restricted-imports
+// eslint-disable-next-line eslint-js/no-restricted-imports
 import styled from "@emotion/styled";
 
 import { color } from "metabase/ui/utils/colors";
@@ -13,7 +13,7 @@ export const SidebarBookmarkItem = styled(DraggableSidebarLink)`
   &:focus-within,
   :focus & {
     button {
-      color: var(--mb-color-brand);
+      color: var(--mb-color-core-brand);
       opacity: 0.5;
 
       > svg:focus {
@@ -25,7 +25,7 @@ export const SidebarBookmarkItem = styled(DraggableSidebarLink)`
   button {
     opacity: 0;
     color: ${(props) =>
-      props.isSelected ? color("text-primary-inverse") : color("brand")};
+      props.isSelected ? color("text-primary-inverse") : color("core-brand")};
     cursor: pointer;
     margin-top: 3px;
 

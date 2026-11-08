@@ -1,5 +1,5 @@
-import type { IconName } from "metabase/ui";
-import { Button, FixedSizeIcon, Flex, Text } from "metabase/ui";
+import { Button, FixedSizeIcon, Text } from "metabase/ui";
+import type { IconName } from "metabase-types/api";
 
 interface BannerButtonProps {
   iconName: IconName;
@@ -13,21 +13,13 @@ export const BannerButton = ({
   onClick,
 }: BannerButtonProps) => (
   <Button
-    size="compact-md"
-    variant="outline"
-    color="text-primary-inverse"
-    miw="2rem"
-    h="2rem"
+    size="md"
+    variant="on-dark-secondary"
+    leftSection={<FixedSizeIcon size={12} name={iconName} />}
     onClick={onClick}
   >
-    <Flex align="center" gap="sm">
-      <FixedSizeIcon size={12} name={iconName} />
-      <Text
-        color="text-primary-inverse"
-        display={{ base: "none", sm: "inline" }}
-      >
-        {children}
-      </Text>
-    </Flex>
+    <Text c="inherit" display={{ base: "none", sm: "inline" }}>
+      {children}
+    </Text>
   </Button>
 );

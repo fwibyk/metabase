@@ -160,8 +160,9 @@
   freie Abfrage: nur dieser Weg bindet `qp.perms/*card-id*`, und erst damit darf eine gespeicherte NATIVE Frage mit
   reinem Datenrecht laufen. Der frühere Nachbau verlangte das Recht auf eigene SQL-Abfragen (ibkefap121, 06.11.2026)."
   [card parameter]
+  ;; Ab 0.65 erwartet process-query-for-card die Karte selbst statt ihrer Kennung.
   (qp.card/process-query-for-card
-   (:id card) :api
+   card :api
    ;; Nur, was auch die Oberfläche schickt: process-query-for-card ergänzt den Rest aus der Karte und prüft :name
    ;; gegen die Template-Tags (Anzeigename "Preis" ≠ Tag "preis" -> 500).
    :parameters (into [] (comp (filter #(contains? % :value)) (map #(select-keys % [:id :type :target :value]))) parameter)

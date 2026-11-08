@@ -1,4 +1,6 @@
 (ns metabase.auth-provider.impl-test
+  {:clj-kondo/config '{:linters {:deprecated-var {:exclude {metabase.test.data/mbql-query {:namespaces [metabase.auth-provider.impl-test]}
+                                                            metabase.test.data/run-mbql-query {:namespaces [metabase.auth-provider.impl-test]}}}}}}
   (:require
    [clojure.test :refer [deftest is testing]]
    [metabase.auth-provider.impl :as auth-provider]
@@ -30,7 +32,7 @@
               (testing "Connection tests"
                 (is (nil? (warehouses/test-database-connection (:engine db) (:details db)))))
               (testing "Syncing does not blow up"
-                (sync/sync-database! (mt/db)))
+                (sync/sync-database! (mt/id)))
               (testing "Querying"
                 (is (= [["Polo Lounge"]]
                        (mt/rows (mt/run-mbql-query venues {:filter [:= $id 60] :fields [$name]}))))))))))))

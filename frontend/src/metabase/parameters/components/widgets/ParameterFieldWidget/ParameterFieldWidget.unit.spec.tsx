@@ -1,17 +1,21 @@
 import userEvent from "@testing-library/user-event";
 
+import { createMockMetadataFromState } from "__support__/metadata";
 import {
   setupParameterSearchValuesEndpoint,
   setupParameterValuesEndpoints,
 } from "__support__/server-mocks";
+import { createMockState } from "__support__/state";
 import { createMockEntitiesState } from "__support__/store";
 import { renderWithProviders, screen } from "__support__/ui";
-import { createMockState } from "metabase/redux/store/mocks";
-import { getMetadata } from "metabase/selectors/metadata";
 import type Field from "metabase-lib/v1/metadata/Field";
 import { createMockUiParameter } from "metabase-lib/v1/parameters/mock";
 import type { UiParameter } from "metabase-lib/v1/parameters/types";
-import type { Field as FieldType, ParameterValues } from "metabase-types/api";
+import type {
+  Field as FieldType,
+  ParameterValue,
+  ParameterValues,
+} from "metabase-types/api";
 import {
   createMockField,
   createMockParameterValues,
@@ -66,7 +70,7 @@ function setup({
     }),
   });
 
-  const metadata = getMetadata(storeInitialState);
+  const metadata = createMockMetadataFromState(storeInitialState);
   const field = metadata.field(FIELD_ID);
   const fieldsToUse = field ? [field] : fields;
 
@@ -122,6 +126,24 @@ describe("ParameterFieldWidget", () => {
       const input = await screen.findByPlaceholderText("Search the list");
       await userEvent.type(input, "{enter}");
       expect(setValue).toHaveBeenCalledWith([]);
+    });
+
+    it("should show all values of a dropdown list (metabase#49577)", async () => {
+      const values: ParameterValue[] = [["foo"], ["bar"], ["baz"]];
+      setup({
+        parameter: {
+          ...parameter,
+          values_source_config: { values },
+        },
+        parameterValues: createMockParameterValues({ values }),
+      });
+
+      expect(
+        await screen.findByPlaceholderText("Search the list"),
+      ).toBeInTheDocument();
+      expect(await screen.findByTestId("foo-filter-value")).toBeVisible();
+      expect(screen.getByTestId("bar-filter-value")).toBeVisible();
+      expect(screen.getByTestId("baz-filter-value")).toBeVisible();
     });
 
     it("should not allow to submit empty values when the parameter required", async () => {
@@ -220,12 +242,30 @@ describe("ParameterFieldWidget", () => {
       expect(input).toHaveValue("f");
       expect(await screen.findByText("foo")).toBeInTheDocument();
 
-      await userEvent.type(input, "{enter}");
+      await userEvent.type(input, "{enter}", { skipClick: true });
       expect(input).toHaveValue("foo");
       expect(setValue).not.toHaveBeenCalled();
 
-      await userEvent.type(input, "{enter}");
+      await userEvent.type(input, "{enter}", { skipClick: true });
       expect(setValue).toHaveBeenCalledWith(["foo"]);
+    });
+
+    it("should not show the values before a search term is typed (metabase#49577)", async () => {
+      setup({
+        parameter,
+        parameterValues: createMockParameterValues({
+          values: [["foo"], ["bar"]],
+        }),
+        parameterSearchValues,
+      });
+
+      const input = screen.getByRole("textbox");
+      await userEvent.click(input);
+      expect(screen.queryByText("foo")).not.toBeInTheDocument();
+      expect(screen.queryByText("bar")).not.toBeInTheDocument();
+
+      await userEvent.type(input, "f");
+      expect(await screen.findByText("foo")).toBeInTheDocument();
     });
 
     it("should allow to submit an empty value on enter when the parameter is not required", async () => {

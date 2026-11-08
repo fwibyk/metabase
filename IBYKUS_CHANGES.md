@@ -7,7 +7,24 @@ Gemäß AGPL-3.0 werden alle Änderungen gegenüber dem Upstream hier dokumentie
 
 ## Basis — und wie man unsere Änderungen selbst nachrechnet
 
-**Basis ist `metabase/metabase` auf `master`, Commit
+**Seit `v0.65.3.6-ibykus.1` (08.11.2026) ist die Basis das Release `metabase/metabase` `v0.65.3.6`**
+(Commit `17f9906d`, 06.11.2026). Verankert als vorgängerloser Tag **`upstream-base-v0.65.3.6`**:
+
+```
+git diff upstream-base-v0.65.3.6 master
+git rev-parse upstream-base-v0.65.3.6^{tree}   # 5a3df20ade49ce1146708e0a4765797a1fb8a18a == Baum von v0.65.3.6
+```
+
+Warum der Wechsel: die alte Basis war ein `master`-Stand ohne Release-Linie, für den Upstream keine
+Sicherheitskorrekturen nachliefert -- betroffen u. a. von CVE-2026-72898 (SQL-Injection über
+`/api/session/reset_password`, ohne Anmeldung). Unsere Änderungen wurden auf den neuen Baum neu
+aufgesetzt, nicht gemergt. Die Versionsbezeichnung folgt jetzt dem Upstream-Release
+(`v0.65.3.6-ibykus.N`): ab 0.65 trägt Metabase die laufende Version in die App-Datenbank ein und
+vergleicht sie beim Start mit dem Schema -- ein Etikett `v0.59…` auf einem 0.65-Schema wäre falsch.
+
+### Frühere Basis (bis `v0.59.5.13-ibykus`)
+
+**Basis war `metabase/metabase` auf `master`, Commit
 [`dd6c1e01`](https://github.com/metabase/metabase/commit/dd6c1e01cba86231ccdae3e6ae8d84c077e7198b)
 vom 23.04.2026.** Verankert als Tag **`upstream-base-2026-04-23`**. Der vollständige
 Änderungssatz ist damit bildbar:
@@ -62,7 +79,7 @@ Basis-Tag.
 
 ### Backend (Clojure)
 
-#### `src/metabase/server/auth_wrapper.clj`
+#### `src/metabase/sso/auth_wrapper.clj` *(bis 0.61-dev: `src/metabase/server/auth_wrapper.clj`)*
 - **Änderung**: Einbindung des neuen `/auth/sso-local` Endpunkts in die Route-Konfiguration
 - **Grund**: Ermöglicht Custom-SSO ohne Enterprise-Lizenz
 
@@ -98,11 +115,11 @@ Basis-Tag.
   Schreiben nicht nach.
 
 #### `src/metabase/server/middleware/security.clj`
-- **Änderung**: `X-Frame-Options`-Header wird unterdrückt wenn `MB_EMBEDDING_APP_ORIGIN` gesetzt ist
+- **Änderung**: Ist `MB_EMBEDDING_APP_ORIGIN` gesetzt, steht dieser Wert (gefiltert wie das Setting über `valid-embedding-origins`) in CSP `frame-ancestors`, und `X-Frame-Options` entfällt. Ab 0.65 in `frame-ancestors-value`/`x-frame-options-header`, nur im Modus `:none`
 - **Grund**: Ermöglicht iframe-Einbettung der vollständigen Metabase-UI in die Webapp
 
 #### `src/metabase/sync/sync_metadata/tables.clj`
-- **Änderung**: `effective-schema`-Funktion ergänzt; normalisiert leeres Schema auf den `dbname` der Verbindung
+- **Änderung**: `mit-schema` setzt bei leerem Schema den `dbname` der Verbindung ein -- ab 0.65 am Eingang von `sync-tables-and-database!` (vor der Stapelverarbeitung) und in `create-or-reactivate-table!`. Ohne das fände der Abgleich die Tabellen nicht, legte sie still und archivierte sie nach 14 Tagen
 - **Grund**: Doris-JDBC-Treiber liefert leere Strings statt dem Datenbanknamen als Schema-Bezeichner; ohne diesen Fix zeigt Metabase keine Tabellen an
 
 #### `src/metabase/api_routes/routes.clj`
@@ -116,17 +133,16 @@ Basis-Tag.
 
 ### Frontend (TypeScript/React)
 
-#### `frontend/src/metabase/selectors/embed.ts`
+#### `frontend/src/metabase/embedding/interactive-embedding/selectors.ts` *(bis 0.61-dev: `selectors/embed.ts`)*
 - **Änderung**: `getEmbedOptions` gibt im iframe-Kontext vollständige UI-Optionen zurück
 - **Grund**: Im iframe-Modus blendet Metabase standardmäßig Buttons aus; für den ibykus-Use-Case wird die vollständige UI benötigt
 
-#### `frontend/src/metabase/selectors/app.ts`
+#### `frontend/src/metabase/app/nav/selectors.ts` *(bis 0.61-dev: `selectors/app.ts`)*
 - **Änderung**: `getIsAppSwitcherVisible` prüft `user.is_superuser` statt `embedOptions.new_button`
 - **Grund**: Das Admin-Menü (Settings, Admin-Bereich) soll nur für Metabase-Superuser sichtbar sein
 
 #### `frontend/src/metabase/utils/iframe.ts`
-- **Änderung**: Ein Kommentar und zwei Leerzeilen entfernt — das Verhalten ist unverändert
-  (`git diff` zeigt `+0/-3`)
+- *(ab `v0.65.3.6-ibykus.1` nicht mehr geändert; vorher nur ein Kommentar entfernt)*
 
 #### `frontend/src/metabase/querying/notebook/components/NotebookDataPicker/NotebookDataPicker.tsx`
 - **Änderung**: Der Embedding-Picker (`EmbeddingDataPicker` → `PLUGIN_EMBEDDING.*`) wird nicht mehr allein wegen iframe-Kontext erzwungen; die Bedingung ist auf `isTenantUser` verengt
@@ -146,14 +162,14 @@ läuft, wäre sie damit dauerhaft eingeschränkt. Die Sperre entfällt, die **Ro
 
 | Datei | Änderung |
 |---|---|
-| `frontend/src/metabase/route-guards.tsx` | `AvailableInEmbedding`-Wächter entfernt (sperrte Data Studio im iframe pauschal) |
-| `frontend/src/metabase/data-studio/selectors.ts` | `canAccessDataStudio` gibt im iframe nicht mehr `false` zurück; bleibt auf Admin/Analyst begrenzt |
-| `frontend/src/metabase/data-studio/selectors.unit.spec.ts` | die Tests zur entfernten iframe-Sperre entfernt |
+| `frontend/src/metabase/route-guards.tsx` | bis 0.61-dev: `AvailableInEmbedding`-Wächter entfernt. Ab 0.65 entfällt die Änderung: upstream hat die Datei gelöscht (React Router 7), Data Studio prüft nur noch über den Selektor |
+| `frontend/src/metabase/common/data-studio/selectors.ts` *(bis 0.61-dev: `data-studio/selectors.ts`)* | `canAccessDataStudio` gibt im iframe nicht mehr `false` zurück; bleibt auf Admin/Analyst begrenzt (das Backend prüft zusätzlich `check-data-studio-access`) |
+| `frontend/src/metabase/common/data-studio/selectors.unit.spec.ts` | Test zur iframe-Sperre umgekehrt: Admin im iframe `true`, Nicht-Admin `false` |
 | `frontend/src/metabase/browse/models/BrowseModels.tsx`, `browse/metrics/BrowseMetrics.tsx` | „Modell/Metrik anlegen" auch im iframe |
 | `frontend/src/metabase/nav/containers/MainNavbar/MainNavbarContainer/BrowseNavSection.tsx` | Browse-Einträge in der Navigation auch im iframe |
 | `frontend/src/metabase/nav/components/search/SearchBar/SearchBar.tsx` | Suchleiste auch im iframe |
 | `frontend/src/metabase/palette/components/Palette.tsx` | Befehlspalette auch im iframe |
-| `frontend/src/metabase/visualizations/click-actions/actions/NativeQueryClickFallback.tsx` | Hinweis „als Frage speichern" auch im iframe |
+| `frontend/src/metabase/querying/click-actions/actions/NativeQueryClickFallback.tsx` *(bis 0.61-dev: `visualizations/click-actions/…`)* | Hinweis „als Frage speichern" auch im iframe |
 
 #### `frontend/src/metabase/AppColorSchemeProvider.tsx`
 - **Änderung**: Im iframe wird ein vom Host gesetztes Cookie `mb-embed-color-scheme` (`light`/`dark`)
@@ -165,7 +181,10 @@ läuft, wäre sie damit dauerhaft eingeschränkt. Die Sperre entfällt, die **Ro
 - **Änderung**: fehlende Zeilenfortsetzung (`\`) in der Installationszeile ergänzt — eine Zeile
 - **Grund**: Bauen des Images aus dem Quellbaum
 - **Änderung** *(07.11.2026)*: Bau-Stufe `node:22-bullseye` → `node:22-bookworm`
-- **Grund**: Debian Bullseye ist seit 31.08.2026 ohne LTS; `bullseye-security` liefert die Pakete nicht mehr (404), der Bau brach in der ersten `RUN`-Zeile ab. Nur die Bau-Stufe; das ausgelieferte Abbild (`eclipse-temurin:21-jre-alpine`) ist unverändert
+- **Grund**: Debian Bullseye ist seit 31.08.2026 ohne LTS; `bullseye-security` liefert die Pakete nicht mehr (404), der Bau brach in der ersten `RUN`-Zeile ab. Nur die Bau-Stufe; das ausgelieferte Abbild ist unverändert (ab 0.65: `eclipse-temurin:25-jre-alpine`, upstream)
+- **Änderung** *(08.11.2026)*: `npm install -g bun@1.3.14` statt ungepinnt -- dieselbe Version wie `packageManager` in `package.json`
+- **Änderung** *(08.11.2026)*: das Clojure-CLI-Archiv kommt von `download.clojure.org` statt aus den GitHub-Releases (das Installationsskript selbst kommt ohnehin von dort)
+- **Grund**: GitHub-Release-Downloads fielen am 08.11.2026 aus und brachen den Bau ab; eine Quelle weniger
 
 ## Neue Dateien
 
@@ -190,9 +209,9 @@ läuft, wäre sie damit dauerhaft eingeschränkt. Die Sperre entfällt, die **Ro
 **Reihenfolge einhalten: erst das Git-Tag, dann bauen — mit genau diesem Namen.**
 
 ```bash
-git tag v0.59.5.5-ibykus                      # 1. Tag auf den zu bauenden Commit
-docker build -t metabase-ibykus:v0.59.5.5-ibykus \
-  --build-arg VERSION=v0.59.5.5-ibykus .      # 2. derselbe Name als Build-Argument
+git tag v0.65.3.6-ibykus.1                      # 1. Tag auf den zu bauenden Commit
+docker build -t metabase-ibykus:v0.65.3.6-ibykus.1 \
+  --build-arg VERSION=v0.65.3.6-ibykus.1 .      # 2. derselbe Name als Build-Argument
 ```
 
 Die Version kommt **ausschließlich** aus `--build-arg VERSION` und wird nicht aus Git abgeleitet.

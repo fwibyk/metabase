@@ -7,12 +7,14 @@
   (:require
    [clojure.test :refer :all]
    [metabase.driver :as driver]
+   [metabase.lib.schema.metadata :as lib.schema.metadata]
    [metabase.sync.sync :as sync]
    [metabase.sync.util :as sync-util]
    [metabase.test :as mt]
    [metabase.test.mock.util :as mock.util]
    [metabase.test.util :as tu]
    [metabase.util :as u]
+   [metabase.util.malli :as mu]
    [metabase.warehouse-schema.models.field-values :as field-values]
    [toucan2.core :as t2]))
 
@@ -27,6 +29,7 @@
 
 (driver/register! ::sync-test, :abstract? true)
 
+#_{:clj-kondo/ignore [:metabase/discourage-dynamic-vars]}
 (def ^:dynamic *supports-schemas?*
   "Whether the database supports schemas."
   true)
@@ -83,14 +86,18 @@
   [_ _ table]
   (get (sync-test-tables) (:name table)))
 
-#_{:clj-kondo/ignore [:deprecated-var]}
-(defmethod driver/describe-table-fks ::sync-test
-  [_ _ table]
-  (set (when (= "movie" (:name table))
-         #{{:fk-column-name   "studio"
-            :dest-table       {:name   "studio"
-                               :schema (when *supports-schemas?* "public")}
-            :dest-column-name "studio"}})))
+(mu/defmethod driver/describe-fks ::sync-test :- ::driver/describe-fks.result
+  [_driver                               :- :keyword
+   _database                             :- ::lib.schema.metadata/database
+   & {:keys [table-names], :as _options} :- ::driver/describe-fks.options]
+  (when (or (empty? table-names)
+            (contains? (set table-names) "movie"))
+    [{:fk-table-schema (when *supports-schemas?* "default")
+      :fk-table-name   "movie"
+      :fk-column-name  "studio"
+      :pk-table-schema (when *supports-schemas?* "public")
+      :pk-table-name   "studio"
+      :pk-column-name  "studio"}]))
 
 (defmethod driver/database-supports? [::sync-test :metadata/key-constraints]
   [_driver _feature _db]
@@ -100,6 +107,7 @@
   [_ _query]
   {:query "SQL string"})
 
+#_{:clj-kondo/ignore [:metabase/discourage-dynamic-vars]}
 (defn- ^:dynamic *execute-response*
   [query respond]
   (mock.util/mock-execute-reducible-query query respond))
@@ -113,7 +121,8 @@
                (assoc :fields (for [field (t2/select :model/Field, :table_id (:id table), {:order-by [:name]})]
                                 (into {} (-> field
                                              (update :fingerprint map?)
-                                             (update :fingerprint_version (complement zero?))))))
+                                             (update :fingerprint_version (complement zero?))
+                                             (update :dimension_interestingness double?)))))
                tu/boolean-ids-and-timestamps)))
 
 (defn- table-defaults []
@@ -132,24 +141,26 @@
 (defn- field-defaults []
   (merge
    (mt/object-defaults :model/Field)
-   {:created_at          true
-    :fingerprint         false
-    :fingerprint_version false
-    :fk_target_field_id  false
+   {:created_at                 true
+    :fingerprint                false
+    :fingerprint_version        false
+    :fk_target_field_id         false
     :database_is_auto_increment false
-    :id                  true
-    :last_analyzed       false
-    :parent_id           false
-    :position            0
-    :json_unfolding      false
-    :table_id            true
-    :updated_at          true}))
+    :id                         true
+    :last_analyzed              false
+    :parent_id                  false
+    :position                   0
+    :json_unfolding             false
+    :table_id                   true
+    :updated_at                 true
+    :dimension_interestingness  false}))
 
 (defn- field-defaults-with-fingerprint []
   (assoc (field-defaults)
-         :last_analyzed       true
-         :fingerprint_version true
-         :fingerprint         true))
+         :last_analyzed             true
+         :fingerprint_version       true
+         :fingerprint               true
+         :dimension_interestingness true))
 
 (defn- field:movie-id []
   (merge
@@ -242,14 +253,21 @@
       (binding [*supports-schemas?*                      supports-schemas?
                 sync-util/*log-exceptions-and-continue?* false]
         (mt/with-temp [:model/Database db {:engine ::sync-test}]
-          (let [results (sync/sync-database! db)]
+          (let [results (sync/sync-database! (:id db))]
             (testing "Returns results from sync-database step"
-              (is (= ["metadata" "analyze" "field-values"]
+              (is (= ["metadata" "analyze"]
                      (map :name results)))))
-          (let [[movie studio] (mapv table-details (t2/select :model/Table :db_id (u/the-id db) {:order-by [:name]}))]
+          (let [[movie studio] (mapv table-details (t2/select :model/Table :db_id (u/the-id db) {:order-by [:name]}))
+                ;; a full sync runs the analyze step, which scores dimension_interestingness
+                ;; (a double in [0.0, 1.0]) for every field — including non-fingerprinted/PK
+                ;; fields, which hard-zero to 0.0
+                all-fields-scored (fn [table]
+                                    (update table :fields
+                                            (fn [fields]
+                                              (mapv #(assoc % :dimension_interestingness true) fields))))]
             (testing "Tables and Fields are synced"
-              (is (= (expected-movie-table) movie))
-              (is (= (expected-studio-table) studio)))))))))
+              (is (= (all-fields-scored (expected-movie-table)) movie))
+              (is (= (all-fields-scored (expected-studio-table)) studio)))))))))
 
 (deftest sync-table-test
   (doseq [supports-schemas? [true false]]
@@ -274,7 +292,7 @@
 
 (deftest scanning-test
   (mt/with-temp [:model/Database db {:engine ::sync-test}]
-    (sync/sync-database! db)
+    (sync/sync-database! (:id db))
     (let [query-field-and-values (fn []
                                    (let [table-id (t2/select-one-pk :model/Table :db_id (u/the-id db) :name "movie")
                                          title-field (t2/select-one :model/Field :table_id table-id :name "title")
@@ -290,37 +308,32 @@
         (is (=? {:f {:name "title" :has_field_values :auto-list}
                  :fv nil}
                 field-and-values)))
-
       (testing "After querying field values they are stored"
         (get-or-create-vals ["a" "b" "c"])
         (is (=? {:f {:name "title" :has_field_values :auto-list}
                  :fv {:values ["a" "b" "c"] :has_more_values false}}
                 (query-field-and-values))))
-
       (testing "After clearing and querying use long field values"
         (field-values/clear-field-values-for-field! field)
         (get-or-create-vals ["a" "b" "c" (apply str (map str (range 100000)))])
         (is (=? {:f {:name "title" :has_field_values :auto-list}
                  :fv {:values ["a" "b" "c"] :has_more_values true}}
                 (query-field-and-values))))
-
       (testing "Querying again will use cache"
         (get-or-create-vals ["x" "y" "z"])
         (is (=? {:f {:name "title" :has_field_values :auto-list}
                  :fv {:values ["a" "b" "c"] :has_more_values true}}
                 (query-field-and-values))))
-
       (testing "New values come in after sync"
         (binding [*execute-response* (fn [_query respond] (respond {:cols [{:name "field"}]}
                                                                    (partition-all 1 ["d" "e" "f"])))]
-          (sync/sync-database! db))
+          (sync/sync-database! (:id (t2/select-one :model/Database :id (u/the-id db)))))
         (is (=? {:f {:name "title" :has_field_values :auto-list}
                  :fv {:values ["d" "e" "f"] :has_more_values false}}
                 (query-field-and-values))))
-
       (testing "After setting to search it should stay search and sync removes field-values"
-        (t2/update! :model/Field (:id field) {:has_field_values "search"})
-        (sync/sync-database! db)
+        (t2/update! :model/Field :id (:id field) {:has_field_values "search"})
+        (sync/sync-database! (:id (t2/select-one :model/Database :id (u/the-id db))))
         (get-or-create-vals ["x" "y" "z"])
         (is (=? {:f {:name "title" :has_field_values :search}
                  :fv nil}
@@ -337,10 +350,24 @@
   (testing "Errors in sync-database! should be caught and handled correctly (#45848)"
     (mt/with-temp [:model/Database db {:engine ::sync-database-error-test}]
       (binding [sync-util/*log-exceptions-and-continue?* true]
-        (let [results (sync/sync-database! db)]
+        (let [results (sync/sync-database! (:id db))]
           (testing "Skips the metadata step"
-            (is (= ["analyze" "field-values"]
+            (is (= ["analyze"]
                    (map :name results)))))))))
+
+(deftest sync-database!-skips-field-values-until-initial-sync-complete-test
+  (testing (str "GHY-3274: a full sync skips the FieldValues phase while the Database's initial sync is not "
+                "complete, because FieldValues are only created on demand and a new Database has none")
+    (binding [sync-util/*log-exceptions-and-continue?* false]
+      (mt/with-temp [:model/Database db {:engine ::sync-test, :initial_sync_status "incomplete"}]
+        (testing "the initial sync skips the field-values phase"
+          (is (= ["metadata" "analyze"]
+                 (map :name (sync/sync-database! (:id db))))))
+        (testing "a later sync of the Database, with its initial sync complete, runs it"
+          (let [synced-db (t2/select-one :model/Database :id (u/the-id db))]
+            (is (= "complete" (:initial_sync_status synced-db)))
+            (is (= ["metadata" "analyze" "field-values"]
+                   (map :name (sync/sync-database! (:id synced-db)))))))))))
 
 ;; !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ;; !!                                                                                                               !!

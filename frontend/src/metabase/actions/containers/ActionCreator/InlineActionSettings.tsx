@@ -2,106 +2,80 @@ import { useDisclosure } from "@mantine/hooks";
 import type { ChangeEvent, ChangeEventHandler } from "react";
 import { t } from "ttag";
 
-import { Button } from "metabase/common/components/Button";
+import {
+  useCreateActionPublicLinkMutation,
+  useDeleteActionPublicLinkMutation,
+} from "metabase/api";
 import { ConfirmModal } from "metabase/common/components/ConfirmModal";
-import { CopyWidget } from "metabase/common/components/CopyWidget";
+import { CopyTextInput } from "metabase/common/components/CopyTextInput";
 import { FormField } from "metabase/common/components/FormField";
 import { SidebarContent } from "metabase/common/components/SidebarContent";
 import { TextArea } from "metabase/common/components/TextArea";
 import { useUniqueId } from "metabase/common/hooks/use-unique-id";
-import { Actions } from "metabase/entities/actions/actions";
-import type { State } from "metabase/redux/store";
-import { getSetting } from "metabase/selectors/settings";
-import { getUserIsAdmin } from "metabase/selectors/user";
-import { Switch, Tooltip } from "metabase/ui";
-import { connect } from "metabase/utils/redux";
-import * as Urls from "metabase/utils/urls";
-import type {
-  ActionFormSettings,
-  WritebackAction,
-  WritebackActionId,
-} from "metabase-types/api";
+import { getUserIsAdmin } from "metabase/current-user";
+import { useSelector } from "metabase/redux";
+import { getSetting } from "metabase/settings";
+import { ActionIcon, Box, Icon, Switch, Tooltip } from "metabase/ui";
+import * as Urls from "metabase/urls";
+import type { ActionFormSettings, WritebackAction } from "metabase-types/api";
 
 import { isActionPublic, isSavedAction } from "../../utils";
 
-import {
-  ActionSettingsContent,
-  CopyWidgetContainer,
-} from "./InlineActionSettings.styled";
+type ActionSettingsTriggerButtonProps = {
+  onClick: () => void;
+};
 
-interface OwnProps {
+export function ActionSettingsTriggerButton({
+  onClick,
+}: ActionSettingsTriggerButtonProps) {
+  return (
+    <Tooltip label={t`Action settings`}>
+      <ActionIcon
+        variant="viewHeader"
+        onClick={onClick}
+        aria-label={t`Action settings`}
+      >
+        <Icon name="gear" />
+      </ActionIcon>
+    </Tooltip>
+  );
+}
+
+type InlineActionSettingsProps = {
   action?: Partial<WritebackAction>;
   formSettings: ActionFormSettings;
   isEditable: boolean;
   onChangeFormSettings: (formSettings: ActionFormSettings) => void;
   onClose?: () => void;
   onBack?: () => void;
-}
-
-interface StateProps {
-  siteUrl: string;
-  isAdmin: boolean;
-  isPublicSharingEnabled: boolean;
-}
-
-interface DispatchProps {
-  onCreatePublicLink: ({ id }: { id: WritebackActionId }) => void;
-  onDeletePublicLink: ({ id }: { id: WritebackActionId }) => void;
-}
-
-type ActionSettingsInlineProps = OwnProps & StateProps & DispatchProps;
-
-export const ActionSettingsTriggerButton = ({
-  onClick,
-}: {
-  onClick: () => void;
-}) => (
-  <Tooltip label={t`Action settings`}>
-    <Button
-      onlyIcon
-      onClick={onClick}
-      icon="gear"
-      iconSize={16}
-      aria-label={t`Action settings`}
-    />
-  </Tooltip>
-);
-
-const mapStateToProps = (state: State): StateProps => ({
-  siteUrl: getSetting(state, "site-url"),
-  isAdmin: getUserIsAdmin(state),
-  isPublicSharingEnabled: getSetting(state, "enable-public-sharing"),
-});
-
-const mapDispatchToProps: DispatchProps = {
-  onCreatePublicLink: Actions.actions.createPublicLink,
-  onDeletePublicLink: Actions.actions.deletePublicLink,
 };
 
-const InlineActionSettings = ({
+export function InlineActionSettings({
   action,
   formSettings,
   isEditable,
-  siteUrl,
-  isAdmin,
-  isPublicSharingEnabled,
   onChangeFormSettings,
-  onCreatePublicLink,
-  onDeletePublicLink,
   onClose,
   onBack,
-}: ActionSettingsInlineProps) => {
+}: InlineActionSettingsProps) {
+  const siteUrl = useSelector((state) => getSetting(state, "site-url"));
+  const isAdmin = useSelector((state) => getUserIsAdmin(state));
+  const isPublicSharingEnabled = useSelector((state) =>
+    getSetting(state, "enable-public-sharing"),
+  );
   const id = useUniqueId();
   const [modalOpened, { open: openModal, close: closeModal }] =
     useDisclosure(false);
   const hasSharingPermission = isAdmin && isPublicSharingEnabled;
+  const [createPublicLink] = useCreateActionPublicLinkMutation();
+  const [deletePublicLink] = useDeleteActionPublicLinkMutation();
 
   const handleTogglePublic: ChangeEventHandler<HTMLInputElement> = (event) => {
     const isPublic = event.target.checked;
 
     if (isPublic) {
       if (isSavedAction(action)) {
-        onCreatePublicLink({ id: action.id });
+        createPublicLink({ id: action.id });
       }
     } else {
       openModal();
@@ -110,7 +84,7 @@ const InlineActionSettings = ({
 
   const handleDisablePublicLink = () => {
     if (isSavedAction(action)) {
-      onDeletePublicLink({ id: action.id });
+      deletePublicLink({ id: action.id });
     }
     closeModal();
   };
@@ -130,7 +104,7 @@ const InlineActionSettings = ({
       onClose={onClose}
       onBack={onBack}
     >
-      <ActionSettingsContent>
+      <Box mx="xl" my="lg">
         {action && hasSharingPermission && (
           <FormField
             title={t`Make public`}
@@ -154,12 +128,12 @@ const InlineActionSettings = ({
           </FormField>
         )}
         {action?.public_uuid && hasSharingPermission && (
-          <CopyWidgetContainer>
-            <CopyWidget
+          <Box mb="1.25rem">
+            <CopyTextInput
               value={Urls.publicAction(siteUrl, action.public_uuid)}
               aria-label={t`Public action form URL`}
             />
-          </CopyWidgetContainer>
+          </Box>
         )}
         <ConfirmModal
           opened={modalOpened}
@@ -178,13 +152,7 @@ const InlineActionSettings = ({
             onChange={handleSuccessMessageChange}
           />
         </FormField>
-      </ActionSettingsContent>
+      </Box>
     </SidebarContent>
   );
-};
-
-// eslint-disable-next-line import/no-default-export -- deprecated usage
-export default connect<StateProps, DispatchProps, OwnProps, State>(
-  mapStateToProps,
-  mapDispatchToProps,
-)(InlineActionSettings);
+}

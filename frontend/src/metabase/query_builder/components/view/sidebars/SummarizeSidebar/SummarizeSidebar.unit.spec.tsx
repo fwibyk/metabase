@@ -1,15 +1,27 @@
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
-import { renderWithProviders, screen, waitFor, within } from "__support__/ui";
+import { createMockMetadata } from "__support__/metadata";
+import { setupDatabaseEndpoints } from "__support__/server-mocks";
 import {
   createMockQueryBuilderState,
   createMockState,
-} from "metabase/redux/store/mocks";
+} from "__support__/state";
+import { renderWithProviders, screen, waitFor, within } from "__support__/ui";
 import * as Lib from "metabase-lib";
-import { DEFAULT_TEST_QUERY, SAMPLE_PROVIDER } from "metabase-lib/test-helpers";
+import {
+  DEFAULT_TEST_QUERY,
+  SAMPLE_PROVIDER,
+  createMetadataProvider,
+} from "metabase-lib/test-helpers";
 import { createMockCard } from "metabase-types/api/mocks";
-import { ORDERS_ID } from "metabase-types/api/mocks/presets";
+import {
+  ORDERS,
+  ORDERS_ID,
+  createOrdersTable,
+  createSampleDatabase,
+  createSavedStructuredCard,
+} from "metabase-types/api/mocks/presets";
 
 import { SummarizeSidebar } from "./SummarizeSidebar";
 
@@ -33,13 +45,12 @@ function createSummarizedQuery() {
         breakouts: [
           {
             type: "column",
-            sourceName: "ORDERS",
             name: "CREATED_AT",
             unit: "month",
           },
           {
             type: "column",
-            sourceName: "PRODUCTS",
+            sourceFieldId: ORDERS.PRODUCT_ID,
             name: "CATEGORY",
           },
         ],
@@ -57,13 +68,11 @@ function createQueryWithBreakoutsForSameColumn() {
         breakouts: [
           {
             type: "column",
-            sourceName: "ORDERS",
             name: "CREATED_AT",
             unit: "year",
           },
           {
             type: "column",
-            sourceName: "ORDERS",
             name: "CREATED_AT",
             unit: "quarter",
           },
@@ -82,6 +91,8 @@ async function setup({
 }: SetupOpts = {}) {
   const onQueryChange = jest.fn();
   const onClose = jest.fn();
+
+  setupDatabaseEndpoints(createSampleDatabase());
 
   function Wrapper() {
     const [query, setQuery] = useState(initialQuery);
@@ -449,6 +460,69 @@ describe("SummarizeSidebar", () => {
       expect(breakout.displayName).toBe("Created At: Quarter");
     });
     expect(getNextBreakouts()).toHaveLength(1);
+  });
+
+  it("should update the sort when changing the temporal bucket of a sorted breakout (metabase#16770)", async () => {
+    const { onQueryChange } = await setup({
+      query: Lib.createTestQuery(SAMPLE_PROVIDER, {
+        stages: [
+          {
+            source: { type: "table", id: ORDERS_ID },
+            aggregations: [{ type: "operator", operator: "count", args: [] }],
+            breakouts: [{ type: "column", name: "CREATED_AT", unit: "month" }],
+            orderBys: [{ type: "column", name: "CREATED_AT", unit: "month" }],
+          },
+        ],
+      }),
+    });
+
+    const createdAt = within(getPinnedColumnList()).getByLabelText(
+      "Created At",
+    );
+    await userEvent.click(within(createdAt).getByText("by month"));
+    await userEvent.click(await screen.findByText("Year"));
+
+    await waitFor(() => expect(onQueryChange).toHaveBeenCalled());
+    const [nextQuery] = onQueryChange.mock.lastCall;
+    expect(
+      Lib.breakouts(nextQuery, -1).map(
+        (breakout) => Lib.displayInfo(nextQuery, -1, breakout).displayName,
+      ),
+    ).toEqual(["Created At: Year"]);
+    expect(
+      Lib.orderBys(nextQuery, -1).map(
+        (orderBy) => Lib.displayInfo(nextQuery, -1, orderBy).displayName,
+      ),
+    ).toEqual(["Created At: Year"]);
+  });
+
+  it("should offer all temporal buckets for a column of a saved question source (metabase#10441, metabase#11439)", async () => {
+    const card = createSavedStructuredCard({
+      id: 2,
+      name: "11439",
+      result_metadata: (createOrdersTable().fields ?? []).map((field) => ({
+        ...field,
+        field_ref: ["field", Number(field.id), null],
+      })),
+    });
+    const provider = createMetadataProvider({
+      metadata: createMockMetadata({
+        databases: [createSampleDatabase()],
+        questions: [card],
+      }),
+    });
+    await setup({
+      query: Lib.createTestQuery(provider, {
+        stages: [{ source: { type: "card", id: card.id } }],
+      }),
+    });
+
+    const [createdAt] = screen.getAllByLabelText("Created At");
+    await userEvent.hover(createdAt);
+    await userEvent.click(within(createdAt).getByText("by month"));
+    await userEvent.click(await screen.findByText("More…"));
+
+    expect(await screen.findByText("Hour of day")).toBeInTheDocument();
   });
 
   it("should allow picking a binning strategy for breakout columns", async () => {

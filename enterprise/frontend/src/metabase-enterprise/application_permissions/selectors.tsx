@@ -3,14 +3,19 @@ import { getIn } from "icepick";
 import { t } from "ttag";
 import _ from "underscore";
 
-import { Messages } from "metabase/admin/permissions/constants/messages";
-import { getDefaultGroupHasHigherAccessText } from "metabase/admin/permissions/selectors/confirmations";
 import {
+  getGroupNameLocalized,
+  isAdminGroup,
+} from "metabase/common/utils/groups";
+import { getUser } from "metabase/current-user";
+import {
+  Messages,
   getDefaultGroup,
+  getDefaultGroupHasHigherAccessText,
   getOrderedGroups,
-} from "metabase/admin/permissions/selectors/data-permissions/groups";
+} from "metabase/permissions";
 import { PLUGIN_TENANTS } from "metabase/plugins";
-import { getGroupNameLocalized, isAdminGroup } from "metabase/utils/groups";
+import type { State } from "metabase/redux/store";
 import type { Group } from "metabase-types/api";
 
 import { APPLICATION_PERMISSIONS_OPTIONS } from "./constants";
@@ -34,12 +39,12 @@ export function getPermissionWarning(
 }
 
 export const canManageSubscriptions = createSelector(
-  (state: ApplicationPermissionsState) => state.currentUser,
+  (state: State) => getUser(state),
   (user) => user?.permissions?.can_access_subscription ?? false,
 );
 
 export const canAccessSettings = createSelector(
-  (state: ApplicationPermissionsState) => state.currentUser,
+  (state: State) => getUser(state),
   (user) => user?.permissions?.can_access_setting ?? false,
 );
 

@@ -10,10 +10,12 @@ import { Box, Button, Divider, Group, Icon, Select, Text } from "metabase/ui";
 import { NumberInputWithFallbackValue } from "../../NumberInputWithFallbackValue";
 import type { DatePickerSubmitButtonProps } from "../../types";
 import { renderDefaultSubmitButton } from "../../utils";
+import { useTimeConfig } from "../use-time-config";
 import {
   formatDateRange,
   getInterval,
   getUnitOptions,
+  isOutOfBounds,
   setInterval,
 } from "../utils";
 
@@ -31,6 +33,8 @@ import {
 interface DateOffsetIntervalPickerProps {
   value: RelativeDatePickerValue;
   availableUnits: DatePickerUnit[];
+  minDate?: Date;
+  maxDate?: Date;
   renderSubmitButton?: (props: DatePickerSubmitButtonProps) => ReactNode;
   onChange: (value: RelativeDatePickerValue) => void;
   onSubmit: () => void;
@@ -39,16 +43,20 @@ interface DateOffsetIntervalPickerProps {
 export function DateOffsetIntervalPicker({
   value,
   availableUnits,
+  minDate,
+  maxDate,
   renderSubmitButton = renderDefaultSubmitButton,
   onChange,
   onSubmit,
 }: DateOffsetIntervalPickerProps) {
+  const timeConfig = useTimeConfig();
   const interval = getInterval(value);
   const unitOptions = getUnitOptions(value, availableUnits);
   const offsetInterval = getOffsetInterval(value);
   const offsetUnitOptions = getOffsetUnitOptions(value, availableUnits);
   const directionText = getDirectionText(value);
-  const dateRangeText = formatDateRange(value);
+  const dateRangeText = formatDateRange(timeConfig, value);
+  const outOfBounds = isOutOfBounds(timeConfig, value, minDate, maxDate);
 
   const handleIntervalChange = (inputValue: number | string) => {
     if (typeof inputValue === "number") {
@@ -82,12 +90,15 @@ export function DateOffsetIntervalPicker({
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
+    if (outOfBounds) {
+      return;
+    }
     onSubmit();
   };
 
   return (
     <form onSubmit={handleSubmit}>
-      <Box className={S.PickerGrid} p="md">
+      <Box className={S.PickerGrid} p="lg">
         <Text>{directionText}</Text>
         <NumberInputWithFallbackValue
           value={interval}
@@ -129,21 +140,23 @@ export function DateOffsetIntervalPicker({
             floatingStrategy: "fixed",
           }}
         />
+        {/* TODO: replace with ActionIcon (GDGT-2457) */}
         <Button
-          c="text-secondary"
           variant="subtle"
+          color="neutral"
+          size="sm"
           leftSection={<Icon name="close" />}
           aria-label={t`Remove offset`}
           onClick={handleOffsetRemove}
         />
       </Box>
       <Divider />
-      <Group px="md" py="sm" gap="sm" justify="space-between">
+      <Group px="lg" py="sm" gap="sm" justify="space-between">
         <Group c="text-secondary" gap="sm">
           <Icon name="calendar" />
           <Text c="inherit">{dateRangeText}</Text>
         </Group>
-        {renderSubmitButton({ value })}
+        {renderSubmitButton({ value, isDisabled: outOfBounds })}
       </Group>
     </form>
   );

@@ -8,14 +8,15 @@
    [metabase.lib.filter :as lib.filter]
    [metabase.lib.filter.simplify-compound :as lib.filter.simplify-compound]
    [metabase.lib.options :as lib.options]
+   [metabase.lib.schema.common :as lib.schema.common]
    [metabase.lib.schema.expression :as lib.schema.expression]
    [metabase.lib.schema.mbql-clause :as lib.schema.mbql-clause]
    [metabase.lib.schema.temporal-bucketing :as lib.schema.temporal-bucketing]
    [metabase.lib.schema.util :as lib.schema.util]
    [metabase.lib.util :as lib.util]
-   [metabase.lib.util.match :as lib.util.match]
    [metabase.util.malli :as mu]
    [metabase.util.malli.registry :as mr]
+   [metabase.util.match :as match]
    [metabase.util.performance :refer [some mapv]]
    [metabase.util.time :as u.time]))
 
@@ -30,7 +31,7 @@
 (mu/defn- desugar-inside :- ::clause
   "Rewrite `:inside` filter clauses as a pair of `:between` clauses."
   [expr :- ::clause]
-  (lib.util.match/replace-lite expr
+  (match/replace expr
     [:inside opts lat-field lon-field lat-max lon-min lat-min lon-max]
     (-> (lib.filter/and
          (lib.filter/between lat-field lat-min lat-max)
@@ -40,7 +41,7 @@
 (mu/defn- desugar-is-null-and-not-null :- ::clause
   "Rewrite `:is-null` and `:not-null` filter clauses as simpler `:=` and `:!=`, respectively."
   [expr :- ::clause]
-  (lib.util.match/replace-lite expr
+  (match/replace expr
     [:is-null  opts x] [:=  opts x nil]
     [:not-null opts x] [:!= opts x nil]))
 
@@ -54,7 +55,7 @@
    If `:not-empty` is called on `::lib.schema.expression/emptyable` type, expand check for empty string. For
    non-`emptyable` types act as `:is-null`. If field has nil base type it is considered not emptyable expansion wise."
   [expr :- ::clause]
-  (lib.util.match/replace-lite expr
+  (match/replace expr
     [:is-empty opts arg]
     (-> (if (emptyable? arg)
           (lib.filter/or
@@ -75,14 +76,14 @@
   "Replace a field or expression inside :time-interval"
   [expr :- ::clause
    unit :- ::lib.schema.temporal-bucketing/unit]
-  (lib.util.match/replace-lite expr
+  (match/replace expr
     [#{:field :expression} & _]
     (lib.options/update-options &match assoc :temporal-unit unit)))
 
 (mu/defn- desugar-time-interval :- ::clause
   "Rewrite `:time-interval` filter clauses as simpler ones like `:=` or `:between`."
   [expr :- ::clause]
-  (lib.util.match/replace-lite expr
+  (match/replace expr
     ;; replace current/last/next with corresponding value of n and recur
     [:time-interval opts field-or-expression :current unit] (&recur [:time-interval opts field-or-expression  0 unit])
     [:time-interval opts field-or-expression :last    unit] (&recur [:time-interval opts field-or-expression -1 unit])
@@ -127,7 +128,7 @@
 (mu/defn- desugar-relative-time-interval :- ::clause
   "Transform `:relative-time-interval` to `:and` expression."
   [expr :- ::clause]
-  (lib.util.match/replace-lite expr
+  (match/replace expr
     [:relative-time-interval opts arg (value :guard int?) bucket offset-value offset-bucket]
     (let [bucket            #(lib.util/fresh-uuids bucket)
           offset-value      #(lib.util/fresh-uuids offset-value)
@@ -148,10 +149,11 @@
 
 (mu/defn- desugar-during :- ::clause
   "Transform a `:during` expression to an `:and` expression."
-  [expr :- ::clause]
-  (lib.util.match/replace-lite expr
+  [time-config :- ::lib.schema.common/time-config
+   expr        :- ::clause]
+  (match/replace expr
     [:during opts arg value unit]
-    (let [lower-bound (u.time/truncate value unit)
+    (let [lower-bound (u.time/truncate time-config value unit)
           upper-bound (u.time/add lower-bound unit 1)]
       (-> (lib.filter/and
            (lib.filter/>= (with-default-temporal-bucket-in-refs arg) lower-bound)
@@ -166,7 +168,7 @@
               (lib.util/clause? fragment) (desugar-if fragment)
               (vector? fragment) (mapv process-fragment fragment)
               :else fragment))]
-    (lib.util.match/replace-lite expr
+    (match/replace expr
       [:if opts & args]
       (-> (map process-fragment args)
           (->> (apply lib.expression/case))
@@ -175,7 +177,7 @@
 (mu/defn- desugar-in :- ::clause
   "Transform `:in` and `:not-in` expressions to `:=` and `:!=` expressions."
   [expr :- ::clause]
-  (lib.util.match/replace-lite expr
+  (match/replace expr
     [:in opts & args]
     (-> (apply lib.filter/= args)
         (merge-options opts))
@@ -191,7 +193,7 @@
   several `[:and [:does-not-contain ...] [:does-not-contain ...] ...]` clauses, which then get rewritten here into
   `[:and [:not [:contains ...]] [:not [:contains ...]]]`."
   [expr :- ::clause]
-  (lib.util.match/replace-lite expr
+  (match/replace expr
     [:does-not-contain opts whole & parts]
     (-> (lib.filter/not (-> (apply lib.filter/contains whole parts)
                             ;; need to preserve stuff like `:case-sensitive`. Prefer values in each clause over `opts`
@@ -212,7 +214,7 @@
   Multi-argument forms use MBQL 5 style with the options at index 1, **even if there are no options**:
   `[:contains {} field x y z]`."
   [expr :- ::clause]
-  (lib.util.match/replace-lite expr
+  (match/replace expr
     [:= opts field a b & more]
     (-> (apply lib.filter/or (map (fn [expr]
                                     (lib.filter/= (lib.util/fresh-uuids field) expr))
@@ -244,17 +246,17 @@
   "Replace `relative-datetime` clauses like `[:relative-datetime :current]` with `[:relative-datetime 0 <unit>]`.
   `<unit>` is inferred from the `:field` the clause is being compared to (if any), otherwise falls back to `default.`"
   [expr :- ::clause]
-  (lib.util.match/replace-lite expr
+  (match/replace expr
     [tag opts field & (args :guard (some (fn [arg]
-                                           (lib.util.match/match-lite arg [:relative-datetime _opts :current] true))
+                                           (match/match-one arg [:relative-datetime _opts :current] true))
                                          args))]
-    (let [temporal-unit (or (lib.util.match/match-lite field
+    (let [temporal-unit (or (match/match-one field
                               [:field {:temporal-unit temporal-unit} _]
                               temporal-unit)
                             :default)]
       (into [tag opts field]
             (map (fn [arg]
-                   (lib.util.match/replace-lite arg
+                   (match/replace arg
                      [:relative-datetime relative-datetime-opts :current]
                      (-> (lib.expression/relative-datetime 0 temporal-unit)
                          (merge-options relative-datetime-opts)))))
@@ -285,29 +287,30 @@
 (mu/defn- desugar-temporal-extract :- ::clause
   "Replace datetime extractions clauses like `[:get-year field]` with `[:temporal-extract field :year]`."
   [expr :- ::clause]
-  (lib.util.match/replace-lite expr
+  (match/replace expr
     [(tag :guard temporal-extract-ops) opts field & args]
     [:temporal-extract opts field (temporal-extract-ops->unit [tag (first args)])]))
 
 (mu/defn- desugar-divide-with-extra-args :- ::clause
   [expression :- ::clause]
-  (lib.util.match/replace-lite expression
+  (match/replace expression
     [:/ opts x y z & more]
     (&recur (-> (apply lib.expression// (lib.expression// x y) z more)
                 (merge-options opts)))))
 
 (mu/defn- temporal-case-expression :- :mbql.clause/case
   "Creates a `:case` expression with a condition for each value of the given unit."
-  [expr :- ::clause
-   opts :- :map
-   unit :- :keyword
-   n    :- :int]
+  [time-config :- ::lib.schema.common/time-config
+   expr        :- ::clause
+   opts        :- ::lib.schema.common/options
+   unit        :- :keyword
+   n           :- :int]
   (let [user-locale #?(:clj  (i18n/user-locale)
                        :cljs nil)]
     (-> (lib.expression/case
          (mapv (fn [raw-value]
                  [(lib.filter/= (lib.util/fresh-uuids expr) raw-value)
-                  (u.time/format-unit raw-value unit user-locale)])
+                  (u.time/format-unit time-config raw-value unit {:locale user-locale})])
                (range 1 (inc n))))
         (lib.options/update-options merge opts {:default ""}))))
 
@@ -317,51 +320,55 @@
 
   Uses the user's locale rather than the site locale, so the results will depend on the runner of the query, not just
   the query itself. Filtering should be done based on the number, rather than the name."
-  [expression :- ::clause]
-  (lib.util.match/replace-lite expression
-    [:month-name   opts expr] (&recur (temporal-case-expression expr opts :month-of-year   12))
-    [:quarter-name opts expr] (&recur (temporal-case-expression expr opts :quarter-of-year  4))
-    [:day-name     opts expr] (&recur (temporal-case-expression expr opts :day-of-week      7))))
+  [time-config :- ::lib.schema.common/time-config
+   expression  :- ::clause]
+  (match/replace-all expression
+    [:month-name   opts expr] (temporal-case-expression time-config expr opts :month-of-year   12)
+    [:quarter-name opts expr] (temporal-case-expression time-config expr opts :quarter-of-year  4)
+    [:day-name     opts expr] (temporal-case-expression time-config expr opts :day-of-week      7)))
 
 (mu/defn- desugar-expression :- ::clause
   "Rewrite various 'syntactic sugar' expressions like `:/` with more than two args into something simpler for drivers
   to compile."
-  [expression :- ::clause]
+  [time-config :- ::lib.schema.common/time-config
+   expression  :- ::clause]
   ;; The `mbql.jvm-u/desugar-host-and-domain` is implemented only for jvm because regexes are not compatible with
   ;; Safari.
   (let [desugar-host-and-domain* #?(:clj  lib.filter.desugar.jvm/desugar-host-and-domain
                                     :cljs (fn [x]
                                             (log/warn "`desugar-host-and-domain` implemented only on JVM.")
                                             x))]
-    (-> expression
-        desugar-divide-with-extra-args
-        desugar-host-and-domain*
-        desugar-temporal-names)))
+    (desugar-temporal-names time-config
+                            (-> expression
+                                desugar-divide-with-extra-args
+                                desugar-host-and-domain*))))
 
 (mu/defn- maybe-desugar-expression :- ::clause
-  [clause :- ::clause]
-  (cond-> clause
-    (or (lib.util/clause-of-type? clause :field)
-        (mr/validate ::lib.schema.expression/expression clause))
-    desugar-expression))
+  [time-config :- ::lib.schema.common/time-config
+   clause      :- ::clause]
+  (if (or (lib.util/clause-of-type? clause :field)
+          (mr/validate ::lib.schema.expression/expression clause))
+    (desugar-expression time-config clause)
+    clause))
 
 (mu/defn desugar-filter-clause :- ::clause
   "Rewrite various 'syntatic sugar' filter clauses like `:time-interval` and `:inside` as simpler, logically
   equivalent clauses. This can be used to simplify the number of filter clauses that need to be supported by anything
   that needs to enumerate all the possible filter types."
-  [filter-clause :- ::clause]
-  (-> filter-clause
-      desugar-current-relative-datetime
-      desugar-in
-      desugar-multi-argument-comparisons
-      desugar-does-not-contain
-      desugar-time-interval
-      desugar-relative-time-interval
-      desugar-is-null-and-not-null
-      desugar-is-empty-and-not-empty
-      desugar-inside
-      lib.filter.simplify-compound/simplify-compound-filter
-      desugar-temporal-extract
-      desugar-during
-      desugar-if
-      maybe-desugar-expression))
+  [time-config  :- ::lib.schema.common/time-config
+   filter-clause :- ::clause]
+  (let [filter-clause (-> filter-clause
+                          desugar-current-relative-datetime
+                          desugar-in
+                          desugar-multi-argument-comparisons
+                          desugar-does-not-contain
+                          desugar-time-interval
+                          desugar-relative-time-interval
+                          desugar-is-null-and-not-null
+                          desugar-is-empty-and-not-empty
+                          desugar-inside
+                          lib.filter.simplify-compound/simplify-compound-filter
+                          desugar-temporal-extract)
+        filter-clause (desugar-during time-config filter-clause)
+        filter-clause (desugar-if filter-clause)]
+    (maybe-desugar-expression time-config filter-clause)))
