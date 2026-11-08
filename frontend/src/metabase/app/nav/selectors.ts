@@ -72,9 +72,11 @@ export const getIsNewButtonVisible = createSelector(
   },
 );
 
+// ibykus: im eingebetteten iframe fuer Administratoren sichtbar (Instanz ist immer eingebettet)
 export const getIsAppSwitcherVisible = createSelector(
-  [selectIsWithinIframe],
-  (isEmbeddingIframe) => !isEmbeddingIframe,
+  [selectIsWithinIframe, getUser],
+  (isEmbeddingIframe, user) =>
+    !isEmbeddingIframe || Boolean(user?.is_superuser),
 );
 
 const PATHS_WITHOUT_NAVBAR = [

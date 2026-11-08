@@ -7,7 +7,6 @@ import { useSelector } from "metabase/redux";
 import { useLocation, useParams } from "metabase/router";
 import { Box, Card, Center, Icon, Overlay, Stack, rem } from "metabase/ui";
 import { type SearchQuery, parseSearchQuery } from "metabase/utils/browser";
-import { isWithinIframe } from "metabase/utils/iframe";
 
 import { useCommandPalette } from "../hooks/useCommandPalette";
 import { useCommandPaletteBasicActions } from "../hooks/useCommandPaletteBasicActions";
@@ -36,7 +35,8 @@ export const Palette = () => {
   useCommandPaletteBasicActions({ location, params, isLoggedIn });
 
   const { query } = useKBar();
-  const disabled = isWithinIframe() || !isLoggedIn || isDisabledForPath;
+  // ibykus: Command-Palette (Suche/Navigation/Aktionen) auch im Full-App-Embed aktiv.
+  const disabled = !isLoggedIn || isDisabledForPath;
   useEffect(() => {
     query.disable(disabled);
   }, [disabled, query]);

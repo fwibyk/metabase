@@ -4,13 +4,11 @@ import {
 } from "metabase/current-user";
 import { PLUGIN_REMOTE_SYNC } from "metabase/plugins";
 import type { State } from "metabase/redux/store";
-import { isWithinIframe } from "metabase/utils/iframe";
 
 // Must be in sync with api/check-data-studio-access in src/metabase/api/common.clj
+// ibykus: Data Studio auch im eingebetteten iframe zugänglich (Instanz ist immer
+// eingebettet) — bleibt rollen-gated (Admin/Analyst).
 export function canAccessDataStudio(state: State) {
-  if (isWithinIframe()) {
-    return false;
-  }
   return getUserIsAdmin(state) || getUserIsEntitledAnalyst(state);
 }
 

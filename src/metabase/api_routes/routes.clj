@@ -35,6 +35,7 @@
    [metabase.geojson.api]
    [metabase.glossary.api]
    [metabase.health-inspector.api]
+   [metabase.ibykus.api]
    [metabase.indexed-entities.api]
    [metabase.indexes-rest.api]
    [metabase.llm.api]
@@ -251,6 +252,7 @@
    "/glossary"             (+auth 'metabase.glossary.api)
    "/google"               (+auth metabase.sso.api/google-auth-routes)
    "/health-inspector"     (+auth 'metabase.health-inspector.api)
+   "/ibykus"               (+auth 'metabase.ibykus.api) ; ibykus: Berichtsexport fuer den hopservice
    "/index"                (+auth 'metabase.indexes-rest.api)
    "/ldap"                 (+auth metabase.sso.api/ldap-routes)
    "/llm"                  (+auth metabase.llm.api/routes)

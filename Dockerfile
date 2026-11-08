@@ -2,7 +2,7 @@
 # STAGE 1: builder
 ###################
 
-FROM node:22-bullseye AS builder
+FROM node:22-bookworm AS builder
 
 ARG MB_EDITION=oss
 ARG VERSION
@@ -27,7 +27,7 @@ COPY . .
 RUN git config --global --add safe.directory /home/node
 
 # install bun for frontend dependencies
-RUN npm install -g bun
+RUN npm install -g bun@1.3.14
 
 # install frontend dependencies
 RUN bun install --frozen-lockfile

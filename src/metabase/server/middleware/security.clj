@@ -381,6 +381,12 @@
        (valid-embedding-origins
         (setting/get-value-of-type :string :embedding-app-origins-interactive))))
 
+(defn- ibykus-embedding-app-origin
+  "ibykus: einbettende Herkunft aus `MB_EMBEDDING_APP_ORIGIN` -- OSS-Ersatz fuer das Enterprise-Setting
+   `embedding-app-origins-interactive`, wie dieses auf strukturell sichere Origins gefiltert."
+  []
+  (some-> (env/env :mb-embedding-app-origin) valid-embedding-origins))
+
 (defn- frame-ancestors-value
   "The `frame-ancestors` CSP source-list for a given framing `mode`:
    `:any` (open embedding), `:self` (same-origin only, e.g. the internal data-app
@@ -389,7 +395,7 @@
   (case mode
     :any  "*"
     :self "'self'"
-    (or (interactive-embedding-origins) "'none'")))
+    (or (ibykus-embedding-app-origin) (interactive-embedding-origins) "'none'")))
 
 (defn- content-security-policy-header-with-frame-ancestors
   [frame-ancestors-mode nonce script-nonce? data-app-iframe? data-app-connect-hosts allow-blob-img?]
@@ -421,9 +427,11 @@
   (case mode
     :any  nil
     :self {"X-Frame-Options" "SAMEORIGIN"}
-    {"X-Frame-Options" (if-let [eao (interactive-embedding-origins)]
-                         (format "ALLOW-FROM %s" (-> eao (str/split #" ") first))
-                         "DENY")}))
+    ;; ibykus: mit MB_EMBEDDING_APP_ORIGIN regelt allein frame-ancestors die Einbettung
+    (when-not (ibykus-embedding-app-origin)
+      {"X-Frame-Options" (if-let [eao (interactive-embedding-origins)]
+                           (format "ALLOW-FROM %s" (-> eao (str/split #" ") first))
+                           "DENY")})))
 
 (defn approved-domain?
   "Checks if the domain is compatible with the reference one"

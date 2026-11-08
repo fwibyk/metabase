@@ -3,6 +3,7 @@
   (:require
    [clojure.data :as data]
    [clojure.set :as set]
+   [clojure.string :as str]
    [java-time.api :as t]
    [medley.core :as m]
    [metabase.dependencies.hooks :as dependencies.hooks]
@@ -200,13 +201,23 @@
                                              sample?                             (assoc :data_authority :ingested
                                                                                         :data_source    :ingested))))
 
+(defn- mit-schema
+  "ibykus: setzt bei leerem oder fehlendem Schema den `dbname` der Datenbank ein. Behebt Treiber (z. B. Doris), die
+   statt des Datenbanknamens einen leeren String als Schema liefern. Muss VOR jedem Abgleich greifen: die Tabellen der
+   App-DB tragen den `dbname`, ein Abgleich mit leerem Schema faende sie nicht, legte sie still und archivierte sie
+   nach 14 Tagen."
+  [database table]
+  (cond-> table
+    (str/blank? (:schema table)) (assoc :schema (get-in database [:details :dbname]))))
+
 (mu/defn create-or-reactivate-table!
   "Create a single new table in the database, or mark it as active if a matching inactive one exists."
   [database :- i/DatabaseInstance
-   {schema :schema table-name :name :as table} :- TableMetadata]
-  (if-let [existing (sync.db/inactive-table-by-schema-and-name (u/the-id database) schema table-name)]
+   table-roh :- :map]
+  (let [{schema :schema table-name :name :as table} (mit-schema database table-roh)]
+   (if-let [existing (sync.db/inactive-table-by-schema-and-name (u/the-id database) schema table-name)]
     (reactivate-table! database existing {:sample? (sync.db/database-sample? (u/the-id database))})
-    (create-table! database table)))
+    (create-table! database table))))
 
 ;; TODO - should we make this logic case-insensitive like it is for fields?
 
@@ -532,7 +543,8 @@
          (update-database-metadata! database db-metadata)))
      (let [reconcile-batch (fn reconcile-batch [context batch]
                              (sync-table-batch! database db-name context batch))
-           context  (transduce (partition-all table-sync-batch-size)
+           ;; ibykus: leeres Schema (Doris) VOR dem Abgleich auf den dbname setzen, siehe [[mit-schema]]
+           context  (transduce (comp (map #(mit-schema database %)) (partition-all table-sync-batch-size))
                                (completing reconcile-batch)
                                {:created 0, :updated 0, :complete? true
                                 :sample? (sync.db/database-sample? (:id database))

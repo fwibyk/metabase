@@ -26,7 +26,6 @@ import {
   Tooltip,
 } from "metabase/ui";
 import * as Urls from "metabase/urls";
-import { isWithinIframe } from "metabase/utils/iframe";
 
 import S from "../components/BrowseContainer.module.css";
 
@@ -59,9 +58,9 @@ export function BrowseMetrics() {
   });
 
   const hasDataAccess = useSelector(canUserCreateQueries);
-  const isEmbeddingIframe = isWithinIframe();
 
-  const canCreateMetric = !isEmbeddingIframe && hasDataAccess;
+  // ibykus: Metrik-Anlegen auch im eingebetteten iframe erlauben (analog Modelle).
+  const canCreateMetric = hasDataAccess;
 
   return (
     <Flex

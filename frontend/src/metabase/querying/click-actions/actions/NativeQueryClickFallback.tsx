@@ -3,17 +3,12 @@ import { c } from "ttag";
 import { MODAL_TYPES } from "metabase/querying/constants";
 import { setUIControls } from "metabase/redux/query-builder";
 import { Button, Flex } from "metabase/ui";
-import { isWithinIframe } from "metabase/utils/iframe";
 import type { LegacyDrill } from "metabase/visualizations/types";
 
 import { nativeDrillFallback } from "./utils";
 
 export const NativeQueryClickFallback: LegacyDrill = ({ question }) => {
   if (!nativeDrillFallback({ question })) {
-    return [];
-  }
-
-  if (isWithinIframe()) {
     return [];
   }
 

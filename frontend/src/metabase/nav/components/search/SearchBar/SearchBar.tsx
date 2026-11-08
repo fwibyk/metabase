@@ -32,7 +32,6 @@ import { getSetting } from "metabase/settings";
 import { Box, Flex, Icon, UnstyledButton, rem } from "metabase/ui";
 import { modelToUrl } from "metabase/urls";
 import { isSmallScreen } from "metabase/utils/dom";
-import { isWithinIframe } from "metabase/utils/iframe";
 import type { SearchResult } from "metabase-types/api";
 
 import { CommandPaletteTrigger } from "./CommandPaletteTrigger";
@@ -232,7 +231,7 @@ function SearchBar({
             <Icon name="close" />
           </UnstyledButton>
         )}
-        {!isSmallScreen() && !isWithinIframe() && isActive && (
+        {!isSmallScreen() && isActive && (
           <CommandPaletteTrigger onClick={handleCommandPaletteTriggerClick} />
         )}
       </Flex>

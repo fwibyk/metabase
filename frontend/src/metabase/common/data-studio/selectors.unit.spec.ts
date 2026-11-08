@@ -34,12 +34,20 @@ describe("canAccessDataStudio", () => {
     isWithinIframe.mockReturnValue(false);
   });
 
-  it("returns false when in embedding iframe", () => {
+  // ibykus: die Instanz ist immer eingebettet -- Data Studio bleibt dort rollen-gated erreichbar
+  it("returns true for an admin in the embedding iframe", () => {
     isWithinIframe.mockReturnValue(true);
     const state = setup({
       user: { is_superuser: true },
       tokenFeatures: { advanced_permissions: true },
     });
+
+    expect(canAccessDataStudio(state)).toBe(true);
+  });
+
+  it("returns false for a non-admin in the embedding iframe", () => {
+    isWithinIframe.mockReturnValue(true);
+    const state = setup({ user: { is_superuser: false } });
 
     expect(canAccessDataStudio(state)).toBe(false);
   });

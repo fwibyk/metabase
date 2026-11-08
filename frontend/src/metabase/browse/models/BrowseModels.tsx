@@ -28,7 +28,6 @@ import {
   Title,
   Tooltip,
 } from "metabase/ui";
-import { isWithinIframe } from "metabase/utils/iframe";
 
 import S from "../components/BrowseContainer.module.css";
 
@@ -59,10 +58,10 @@ export const BrowseModels = () => {
 
   const hasDataAccess = useSelector(canUserCreateQueries);
   const hasNativeWrite = useSelector(canUserCreateNativeQueries);
-  const isEmbeddingIframe = isWithinIframe();
 
-  const canCreateNewModel =
-    !isEmbeddingIframe && hasDataAccess && hasNativeWrite;
+  // ibykus: Modell-Anlegen auch im eingebetteten iframe erlauben (Full-App-Embedding
+  // über unser SSO) — konsistent mit new_button:true in getEmbedOptions.
+  const canCreateNewModel = hasDataAccess && hasNativeWrite;
 
   return (
     <Flex

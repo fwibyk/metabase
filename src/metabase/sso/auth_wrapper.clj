@@ -3,6 +3,7 @@
    [metabase.api.util.handlers :as handlers]
    [metabase.config.core :as config]
    [metabase.sso.api.slack-connect :as slack-connect.api]
+   [metabase.sso.local :as sso.local]
    [ring.util.response :as response]))
 
 (let [bad-req (response/bad-request {:message "The auth/sso endpoint only exists in enterprise builds"
@@ -21,8 +22,11 @@
 ;; This needs to be injected into [[metabase.server.routes/make-routes]] -- not [[metabase.api-routes.core/routes]] !!!
 (def routes
   "Ring routes for auth API endpoints.
-   Slack Connect (OSS) is always available. Other SSO routes (SAML, JWT, OIDC) require EE."
+   Slack Connect (OSS) is always available. Other SSO routes (SAML, JWT, OIDC) require EE.
+   /auth/sso-local is a custom OSS SSO endpoint for Keycloak iframe embedding."
   (handlers/routes
+   ;; Custom OSS SSO for Keycloak iframe embedding
+   (handlers/route-map-handler {"/auth" {"/sso-local" sso.local/routes}})
    ;; Slack Connect routes always available (OSS)
    (handlers/route-map-handler {"/auth" {"/sso" {"/slack-connect" slack-connect.api/routes}}})
    ;; Other SSO routes require EE
