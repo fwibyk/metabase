@@ -1,0 +1,71 @@
+import { match } from "ts-pattern";
+import { t } from "ttag";
+
+import embedJsExampleImage from "assets/img/embed-js-example.png";
+import { ExternalLink } from "metabase/common/components/ExternalLink";
+import { Link } from "metabase/common/components/Link";
+import { Box, Button, Group, Text } from "metabase/ui";
+
+import S from "./EmbedHomepage.module.css";
+
+type EmbedJsContentProps = {
+  embedJsDocsUrl: string;
+  showImage?: boolean;
+  hasEmbeddingFeature?: boolean;
+  variant: "oss" | "ee";
+};
+
+export const EmbedJsContent = ({
+  embedJsDocsUrl,
+  showImage,
+  hasEmbeddingFeature,
+  variant,
+}: EmbedJsContentProps) => {
+  const cta = match({ variant, hasEmbeddingFeature })
+    .with({ variant: "ee", hasEmbeddingFeature: true }, () => (
+      <Button component={Link} to={"/embedding/get-started"}>
+        {t`Go to setup guide`}
+      </Button>
+    ))
+    .with({ variant: "ee", hasEmbeddingFeature: false }, () => (
+      <Button component={Link} to={"/admin/settings/license"}>
+        {t`Activate license`}
+      </Button>
+    ))
+    .otherwise(() => null);
+
+  return (
+    <Box component="section" aria-labelledby="embed-js-title">
+      <Text
+        fw="bold"
+        mb="sm"
+        size="lg"
+        color="text-secondary"
+        id="embed-js-title"
+      >{t`Modular embedding`}</Text>
+      <Text mb="lg">
+        {/* eslint-disable-next-line metabase/no-literal-metabase-strings -- This string only shows for admins. */}
+        {t`A JavaScript library built on top of Metabase’s modular embedding SDK that lets you embed individual components (charts, dashboards, query builder) using plain JS — no React setup required. You get per-component controls like drill-through, parameters, downloads, theming.`}
+      </Text>
+      {showImage && (
+        <Box
+          component="img"
+          className={S.border}
+          src={embedJsExampleImage}
+          alt="Modular embedding example"
+          w="100%"
+          mb="lg"
+        />
+      )}
+      <Group gap="lg">
+        {cta}
+
+        <ExternalLink href={embedJsDocsUrl}>
+          <Button
+            variant={cta ? "subtle" : "default"}
+          >{t`Read the docs`}</Button>
+        </ExternalLink>
+      </Group>
+    </Box>
+  );
+};

@@ -1,0 +1,222 @@
+import _ from "underscore";
+
+import type {
+  ActionExecutionResult,
+  CreateActionRequest,
+  ExecuteActionRequest,
+  ExecuteDashcardActionRequest,
+  ExecuteUnsavedActionRequest,
+  GetActionRequest,
+  ListActionsRequest,
+  ParametersForActionExecution,
+  PrefetchActionValuesRequest,
+  PrefetchDashcardValuesRequest,
+  UpdateActionRequest,
+  WritebackAction,
+  WritebackActionId,
+} from "metabase-types/api";
+import type { GetPublicAction } from "metabase-types/api/actions";
+
+import { Api } from "./api";
+import {
+  idTag,
+  invalidateTags,
+  listTag,
+  provideActionListTags,
+  provideActionTags,
+} from "./tags";
+
+export const actionApi = Api.injectEndpoints({
+  endpoints: (builder) => ({
+    listActions: builder.query<WritebackAction[], ListActionsRequest>({
+      query: (params) => ({
+        method: "GET",
+        url: `/api/action`,
+        params,
+      }),
+      providesTags: (collections = []) => provideActionListTags(collections),
+    }),
+    getAction: builder.query<WritebackAction, GetActionRequest>({
+      query: ({ id }) => ({
+        method: "GET",
+        url: `/api/action/${id}`,
+      }),
+      providesTags: (action) => (action ? provideActionTags(action) : []),
+    }),
+    createAction: builder.mutation<WritebackAction, CreateActionRequest>({
+      query: (body) => ({
+        method: "POST",
+        url: "/api/action",
+        body,
+      }),
+      invalidatesTags: (action, error) =>
+        action ? invalidateTags(error, [listTag("action")]) : [],
+    }),
+    updateAction: builder.mutation<WritebackAction, UpdateActionRequest>({
+      query: (body) => ({
+        method: "PUT",
+        url: `/api/action/${body.id}`,
+        body: _.pick(body, [
+          "id",
+          "archived",
+          "collection_id",
+          "dataset_query",
+          "description",
+          "kind",
+          "model_id",
+          "name",
+          "parameter_mappings",
+          "parameters",
+          "table_id",
+          "visualization_settings",
+        ]),
+      }),
+      invalidatesTags: (action, error) =>
+        action
+          ? invalidateTags(error, [
+              listTag("action"),
+              idTag("action", action.id),
+            ])
+          : [],
+      onQueryStarted: async (
+        { id, ...patch },
+        { dispatch, queryFulfilled },
+      ) => {
+        const patchResult = dispatch(
+          actionApi.util.updateQueryData("getAction", { id }, (draft) => {
+            Object.assign(draft, patch);
+          }),
+        );
+        try {
+          await queryFulfilled;
+        } catch {
+          patchResult.undo();
+        }
+      },
+    }),
+    deleteAction: builder.mutation<WritebackAction, WritebackActionId>({
+      query: (id) => ({
+        method: "DELETE",
+        url: `/api/action/${id}`,
+      }),
+      invalidatesTags: (_, error, id) =>
+        invalidateTags(error, [listTag("action"), idTag("action", id)]),
+    }),
+    listPublicActions: builder.query<GetPublicAction[], void>({
+      query: () => ({
+        method: "GET",
+        url: "/api/action/public",
+      }),
+      providesTags: (actions = []) => [
+        ...actions.map((action) => idTag("public-action", action.id)),
+        listTag("public-action"),
+      ],
+    }),
+    deleteActionPublicLink: builder.mutation<void, { id: WritebackActionId }>({
+      query: ({ id }) => ({
+        method: "DELETE",
+        url: `/api/action/${id}/public_link`,
+      }),
+      invalidatesTags: (_, error, { id }) =>
+        invalidateTags(error, [
+          listTag("public-action"),
+          idTag("public-action", id),
+          listTag("action"),
+          idTag("action", id),
+        ]),
+    }),
+    createActionPublicLink: builder.mutation<
+      { uuid: string },
+      { id: WritebackActionId }
+    >({
+      query: ({ id }) => ({
+        method: "POST",
+        url: `/api/action/${id}/public_link`,
+      }),
+      invalidatesTags: (_, error, { id }) =>
+        invalidateTags(error, [
+          listTag("public-card"),
+          listTag("action"),
+          idTag("action", id),
+        ]),
+    }),
+    executeAction: builder.mutation<
+      ActionExecutionResult,
+      ExecuteActionRequest
+    >({
+      query: ({ id, parameters }) => ({
+        method: "POST",
+        url: `/api/action/${id}/execute`,
+        body: { parameters },
+      }),
+    }),
+    executeUnsavedAction: builder.mutation<
+      ActionExecutionResult,
+      ExecuteUnsavedActionRequest
+    >({
+      query: (body) => ({
+        method: "POST",
+        url: "/api/action/execute",
+        body,
+      }),
+    }),
+    prefetchActionValues: builder.query<
+      ParametersForActionExecution,
+      PrefetchActionValuesRequest
+    >({
+      query: ({ id, parameters }) => ({
+        method: "POST",
+        url: `/api/action/${id}/execute/values`,
+        body: { parameters },
+      }),
+      // Prefetch is an imperative fetch-and-discard with row-specific params
+      // that rarely repeat, so there's nothing to gain from caching entries.
+      keepUnusedDataFor: 0,
+    }),
+    executeDashcardAction: builder.mutation<
+      ActionExecutionResult,
+      ExecuteDashcardActionRequest
+    >({
+      query: ({ dashboardId, dashcardId, modelId, parameters }) => ({
+        method: "POST",
+        url: `/api/dashboard/${dashboardId}/dashcard/${dashcardId}/execute`,
+        body: { modelId, parameters },
+      }),
+    }),
+    prefetchDashcardValues: builder.query<
+      ParametersForActionExecution,
+      PrefetchDashcardValuesRequest
+    >({
+      query: ({ dashboardId, dashcardId, parameters }) => ({
+        method: "POST",
+        url: `/api/dashboard/${dashboardId}/dashcard/${dashcardId}/execute/values`,
+        body: { parameters },
+      }),
+      // Prefetch is an imperative fetch-and-discard with per-dashcard params
+      // that rarely repeat, so there's nothing to gain from caching entries.
+      keepUnusedDataFor: 0,
+    }),
+  }),
+});
+
+export const {
+  useGetActionQuery,
+  useListActionsQuery,
+  useListPublicActionsQuery,
+  useCreateActionMutation,
+  useUpdateActionMutation,
+  useDeleteActionMutation,
+  useCreateActionPublicLinkMutation,
+  useDeleteActionPublicLinkMutation,
+  useExecuteActionMutation,
+  endpoints: {
+    listPublicActions,
+    deleteActionPublicLink,
+    createActionPublicLink,
+    executeAction,
+    executeUnsavedAction,
+    prefetchActionValues,
+    executeDashcardAction,
+    prefetchDashcardValues,
+  },
+} = actionApi;

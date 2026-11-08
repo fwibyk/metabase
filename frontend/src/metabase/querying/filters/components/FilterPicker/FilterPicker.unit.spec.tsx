@@ -1,0 +1,623 @@
+import userEvent from "@testing-library/user-event";
+
+import {
+  setupDatabaseEndpoints,
+  setupFieldsValuesEndpoints,
+} from "__support__/server-mocks";
+import {
+  renderWithProviders,
+  screen,
+  waitFor,
+  waitForLoaderToBeRemoved,
+} from "__support__/ui";
+import { dayjs } from "metabase/dayjs";
+import { checkNotNull } from "metabase/utils/types";
+import * as Lib from "metabase-lib";
+import {
+  PRODUCT_CATEGORY_VALUES,
+  PRODUCT_VENDOR_VALUES,
+  createSampleDatabase,
+} from "metabase-types/api/mocks/presets";
+
+import { FilterPicker } from "./FilterPicker";
+import {
+  createFilteredQuery,
+  createQuery,
+  createQueryWithBooleanFilter,
+  createQueryWithCoordinateFilter,
+  createQueryWithDefaultFilter,
+  createQueryWithExcludeDateFilter,
+  createQueryWithNumberFilter,
+  createQueryWithRelativeDateFilter,
+  createQueryWithSpecificDateFilter,
+  createQueryWithStringFilter,
+  createQueryWithTimeFilter,
+  findBooleanColumn,
+  findDateColumn,
+  findDateTimeColumn,
+  findNumericColumn,
+  findStringColumn,
+  storeInitialState,
+} from "./test-utils";
+
+// Unjustified type cast. FIXME
+const productCategories = PRODUCT_CATEGORY_VALUES.values.flat() as string[];
+// Unjustified type cast. FIXME
+const productVendors = PRODUCT_VENDOR_VALUES.values.flat() as string[];
+
+function createQueryWithMultipleValuesFilter() {
+  const query = createQuery();
+  const column = findStringColumn(query, "PRODUCTS", "VENDOR");
+
+  const clause = Lib.stringFilterClause({
+    operator: "!=",
+    column,
+    values: ["Vendor 1", "Vendor 2"],
+    options: {},
+  });
+
+  return createFilteredQuery(query, clause);
+}
+
+function createQueryWithSegmentFilter() {
+  const query = createQuery();
+  const [segment] = Lib.availableSegments(query, 0);
+  return createFilteredQuery(query, segment);
+}
+
+function createQueryWithNullStringFilter() {
+  const query = createQuery();
+  const column = findStringColumn(query);
+  const clause = Lib.expressionClause("is-null", [column], null);
+
+  return createFilteredQuery(query, clause);
+}
+
+function createQueryWithCustomNumberFilter() {
+  const query = createQuery();
+  const column1 = findBooleanColumn(query);
+  const column2 = findNumericColumn(query);
+  const clause = Lib.expressionClause(">", [column1, column2], null);
+
+  return createFilteredQuery(query, clause);
+}
+
+type SetupOpts = {
+  query?: Lib.Query;
+  filter?: Lib.FilterClause;
+};
+
+type WidgetTestCase = [
+  string,
+  Partial<SetupOpts>,
+  { section?: string; columnName: string; pickerId: string },
+];
+
+const WIDGET_TEST_CASES: WidgetTestCase[] = [
+  [
+    "boolean",
+    createQueryWithBooleanFilter(),
+    {
+      section: "User",
+      columnName: "Is Active",
+      pickerId: "boolean-filter-picker",
+    },
+  ],
+  [
+    "coordinate",
+    createQueryWithCoordinateFilter(),
+    {
+      section: "User",
+      columnName: "Latitude",
+      pickerId: "coordinate-filter-picker",
+    },
+  ],
+  [
+    "date",
+    createQueryWithSpecificDateFilter({
+      column: findDateColumn(createQuery()),
+    }),
+    {
+      section: "User",
+      columnName: "Birth Date",
+      pickerId: "date-filter-picker",
+    },
+  ],
+  [
+    "datetime",
+    createQueryWithSpecificDateFilter(),
+    { columnName: "Created At", pickerId: "date-filter-picker" },
+  ],
+  [
+    "number",
+    createQueryWithNumberFilter(),
+    { columnName: "Discount", pickerId: "number-filter-picker" },
+  ],
+  [
+    "string",
+    createQueryWithStringFilter(),
+    {
+      section: "Product",
+      columnName: "Category",
+      pickerId: "string-filter-picker",
+    },
+  ],
+  [
+    "time",
+    createQueryWithTimeFilter(),
+    { columnName: "Time", pickerId: "time-filter-picker" },
+  ],
+  [
+    "default",
+    createQueryWithDefaultFilter(),
+    { columnName: "Unknown", pickerId: "default-filter-picker" },
+  ],
+];
+
+function setup({ query = createQuery(), filter }: SetupOpts = {}) {
+  const onSelect = jest.fn();
+
+  setupFieldsValuesEndpoints([PRODUCT_CATEGORY_VALUES, PRODUCT_VENDOR_VALUES]);
+  setupDatabaseEndpoints(createSampleDatabase());
+
+  renderWithProviders(
+    <FilterPicker
+      query={query}
+      stageIndex={0}
+      filter={filter}
+      filterIndex={0}
+      onSelect={onSelect}
+    />,
+    { storeInitialState },
+  );
+
+  function getNextFilter() {
+    expect(onSelect).toHaveBeenCalledWith(expect.anything());
+    const [filter] = onSelect.mock.lastCall;
+    return filter;
+  }
+
+  function getNextFilterColumnName() {
+    const filter = getNextFilter();
+    const parts = Lib.filterParts(query, 0, filter);
+    const column = checkNotNull(parts?.column);
+    return Lib.displayInfo(query, 0, column).longDisplayName;
+  }
+
+  return {
+    query,
+    getNextFilter,
+    getNextFilterColumnName,
+    onSelect,
+  };
+}
+
+describe("FilterPicker", () => {
+  describe("without a filter", () => {
+    it("should list filterable columns", async () => {
+      setup();
+
+      expect(screen.getByText("Orders")).toBeInTheDocument();
+      expect(screen.getByText("Discount")).toBeInTheDocument();
+
+      await userEvent.click(screen.getByText("Product"));
+      expect(screen.getByText("Category")).toBeInTheDocument();
+    });
+
+    it("should list segments", () => {
+      setup();
+
+      expect(screen.getByText("Discounted")).toBeInTheDocument();
+      expect(screen.getByText("Many items")).toBeInTheDocument();
+    });
+
+    it("should not highlight anything", () => {
+      setup();
+
+      expect(screen.getByLabelText("Total")).toHaveAttribute(
+        "aria-selected",
+        "false",
+      );
+      expect(screen.getByLabelText("Discount")).toHaveAttribute(
+        "aria-selected",
+        "false",
+      );
+      expect(screen.getByLabelText("Discounted")).toHaveAttribute(
+        "aria-selected",
+        "false",
+      );
+      expect(screen.getByLabelText("Many items")).toHaveAttribute(
+        "aria-selected",
+        "false",
+      );
+    });
+
+    it("should add a segment filter", async () => {
+      const { query, getNextFilter } = setup();
+
+      await userEvent.click(screen.getByText("Discounted"));
+
+      const filter = getNextFilter();
+      const name = Lib.displayInfo(query, 0, filter).displayName;
+      expect(name).toBe("Discounted");
+    });
+
+    describe("filter pickers", () => {
+      it.each(WIDGET_TEST_CASES)(
+        "should open correct picker for a %s column",
+        async (type, query, { section, columnName, pickerId }) => {
+          setup();
+
+          if (section) {
+            await userEvent.click(screen.getByText(section));
+          }
+          await userEvent.click(screen.getByText(columnName));
+
+          expect(screen.getByTestId(pickerId)).toBeInTheDocument();
+        },
+      );
+
+      it("should open a number picker for a numeric column", async () => {
+        setup();
+        await userEvent.click(screen.getByText("Total"));
+        expect(screen.getByTestId("number-filter-picker")).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe("with a filter", () => {
+    it("should highlight the selected column", async () => {
+      setup(createQueryWithNumberFilter());
+
+      await userEvent.click(screen.getByLabelText("Back"));
+
+      expect(await screen.findByLabelText("Total")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      expect(screen.getByLabelText("Discount")).toHaveAttribute(
+        "aria-selected",
+        "false",
+      );
+      expect(screen.getByLabelText("Discounted")).toHaveAttribute(
+        "aria-selected",
+        "false",
+      );
+    });
+
+    it("should highlight the selected segment", async () => {
+      setup(createQueryWithSegmentFilter());
+
+      expect(await screen.findByLabelText("Discounted")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      expect(screen.getByLabelText("Many items")).toHaveAttribute(
+        "aria-selected",
+        "false",
+      );
+      expect(screen.getByLabelText("Total")).toHaveAttribute(
+        "aria-selected",
+        "false",
+      );
+    });
+
+    it("should ignore the existing filter state when changing a column", async () => {
+      const { query, getNextFilter, getNextFilterColumnName } = setup(
+        createQueryWithMultipleValuesFilter(),
+      );
+      await waitForLoaderToBeRemoved(); // fetching Vendor field values
+
+      await userEvent.click(screen.getByLabelText("Back"));
+      await userEvent.click(screen.getByText("Category"));
+      await waitForLoaderToBeRemoved(); // fetching Category field values
+
+      productCategories.forEach((category) => {
+        expect(screen.getByLabelText(category)).not.toBeChecked();
+      });
+      productVendors.forEach((vendor) => {
+        expect(screen.queryByText(vendor)).not.toBeInTheDocument();
+      });
+
+      await userEvent.click(screen.getByText("Gadget"));
+      await userEvent.click(screen.getByText("Gizmo"));
+      await userEvent.click(screen.getByText("Update filter"));
+
+      const filter = getNextFilter();
+      const filterParts = Lib.stringFilterParts(query, 0, filter);
+      expect(filterParts?.operator).toBe("=");
+      expect(filterParts?.values).toEqual(["Gadget", "Gizmo"]);
+      expect(getNextFilterColumnName()).toBe("Product → Category");
+    });
+
+    describe("filter pickers", () => {
+      it.each(WIDGET_TEST_CASES)(
+        "should open correct picker for a %s column",
+        (type, opts, { pickerId }) => {
+          setup(opts);
+          expect(screen.getByTestId(pickerId)).toBeInTheDocument();
+        },
+      );
+
+      it.each([
+        ["specific", createQueryWithSpecificDateFilter()],
+        ["relative", createQueryWithRelativeDateFilter()],
+        ["exclude", createQueryWithExcludeDateFilter()],
+      ])(`should open the date picker for a %s date filter`, (type, opts) => {
+        setup(opts);
+        expect(screen.getByTestId("date-filter-picker")).toBeInTheDocument();
+      });
+
+      it("should open the expression editor when column type isn't supported", async () => {
+        const query = Lib.filter(
+          createQuery(),
+          -1,
+          Lib.expressionClause("between", [1, 2, 3]),
+        );
+        const [filter] = Lib.filters(query, -1);
+
+        setup({ query, filter });
+        expect(
+          await screen.findByText(/Custom expression/i),
+        ).toBeInTheDocument();
+        // the expression editor formats its source asynchronously; wait for it
+        // to settle so the resulting state updates stay inside act()
+        await waitFor(() =>
+          expect(
+            screen.getByTestId("custom-expression-query-editor"),
+          ).toHaveProperty("readOnly", false),
+        );
+      });
+    });
+
+    it("should initialize widgets correctly after changing a column", async () => {
+      const { query, getNextFilter, getNextFilterColumnName } = setup(
+        createQueryWithNumberFilter(),
+      );
+
+      await userEvent.click(screen.getByLabelText("Back"));
+      await userEvent.click(screen.getByText("Time"));
+
+      expect(screen.getByLabelText("Filter operator")).toHaveTextContent(
+        "Before",
+      );
+      expect(screen.getByDisplayValue("00:00")).toBeInTheDocument();
+
+      await userEvent.click(screen.getByText("Update filter"));
+
+      const filterParts = Lib.timeFilterParts(query, 0, getNextFilter());
+      expect(filterParts?.operator).toBe("<");
+      expect(filterParts?.values).toEqual([dayjs("00:00", "HH:mm").toDate()]);
+      expect(getNextFilterColumnName()).toBe("Time");
+    });
+
+    it("should change a filter segment", async () => {
+      const { query, getNextFilter } = setup(createQueryWithSegmentFilter());
+
+      await userEvent.click(screen.getByText("Many items"));
+
+      const filter = getNextFilter();
+      const name = Lib.displayInfo(query, 0, filter).displayName;
+      expect(name).toBe("Many items");
+    });
+
+    it("should replace a segment filter with a column filter", async () => {
+      const { query, getNextFilter, getNextFilterColumnName } = setup(
+        createQueryWithSegmentFilter(),
+      );
+
+      await userEvent.click(screen.getByText("Total"));
+      await userEvent.click(screen.getByText("Between"));
+      await userEvent.click(screen.getByText("Equal to"));
+      const input = screen.getByPlaceholderText("Enter a number");
+      await userEvent.type(input, "100");
+      await userEvent.click(screen.getByText("Update filter"));
+
+      const filter = getNextFilter();
+      const filterParts = Lib.numberFilterParts(query, 0, filter);
+      expect(filterParts).toMatchObject({
+        operator: "=",
+        column: expect.anything(),
+        values: [100],
+      });
+      expect(getNextFilterColumnName()).toBe("Total");
+    });
+  });
+
+  describe("custom expression", () => {
+    // The editor wraps long expressions over lines, so compare without whitespace.
+    async function expectEditorSource(source: string) {
+      const editor = await screen.findByTestId(
+        "custom-expression-query-editor",
+      );
+      await waitFor(() =>
+        expect(editor.textContent?.replace(/\s/g, "")).toBe(
+          source.replace(/\s/g, ""),
+        ),
+      );
+    }
+
+    async function editExpressionAndSubmit(
+      text: string,
+      { delay }: { delay: number } = { delay: 0 },
+    ) {
+      const input = await screen.findByTestId("custom-expression-query-editor");
+      const button = screen.getByRole("button", { name: /(Done|Update)/ });
+
+      // The expression editor applies changes on blur,
+      // but for some reason it doesn't work without `act`.
+      await waitFor(() => expect(input).toHaveProperty("readOnly", false));
+
+      await userEvent.clear(input);
+      await userEvent.type(input, text, { delay });
+      await userEvent.tab();
+
+      await waitFor(() => expect(button).toBeEnabled());
+      await userEvent.click(button);
+    }
+
+    it("should create a filter with a custom expression", async () => {
+      const { query, getNextFilter } = setup();
+
+      await userEvent.click(screen.getByText(/Custom expression/i));
+      await editExpressionAndSubmit("[[Total] > [[Discount]");
+
+      const filter = getNextFilter();
+
+      expect(Lib.displayInfo(query, 0, filter).displayName).toBe(
+        "Total is greater than Discount",
+      );
+    });
+
+    it("should reach the custom expression editor after going back from a column (metabase#29094)", async () => {
+      setup();
+
+      await userEvent.click(screen.getByText("Total"));
+      expect(screen.getByTestId("number-filter-picker")).toBeInTheDocument();
+      await userEvent.click(screen.getByLabelText("Back"));
+      await userEvent.click(screen.getByText(/Custom expression/i));
+
+      expect(
+        await screen.findByTestId("custom-expression-query-editor"),
+      ).toBeInTheDocument();
+    });
+
+    it.each<[string, (search: HTMLElement) => Promise<void>]>([
+      [
+        "a function picked from the search results",
+        async (search) => {
+          await userEvent.type(search, "coalesce");
+          await userEvent.click(screen.getByText("coalesce"));
+        },
+      ],
+      [
+        "a search that ends with an opening parenthesis",
+        (search) => userEvent.type(search, "case("),
+      ],
+    ])("should open the expression editor for %s", async (_name, act) => {
+      setup();
+      expect(
+        screen.queryByTestId("custom-expression-query-editor"),
+      ).not.toBeInTheDocument();
+
+      await act(screen.getByPlaceholderText("Find..."));
+
+      expect(
+        await screen.findByTestId("custom-expression-query-editor"),
+      ).toBeInTheDocument();
+    });
+
+    it("should open the expression editor for unsupported expressions", async () => {
+      setup(createQueryWithNullStringFilter());
+      const editor = await screen.findByTestId(
+        "custom-expression-query-editor",
+      );
+      expect(editor).toBeInTheDocument();
+      // the expression editor formats its source asynchronously; wait for it
+      // to settle so the resulting state updates stay inside act()
+      await waitFor(() => expect(editor).toHaveProperty("readOnly", false));
+    });
+
+    it.each<[string, () => SetupOpts, string]>([
+      [
+        "a negated case-insensitive string filter (metabase#14880)",
+        () =>
+          createQueryWithStringFilter({
+            column: findStringColumn(createQuery(), "PRODUCTS", "TITLE"),
+            operator: "does-not-contain",
+            values: ["Wallet"],
+            options: { caseSensitive: false },
+          }),
+        'doesNotContain([Product → Title], "Wallet", "case-insensitive")',
+      ],
+      [
+        "a case-insensitive string filter (metabase#14959)",
+        () =>
+          createQueryWithStringFilter({
+            column: findStringColumn(createQuery(), "PRODUCTS", "TITLE"),
+            operator: "contains",
+            values: ["MULLER"],
+            options: { caseSensitive: false },
+          }),
+        'contains([Product → Title], "MULLER", "case-insensitive")',
+      ],
+      [
+        "an is-empty string filter",
+        () =>
+          createQueryWithStringFilter({
+            operator: "is-empty",
+            values: [],
+          }),
+        "isEmpty([Product → Description])",
+      ],
+      [
+        "an is-empty numeric filter",
+        () => createQueryWithNumberFilter({ operator: "is-null", values: [] }),
+        "isNull([Total])",
+      ],
+    ])(
+      "should convert %s to a custom expression",
+      async (_name, getOpts, expectedSource) => {
+        setup(getOpts());
+
+        await userEvent.click(screen.getByLabelText("Back"));
+        await userEvent.click(screen.getByText(/Custom expression/i));
+
+        await expectEditorSource(expectedSource);
+      },
+    );
+
+    it("should show a comparison between two columns as a custom expression (metabase#12492)", async () => {
+      const query = createQuery();
+      const clause = Lib.expressionClause(">", [
+        findDateTimeColumn(query),
+        findStringColumn(query, "PRODUCTS", "CREATED_AT"),
+      ]);
+      setup(createFilteredQuery(query, clause));
+
+      await expectEditorSource("[Created At] > [Product → Created At]");
+    });
+
+    it("should keep include-current after converting a relative date filter to a custom expression (metabase#12457)", async () => {
+      const { query, getNextFilter } = setup(
+        createQueryWithRelativeDateFilter({
+          value: -30,
+          unit: "day",
+          options: { includeCurrent: true },
+        }),
+      );
+
+      await userEvent.click(screen.getByLabelText("Back"));
+      await userEvent.click(screen.getByLabelText("Back"));
+      await userEvent.click(screen.getByText(/Custom expression/i));
+
+      const button = await screen.findByRole("button", { name: "Update" });
+      await waitFor(() => expect(button).toBeEnabled());
+      await userEvent.click(button);
+
+      expect(
+        Lib.relativeDateFilterParts(query, 0, getNextFilter()),
+      ).toMatchObject({
+        value: -30,
+        unit: "day",
+        options: { includeCurrent: true },
+      });
+    });
+
+    it("should update a filter with a numeric custom expression", async () => {
+      const { query, getNextFilter } = setup(
+        createQueryWithCustomNumberFilter(),
+      );
+
+      await editExpressionAndSubmit("{selectall}{backspace}[[Total] > 100", {
+        delay: 50,
+      });
+
+      const filter = getNextFilter();
+
+      expect(Lib.displayInfo(query, 0, filter).displayName).toBe(
+        "Total is greater than 100",
+      );
+    });
+  });
+});

@@ -1,0 +1,457 @@
+(ns metabase.embedding.settings
+  "Settings related to embedding Metabase in other applications."
+  (:require
+   [clojure.string :as str]
+   [metabase.analytics.core :as analytics]
+   [metabase.embedding.db :as embedding.db]
+   [metabase.premium-features.core :as premium-features]
+   [metabase.server.settings :as server.settings]
+   [metabase.settings.core :as setting :refer [defsetting]]
+   [metabase.util :as u]
+   [metabase.util.i18n :as i18n :refer [deferred-tru]]
+   [metabase.util.json :as json]
+   [metabase.util.log :as log]
+   [metabase.util.malli :as mu]
+   [metabase.util.random :as u.random]))
+
+(defsetting embedding-secret-key
+  (deferred-tru "Secret key used to sign JSON Web Tokens for requests to `/api/embed` endpoints.")
+  :encryption :when-encryption-key-set
+  :visibility :admin
+  :audit :no-value
+  :setter (fn [new-value]
+            (when (seq new-value)
+              (assert (u/hexadecimal-string? new-value)
+                      (i18n/tru "Invalid embedding-secret-key! Secret key must be a hexadecimal-encoded 256-bit key (i.e., a 64-character string).")))
+            (setting/set-value-of-type! :string :embedding-secret-key new-value)))
+
+(defsetting show-static-embed-terms
+  (deferred-tru "Check if the static embedding licensing should be hidden in the static embedding flow")
+  :type    :boolean
+  :default true
+  :export? true
+  :getter  (fn []
+             (if (premium-features/hide-embed-branding?)
+               false
+               (setting/get-value-of-type :boolean :show-static-embed-terms))))
+
+(defsetting ^:deprecated show-sdk-embed-terms
+  (deferred-tru "Check if admin should see the SDK licensing terms popup")
+  :type    :boolean
+  :default true
+  :can-read-from-env? false
+  :doc false
+  :export? true
+  :deprecated "0.65.0")
+
+(defsetting ^:deprecated show-simple-embed-terms
+  (deferred-tru "Check if admin should see the simple embedding terms popup")
+  :type    :boolean
+  :default true
+  :can-read-from-env? false
+  :doc false
+  :export? true
+  :deprecated "0.65.0")
+
+(defn- any-legacy-embedding-terms-unaccepted?
+  "Whether either of the terms settings [[show-modular-embed-terms]] replaces is still unaccepted. `true` on these
+  settings means the popup is still owed, so an admin who accepted only one of the two has not seen everything the
+  merged terms cover."
+  []
+  (boolean
+   (some #(setting/get-value-of-type :boolean %)
+         [:show-simple-embed-terms :show-sdk-embed-terms])))
+
+(defn- show-modular-embed-terms?
+  "The effective value of [[show-modular-embed-terms]].
+
+  Until an admin accepts it, it stands for the two settings it replaces: either one still unaccepted means the popup
+  is still owed. Reading the *source* rather than the value is what separates \"nobody answered this\" from \"an admin
+  accepted it\" -- without that, accepting would bounce back from a legacy value."
+  []
+  (if (= :default (setting/get-raw-value-source :show-modular-embed-terms))
+    (any-legacy-embedding-terms-unaccepted?)
+    (setting/get-value-of-type :boolean :show-modular-embed-terms)))
+
+(defsetting show-modular-embed-terms
+  (deferred-tru "Check if admin should see the modular embedding and SDK licensing terms popup")
+  :type    :boolean
+  :default true
+  :can-read-from-env? false
+  :doc false
+  :export? true
+  :getter  show-modular-embed-terms?)
+
+(defn- embedding-app-origin-set?
+  "Whether any authorized-origin setting names a real origin."
+  []
+  (boolean
+   (or (setting/get-value-of-type :string :embedding-app-origin)
+       (setting/get-value-of-type :string :embedding-app-origins-interactive)
+       (let [sdk-origins (setting/get-value-of-type :string :embedding-app-origins-sdk)]
+         ;; Don't track "localhost:*" as a meaningful origin since it was
+         ;; the old default and may still exist in migrated instances
+         (and sdk-origins (not (str/blank? sdk-origins)) (not= "localhost:*" sdk-origins))))))
+
+(mu/defn- make-embedding-toggle-setter
+  "Creates a boolean setter for various boolean embedding-enabled flavors, all tracked by snowplow."
+  [setting-key :- :keyword event-name :- :string]
+  (fn [new-value]
+    (u/prog1 new-value
+      (let [old-value (setting/get-value-of-type :boolean setting-key)]
+        (when (not= new-value old-value)
+          (setting/set-value-of-type! :boolean setting-key new-value)
+          (when (and new-value (str/blank? (embedding-secret-key)))
+            (embedding-secret-key! (u.random/secure-hex 32)))
+          (analytics/track-event! :snowplow/embed_share
+                                  {:event                      (keyword (str event-name (if new-value "-enabled" "-disabled")))
+                                   :embedding-app-origin-set   (embedding-app-origin-set?)
+                                   :number-embedded-questions  (embedding.db/count-embedded-cards)
+                                   :number-embedded-dashboards (embedding.db/count-embedded-dashboards)}))))))
+
+(defsetting ^:deprecated enable-embedding
+  ;; To be removed in 0.53.0
+  (deferred-tru "Allow admins to securely embed questions and dashboards within other applications?")
+  :type       :boolean
+  :default    false
+  :visibility :authenticated
+  :export?    true
+  :audit      :getter
+  :deprecated "0.51.0"
+  :setter     (make-embedding-toggle-setter :enable-embedding "embedding"))
+
+(defsetting ^:deprecated embedding-app-origin
+  ;; To be removed in 0.53.0
+  (deferred-tru "Allow this origin to embed the full Metabase application.")
+  ;; This value is usually gated by [[enable-embedding]]
+  :feature    :embedding
+  :deprecated "0.51.0"
+  :type       :string
+  :export?    false
+  :visibility :public
+  :audit      :getter
+  :encryption :no)
+
+(defsetting enable-embedding-sdk
+  (deferred-tru "Allow admins to embed Metabase via the SDK?")
+  :type       :boolean
+  :default    false
+  :visibility :authenticated
+  :export?    false
+  :audit      :getter
+  :setter     (make-embedding-toggle-setter :enable-embedding-sdk "sdk-embedding"))
+
+(defsetting ^:deprecated enable-embedding-simple
+  (deferred-tru "Allow admins to embed Metabase via modular embedding?")
+  :type       :boolean
+  :default    false
+  :visibility :authenticated
+  :export?    false
+  :audit      :getter
+  :deprecated "0.65.0"
+  :setter     (make-embedding-toggle-setter :enable-embedding-simple "simple-embedding"))
+
+(defn- any-legacy-embedding-method-enabled?
+  "Whether any of the settings [[enable-embedding-modular]] replaces is on, read through the normal resolution order so
+  that a value set by env var counts."
+  []
+  (boolean
+   (some #(setting/get-value-of-type :boolean %)
+         [:enable-embedding-simple :enable-embedding-static])))
+
+(defn- modular-embedding-enabled?
+  "The effective value of [[enable-embedding-modular]].
+
+  Until an admin sets it, it stands for whatever the two settings it replaces already say: either of them on means
+  embedding is on, so an upgrade cannot switch a live embed off. Reading the *source* rather than the value is what
+  separates \"nobody set this\" from \"an admin turned it off\" -- without that, turning it off would bounce back on
+  from a legacy value."
+  []
+  (if (= :default (setting/get-raw-value-source :enable-embedding-modular))
+    (any-legacy-embedding-method-enabled?)
+    (setting/get-value-of-type :boolean :enable-embedding-modular)))
+
+(defsetting enable-embedding-modular
+  (deferred-tru "Allow admins to embed Metabase via modular embedding and guest embeds?")
+  :type       :boolean
+  :default    false
+  :visibility :authenticated
+  :export?    false
+  :audit      :getter
+  :getter     modular-embedding-enabled?
+  ;; A hand-rolled version of [[make-embedding-toggle-setter]]: it compares the stored value and guards the
+  ;; write on it, but the merged flag has to compare the effective value and write unconditionally, so an unset
+  ;; setting flips off its legacy fallback rather than reading through it.
+  :setter     (fn [new-value]
+                (u/prog1 new-value
+                  ;; Compared against the effective value, not the stored one: an unset setting reads as its `false`
+                  ;; default, so guarding the write on the stored value would make "turn it off" a no-op and leave the
+                  ;; legacy fallback answering for it.
+                  (let [old-value (modular-embedding-enabled?)]
+                    (setting/set-value-of-type! :boolean :enable-embedding-modular new-value)
+                    (when (not= new-value old-value)
+                      (when (and new-value (str/blank? (embedding-secret-key)))
+                        (embedding-secret-key! (u.random/secure-hex 32)))
+                      ;; `simple_event` rather than the `embed_share` the legacy toggles use: that schema's `event`
+                      ;; is a closed enum, so `modular_embedding_*` would need a new version cut for a tracker being
+                      ;; retired for Metaplow. The context the enum-typed event carried moves into `event_detail`,
+                      ;; the way the SDK bundle already sends it.
+                      (analytics/track-event!
+                       :snowplow/simple_event
+                       {:event        (keyword (str "modular-embedding" (if new-value "-enabled" "-disabled")))
+                        :event-detail (json/encode
+                                       {:embedding_app_origin_set   (embedding-app-origin-set?)
+                                        :number_embedded_questions  (embedding.db/count-embedded-cards)
+                                        :number_embedded_dashboards (embedding.db/count-embedded-dashboards)})}))))))
+
+(defsetting enable-embedding-interactive
+  (deferred-tru "Allow admins to embed Metabase via interactive embedding?")
+  :type       :boolean
+  :default    false
+  :visibility :authenticated
+  :export?    false
+  :audit      :getter
+  :setter     (make-embedding-toggle-setter :enable-embedding-interactive "interactive-embedding"))
+
+(defsetting enable-embedding-sidecar
+  (deferred-tru "Do admins link to Metabase from their own app? Only reported for analytics.")
+  :type       :boolean
+  :default    false
+  :visibility :authenticated
+  :export?    false
+  :audit      :getter
+  ;; Only reported, never checked: side-car embedding is a link to Metabase, so there is nothing to turn on, and no
+  ;; secret key to generate like [[make-embedding-toggle-setter]] does. `simple_event` for the same reason as
+  ;; [[enable-embedding-modular]].
+  :setter     (fn [new-value]
+                (u/prog1 new-value
+                  (let [old-value (setting/get-value-of-type :boolean :enable-embedding-sidecar)]
+                    (when (not= new-value old-value)
+                      (setting/set-value-of-type! :boolean :enable-embedding-sidecar new-value)
+                      (analytics/track-event!
+                       :snowplow/simple_event
+                       {:event (keyword (str "sidecar-embedding" (if new-value "-enabled" "-disabled")))}))))))
+
+(defsetting embedding-app-origins-interactive
+  (deferred-tru "Allow these space delimited origins to embed Metabase interactive.")
+  :type       :string
+  :feature    :embedding
+  :export?    false
+  :visibility :authenticated
+  :encryption :when-encryption-key-set
+  :audit      :getter)
+
+(defsetting ^:deprecated enable-embedding-static
+  (deferred-tru "Allow admins to embed Metabase via static embedding?")
+  :type       :boolean
+  :default    false
+  :visibility :authenticated
+  :export?    false
+  :audit      :getter
+  :deprecated "0.65.0"
+  :setter     (make-embedding-toggle-setter :enable-embedding-static "static-embedding"))
+
+(mu/defn- ignore-localhost :- :string
+  "Remove localhost:* or localhost:<port> from the list of origins."
+  [s :- [:maybe :string]]
+  (->> (str/split (or s "") #"\s+")
+       (remove #(re-matches #"localhost:(\*|\d+)" %))
+       distinct
+       (str/join " ")
+       str/trim))
+
+(defn- -embedding-app-origins-sdk []
+  (setting/get-value-of-type :string :embedding-app-origins-sdk))
+
+(defn- validate-no-localhost-when-disabled
+  "Throws an exception if localhost origins are present when disable-cors-on-localhost is enabled."
+  [origins-string]
+  (when (and (server.settings/disable-cors-on-localhost)
+             (seq origins-string)
+             (re-find #"localhost" origins-string))
+    (throw (ex-info
+            "Localhost is not allowed because DISABLE_CORS_ON_LOCALHOST is set."
+            {:status-code 400}))))
+
+(defn- -embedding-app-origins-sdk!
+  "The setter for [[embedding-app-origins-sdk]].
+
+  Checks that we have SDK embedding feature and that it's enabled, then sets the value accordingly.
+  Also validates that localhost origins are not added when disable-cors-on-localhost is enabled."
+  [new-value]
+  ;; Validate before processing if disable-cors-on-localhost is enabled
+  (validate-no-localhost-when-disabled new-value)
+  (let [processed-value (->> new-value
+                             ignore-localhost)]
+    ;; Why ignore-localhost?, because localhost:* will always be allowed, so we don't need to store it, if we
+    ;; were to store it, and the value was set N times, it would have localhost:* prefixed N times. Also, we
+    ;; should not store localhost:port, since it's covered by localhost:* (which is the minimum value).
+    (setting/set-value-of-type! :string :embedding-app-origins-sdk processed-value)))
+
+(defsetting embedding-app-origins-sdk
+  (deferred-tru "Allow Metabase SDK access to these space delimited origins.")
+  :type       :string
+  :export?    false
+  :visibility :authenticated
+  :default    ""
+  :encryption :when-encryption-key-set
+  :audit      :getter
+  :getter     #'-embedding-app-origins-sdk
+  :setter     #'-embedding-app-origins-sdk!)
+
+(defn- check-enable-settings!
+  "Ensure either: nothing is set, the deprecated setting is set, or only supported settings are set"
+  [env]
+  (let [deprecated-enable-env-var-set? (some? (:mb-enable-embedding env))
+        supported-enable-env-vars-set (select-keys env [:mb-enable-embedding-sdk :mb-enable-embedding-interactive :mb-enable-embedding-static])]
+    (when (and deprecated-enable-env-var-set? (seq supported-enable-env-vars-set))
+      (throw (ex-info "Both deprecated and new enable-embedding env vars are set, please remove MB_ENABLE_EMBEDDING."
+                      {:deprecated-enable-env-vars-set deprecated-enable-env-var-set?
+                       :current-enable-env-vars-set    supported-enable-env-vars-set})))))
+
+(defn- check-modular-enable-settings!
+  "Ensure [[enable-embedding-modular]] isn't set by env var together with any of the env vars it replaces, whose values
+  it would otherwise silently override."
+  [env]
+  (let [modular-enable-env-var-set?  (some? (:mb-enable-embedding-modular env))
+        replaced-enable-env-vars-set (select-keys env [:mb-enable-embedding :mb-enable-embedding-simple
+                                                       :mb-enable-embedding-static])]
+    (when (and modular-enable-env-var-set? (seq replaced-enable-env-vars-set))
+      (throw (ex-info (str "Both deprecated and new enable-embedding env vars are set, please remove MB_ENABLE_EMBEDDING, "
+                           "MB_ENABLE_EMBEDDING_SIMPLE and MB_ENABLE_EMBEDDING_STATIC.")
+                      {:deprecated-enable-env-vars-set replaced-enable-env-vars-set
+                       :current-enable-env-vars-set    (select-keys env [:mb-enable-embedding-modular])})))))
+
+(defn- sync-enable-settings!
+  "If Only the deprecated enable-embedding is set, we want to sync the new settings to the deprecated one."
+  [env]
+  ;; we use [[find]], so we get the value if it is ∈ #{true false}, and skips nil
+  (when-let [[_ enable-embedding-from-env] (find env :mb-enable-embedding)]
+    (log/warn (str/join "\n"
+                        ["Setting MB_ENABLE_EMBEDDING is deprecated as of Metabase 0.51.0 and will be removed in a future version."
+                         (str "Setting MB_ENABLE_EMBEDDING_SDK, MB_ENABLE_EMBEDDING_INTERACTIVE, "
+                              "and MB_ENABLE_EMBEDDING_STATIC to match MB_ENABLE_EMBEDDING, which is "
+                              (pr-str enable-embedding-from-env) ".")]))
+    (enable-embedding-sdk! enable-embedding-from-env)
+    (enable-embedding-interactive! enable-embedding-from-env)
+    (enable-embedding-static! enable-embedding-from-env)))
+
+(defn- check-origins-settings!
+  "Ensure either: nothing is set, the deprecated setting is set, or only supported settings are set"
+  [env]
+  (let [deprecated-origin-env-var-set? (some? (:mb-embedding-app-origin env))
+        supported-origins-env-vars-set (select-keys env
+                                                    [:mb-embedding-app-origins-sdk :mb-embedding-app-origins-interactive])]
+    (when (and deprecated-origin-env-var-set? (seq supported-origins-env-vars-set))
+      (throw (ex-info "Both deprecated and new enable-embedding env vars are set, please remove MB_ENABLE_EMBEDDING."
+                      {:deprecated-enable-env-vars-set deprecated-origin-env-var-set?
+                       :current-enable-env-vars-set    supported-origins-env-vars-set})))))
+
+(defn- sync-origins-settings!
+  "If Only the deprecated enable-embedding is set, we want to sync the new settings to the deprecated one."
+  [env]
+  ;; we use [[find]], so we get the value if it is ∈ #{true false}, and skips nil
+  (when-let [[_ app-origin-from-env] (find env :mb-embedding-app-origin)]
+    (log/warn (str/join "\n"
+                        ["Setting MB_EMBEDDING_APP_ORIGIN is deprecated as of Metabase 0.51.0 and will be removed in a future version."
+                         (str "Setting MB_EMBEDDING_APP_ORIGINS_SDK, MB_EMBEDDING_APP_ORIGINS_INTERACTIVE "
+                              " to match MB_ENABLE_EMBEDDING, which is "
+                              (pr-str app-origin-from-env) ".")]))
+    (when (premium-features/has-feature? :embedding-sdk)
+      (embedding-app-origins-sdk! app-origin-from-env))
+    (when (premium-features/has-feature? :embedding)
+      (embedding-app-origins-interactive! app-origin-from-env))))
+
+(defn- check-settings!
+  "We want to disallow setting both deprecated embed settings, and the new ones at the same time. This is to prevent
+   confusion and to make sure that we're not setting the same thing twice."
+  [env]
+  (check-enable-settings! env)
+  (check-modular-enable-settings! env)
+  (check-origins-settings! env))
+
+(defn- sync-settings!
+  "Sync settings to ensure that we can accept `MB_ENABLE_EMBEDDING` and `MB_EMBEDDING_APP_ORIGIN`. This should always
+  be called after [[check-settings]] so we don't overwrite a setting!"
+  [env]
+  (sync-enable-settings! env)
+  (sync-origins-settings! env))
+
+(defn check-and-sync-settings-on-startup!
+  "Check and sync settings on startup. This is to ensure that we don't have any conflicting settings. A conflicting
+  setting would be setting a deprecated setting and a new setting at the same time. If a deprecated setting is set
+  (and none of its corresponding new settings are set), we want to sync the deprecated setting to the new settings and
+  print a deprecation warning."
+  [env]
+  (check-settings! env)
+  (sync-settings! env))
+
+(mu/defn some-embedding-enabled? :- :boolean
+  "Is any kind of embedding setup?"
+  []
+  (or
+   ;; the deprecated umbrella setting must still count as embedding-enabled while instances have it set
+   #_{:clj-kondo/ignore [:deprecated-var]} (enable-embedding)
+   (enable-embedding-modular)
+   (enable-embedding-sdk)
+   (enable-embedding-interactive)))
+
+;; settings for the embedding homepage
+(defsetting embedding-homepage
+  (deferred-tru "Embedding homepage status, indicating if it''s visible, hidden or has been dismissed")
+  :type       :keyword
+  :default    :hidden
+  :export?    true
+  :visibility :admin)
+
+(defsetting setup-embedding-autoenabled
+  (deferred-tru "Indicates if embedding has enabled automatically during the setup because the user was interested in embedding")
+  :type       :boolean
+  :default    false
+  :export?    true
+  :visibility :admin)
+
+(defsetting setup-license-active-at-setup
+  (deferred-tru "Indicates if at the end of the setup a valid license was active")
+  :type       :boolean
+  :default    false
+  :export?    true
+  :visibility :admin)
+
+;; The next three settings track the setup guide checklist, not the embedding hub section.
+;; The names stay: renaming persisted keys would cost a migration for three booleans and change nothing users see.
+(defsetting embedding-hub-test-embed-snippet-created
+  (deferred-tru "Indicates if a test embed snippet has been created for tracking in the setup guide")
+  :type       :boolean
+  :default    false
+  :export?    true
+  :visibility :admin
+  :can-read-from-env? false
+  :doc false)
+
+(defsetting embedding-hub-production-embed-snippet-created
+  (deferred-tru "Indicates if a production embed snippet has been created for tracking in the setup guide")
+  :type       :boolean
+  :default    false
+  :export?    true
+  :visibility :admin
+  :can-read-from-env? false
+  :doc false)
+
+(defsetting embedding-hub-sso-auth-manual-tested
+  (deferred-tru "Indicates if the user has manually confirmed that SSO authentication is working correctly")
+  :type       :boolean
+  :default    false
+  :export?    true
+  :visibility :admin
+  :can-read-from-env? false
+  :doc false)
+
+(defsetting default-embedding-themes-seeded
+  (deferred-tru "Whether the default Light and Dark embedding themes have been seeded into the database.")
+  :type       :boolean
+  :default    false
+  :visibility :admin
+  :export?    false
+  :can-read-from-env? false
+  :doc        false)

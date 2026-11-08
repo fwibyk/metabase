@@ -1,0 +1,57 @@
+import { t } from "ttag";
+
+import { useTranslateContent } from "metabase/content-translation/hooks";
+import { Button, Icon } from "metabase/ui";
+
+import { withPublicComponentWrapper } from "../PublicComponentWrapper";
+
+import { useSdkInternalNavigationOptional } from "./context";
+
+/**
+ * A back button that navigates to the previous entry in the SDK internal navigation stack.
+ * Returns null if there's no navigation context or if there's no previous entry to go back to.
+ */
+const SdkInternalNavigationBackButtonInner = ({
+  style,
+  className,
+}: {
+  style?: React.CSSProperties;
+  className?: string;
+}) => {
+  const navigation = useSdkInternalNavigationOptional();
+  const tc = useTranslateContent();
+
+  if (!navigation?.canGoBack) {
+    return null;
+  }
+
+  const { previousEntry, pop } = navigation;
+
+  const previousName =
+    previousEntry && "name" in previousEntry
+      ? tc(previousEntry.name)
+      : undefined;
+
+  const label = previousName ? t`Back to ${previousName}` : t`Back`;
+
+  return (
+    <Button
+      variant="transparent"
+      size="compact-md"
+      leftSection={<Icon name="chevronleft" />}
+      onClick={pop}
+      style={style}
+      className={className}
+      aria-label={label}
+    >
+      {label}
+    </Button>
+  );
+};
+
+export const SdkInternalNavigationBackButton = withPublicComponentWrapper(
+  SdkInternalNavigationBackButtonInner,
+  {
+    supportsGuestEmbed: false,
+  },
+);

@@ -1,0 +1,28 @@
+creator_id: admin@example.com
+definition:
+  database: Sample Database
+  stages:
+  - filters:
+    - - segment
+      - {}
+      - aB3kLmN9pQrStUvWxYz1a
+    - - '>'
+      - {}
+      - - field
+        - {}
+        - - Sample Database
+          - PUBLIC
+          - PRODUCTS
+          - PRICE
+      - 50
+    source-table:
+    - Sample Database
+    - PUBLIC
+    - PRODUCTS
+    lib/type: mbql.stage/mbql
+  lib/type: mbql/query
+description: Widget products priced above $50 — refines the Widget Products segment
+entity_id: 2hxhoN3HrQJIaWc5umpBn
+name: Premium Widgets
+serdes/meta:
+- model: Segment

@@ -1,0 +1,29 @@
+import { Canvas, Meta } from "@storybook/blocks";
+import * as AnchorStories from "./Anchor.stories";
+
+<Meta of={AnchorStories} />
+
+# Anchor
+
+Our themed wrapper around [Mantine Anchor](https://mantine.dev/core/anchor/).
+
+## When to use Anchor
+
+Use Anchor for links in body text. It supports the same typography and layout props as Text, defaults to the `md` body size, and supports the `xs` through `xl` text scale.
+
+Anchors use the strong brand text color. By default, hovering changes the color and underlines the text. Use the `underline` prop to change when the underline appears.
+
+For regular text, use Text. For code, use Code.
+
+## Docs
+
+- [Figma](https://www.figma.com/design/qYbAmJHUJ2Tkb01WFegUKp/Component-Library?node-id=2173-4408)
+- [Mantine Anchor](https://mantine.dev/core/anchor/)
+
+## Examples
+
+<Canvas of={AnchorStories.Default} />
+
+### Sizes, weights, and states
+
+<Canvas of={AnchorStories.Overview} />

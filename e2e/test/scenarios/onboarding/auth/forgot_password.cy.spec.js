@@ -1,0 +1,53 @@
+const { H } = cy;
+import { USERS } from "e2e/support/cypress_data";
+
+const { admin } = USERS;
+
+const NEW_PASSWORD = `new-${admin.password}`;
+
+describe("scenarios > auth > password", { tags: "@external" }, () => {
+  beforeEach(() => {
+    H.restore();
+
+    cy.signInAsAdmin();
+    H.setupSMTP();
+    cy.signOut();
+  });
+
+  it("should reset password via email", () => {
+    cy.visit("/auth/forgot_password");
+
+    cy.findByLabelText("Email address").type(admin.email);
+    // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+    cy.findByText("Send password reset email").click();
+    // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+    cy.findByText(/If the email exists/);
+
+    H.getInbox().then(({ body: [{ html }] }) => {
+      cy.visit(getResetLink(html));
+
+      cy.findByLabelText("Create a password").type(NEW_PASSWORD);
+      cy.findByLabelText("Confirm your password").type(NEW_PASSWORD);
+      cy.findByText("Save new password").click();
+
+      cy.findByText("You've updated your password.");
+    });
+  });
+
+  it("should not show the app bar when previously logged in", () => {
+    cy.signInAsAdmin();
+
+    cy.visit("/auth/forgot_password");
+
+    cy.findByRole("button", { name: "Send password reset email" }).should(
+      "be.visible",
+    );
+    H.getProfileLink().should("not.exist");
+  });
+});
+
+const getResetLink = (html) => {
+  const [, anchor] = html.match(/<a (.*)>/);
+  const [, href] = anchor.match(/href="([^"]+)"/);
+  return href;
+};

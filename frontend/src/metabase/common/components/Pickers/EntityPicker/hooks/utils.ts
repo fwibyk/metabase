@@ -1,0 +1,143 @@
+import { t } from "ttag";
+
+import { collectionApi } from "metabase/api";
+import { PERSONAL_COLLECTIONS } from "metabase/common/collections/constants";
+import { allCollectionModels } from "metabase/common/components/Pickers/utils";
+import { PLUGIN_TENANTS } from "metabase/plugins";
+import type { DispatchFn } from "metabase/redux";
+import { mergeLazily } from "metabase/utils/merge-lazily";
+import type { CollectionNamespace, DataApp } from "metabase-types/api";
+
+import { DATA_APPS_ROOT_ID } from "../constants";
+import type { OmniPickerCollectionItem, OmniPickerDataAppItem } from "../types";
+
+const getTransformsRootCollectionItem = ({
+  namespace,
+}: {
+  namespace: CollectionNamespace;
+}): OmniPickerCollectionItem | null => {
+  if (namespace === "transforms") {
+    return {
+      model: "collection",
+      id: "root",
+      namespace: "transforms",
+      location: "/",
+      name: t`Transforms`,
+      here: ["collection"],
+      below: ["table", "metric"],
+    };
+  }
+  return null;
+};
+
+export const getDataAppsRootItem = (): OmniPickerCollectionItem => ({
+  model: "collection",
+  id: DATA_APPS_ROOT_ID,
+  name: t`Data apps`,
+  location: "/",
+  can_write: false,
+});
+
+export const getDataAppItem = (dataApp: DataApp): OmniPickerDataAppItem => ({
+  model: "data-app",
+  id: dataApp.id,
+  name: dataApp.display_name,
+});
+
+export const getOurAnalytics = (): OmniPickerCollectionItem => ({
+  model: "collection",
+  id: "root",
+  name: t`Our analytics`,
+  here: ["collection"],
+  below: allCollectionModels,
+  can_write: true,
+  namespace: null,
+});
+
+export const personalCollectionsRoot: OmniPickerCollectionItem = mergeLazily(
+  PERSONAL_COLLECTIONS,
+  {
+    can_write: false,
+    model: "collection" as const,
+    location: "/",
+    here: ["collection" as const],
+    below: allCollectionModels,
+  },
+);
+
+export const getRootCollectionItem = async ({
+  namespace,
+  dispatch,
+}: {
+  namespace: CollectionNamespace;
+  dispatch: DispatchFn;
+}): Promise<OmniPickerCollectionItem> => {
+  const rootCollectionFromApi = await fetchRootCollection(namespace, dispatch);
+  const canWrite = rootCollectionFromApi?.can_write ?? false;
+
+  const tenantRootItem = PLUGIN_TENANTS.getRootCollectionItem({ namespace });
+  if (tenantRootItem) {
+    return {
+      can_write: canWrite,
+      ...tenantRootItem,
+    };
+  }
+
+  const transformRootItem = getTransformsRootCollectionItem({
+    namespace,
+  });
+  if (transformRootItem) {
+    return {
+      ...transformRootItem,
+      can_write: canWrite,
+    };
+  }
+
+  if (namespace === "snippets") {
+    return {
+      model: "collection",
+      id: "root",
+      namespace: "snippets",
+      location: "/",
+      can_write: canWrite,
+      name: t`SQL Snippets`,
+      here: ["collection", "snippet"],
+      below: ["collection", "snippet"],
+    };
+  }
+
+  if (namespace === "data-actions") {
+    return {
+      model: "collection",
+      id: "root",
+      namespace: "data-actions",
+      location: "/",
+      can_write: canWrite,
+      name: t`Data actions`,
+      here: ["collection", "action"],
+      below: ["collection", "action"],
+    };
+  }
+
+  return {
+    ...getOurAnalytics(),
+    // if we failed to fetch our analytics, the user doesn't have access to it
+    // so we just call it "Collections"
+    ...(!rootCollectionFromApi ? { name: t`Collections` } : {}),
+    can_write: canWrite,
+  };
+};
+
+export const fetchRootCollection = async (
+  namespace: CollectionNamespace,
+  dispatch: DispatchFn,
+) => {
+  return dispatch(
+    collectionApi.endpoints.getCollection.initiate({
+      id: "root",
+      namespace: namespace ?? undefined,
+    }),
+  )
+    .unwrap()
+    .catch(console.warn);
+};

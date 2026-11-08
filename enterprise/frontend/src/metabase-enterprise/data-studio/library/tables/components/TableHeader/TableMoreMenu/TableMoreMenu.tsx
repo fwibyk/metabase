@@ -1,0 +1,78 @@
+import { c, t } from "ttag";
+
+import { ForwardRefLink } from "metabase/common/components/Link";
+import { MoreMenuButton } from "metabase/common/data-studio/components/MoreMenuButton";
+import { PLUGIN_REMOTE_SYNC } from "metabase/plugins";
+import { useSelector } from "metabase/redux";
+import { Box, Icon, Menu } from "metabase/ui";
+import * as Urls from "metabase/urls";
+
+import type { TableModalState, TableModalTable } from "../../TableModal";
+
+export type TableMoreMenuProps = {
+  table: TableModalTable;
+  onOpenModal: (modal: TableModalState) => void;
+};
+
+export function TableMoreMenu({ table, onOpenModal }: TableMoreMenuProps) {
+  const remoteSyncReadOnly = useSelector(
+    PLUGIN_REMOTE_SYNC.getIsRemoteSyncReadOnly,
+  );
+
+  const dbId = "db_id" in table ? table.db_id : table.database_id;
+
+  return (
+    <Box
+      onClick={(event) => {
+        event.stopPropagation();
+      }}
+    >
+      <Menu withinPortal>
+        <Menu.Target>
+          <MoreMenuButton
+            aria-label={t`Show table options`}
+            onClick={(event) => {
+              event.preventDefault();
+            }}
+          />
+        </Menu.Target>
+        <Menu.Dropdown>
+          {dbId != null && (
+            <Menu.Item
+              leftSection={<Icon name="external" />}
+              component={ForwardRefLink}
+              to={Urls.queryBuilderTable(table.id, dbId)}
+              target="_blank"
+            >
+              {c("A verb, not a noun").t`View`}
+            </Menu.Item>
+          )}
+          {!remoteSyncReadOnly && (
+            <>
+              <Menu.Item
+                leftSection={<Icon name="move" />}
+                onClick={(event) => {
+                  onOpenModal({ type: "move", table });
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              >
+                {t`Move`}
+              </Menu.Item>
+              <Menu.Item
+                leftSection={<Icon name="unpublish" />}
+                onClick={(event) => {
+                  onOpenModal({ type: "unpublish", table });
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              >
+                {t`Unpublish`}
+              </Menu.Item>
+            </>
+          )}
+        </Menu.Dropdown>
+      </Menu>
+    </Box>
+  );
+}

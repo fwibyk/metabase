@@ -1,0 +1,204 @@
+name: Run tests
+
+on:
+  push:
+    branches:
+      - "master"
+      - "release-**"
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+  checks: write
+  pull-requests: write
+  security-events: write
+
+jobs:
+  # Force-cancel is the only decision left here. The jobs below read `matched`;
+  # each suite that owns its gating calls the gate itself with the filters it cares about.
+  gate:
+    uses: ./.github/workflows/test.gate.yml
+    with:
+      filters: build_embedding_sdk_package build_uberjar e2e_all
+
+  # The plan only ever narrows a PR's suites; every other run skips this and they run in full. A
+  # planner failure does the same, so it must not fail the run either.
+  create-test-plan:
+    needs: gate
+    name: Create test plan
+    if: ${{ github.event_name == 'pull_request' && needs.gate.outputs.verdict == 'defer' }}
+    continue-on-error: true
+    runs-on: ${{ vars.DEFAULT_RUNNER_KEY }}
+    timeout-minutes: 10
+    outputs:
+      # The artifact is uploaded before the planner's last steps, so a later failure would otherwise
+      # hand the suites a plan from a run that errored. Anything short of a clean run means no plan.
+      artifact-id: ${{ steps.compute.outcome == 'success' && steps.compute.outputs.artifact-id || '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create test plan
+        id: compute
+        uses: ./.github/actions/create-test-plan
+        with:
+          diff-base: ${{ needs.gate.outputs.diff-base }}
+          stats-url: ${{ secrets.ENG_STATS_URL }}
+          stats-api-key: ${{ secrets.ENG_STATS_API_KEY }}
+
+  uberjar:
+    needs: gate
+    if: >-
+      ${{ needs.gate.outputs.verdict != 'force-skip'
+      && contains(fromJSON(needs.gate.outputs.matched), 'build_uberjar') }}
+    uses: ./.github/workflows/uberjar.yml
+    secrets: inherit
+
+  containerize:
+    needs: uberjar
+    if: >-
+      ${{ (github.event_name == 'push' && github.ref_name == 'master')
+      || (github.event_name == 'pull_request'
+      && contains(github.event.pull_request.labels.*.name, 'build-docker-uberjar')) }}
+    name: containerize (${{ matrix.edition }})
+    strategy:
+      matrix:
+        edition: ["ee", "oss"]
+    uses: ./.github/workflows/containerize-jar.yml
+    secrets: inherit
+    with:
+      build-args: |
+        GIT_COMMIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
+      commit: ${{ github.event.pull_request.head.sha || github.sha }}
+      edition: ${{ matrix.edition }}
+      release: false
+
+  bundle-size:
+    needs: uberjar
+    uses: ./.github/workflows/bundle-size.yml
+    secrets: inherit
+
+  # Compile CLJS in parallel with the uberjar and pass it to each e2e group.
+  # The compile is doesn't depend on MB_EDITION
+  e2e-cljs:
+    name: Compile CLJS for e2e
+    needs: gate
+    if: ${{ contains(fromJSON(needs.gate.outputs.matched), 'e2e_all') }}
+    runs-on: ${{ vars.DEFAULT_RUNNER_KEY }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Prepare front-end environment
+        uses: ./.github/actions/prepare-frontend
+      - name: Prepare back-end environment
+        uses: ./.github/actions/prepare-backend
+      - name: Compile CLJS
+        run: bun run build-pure:cljs
+      - name: Upload compiled CLJS
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-cljs-${{ github.event.pull_request.head.sha || github.sha }}
+          path: target/cljs_dev
+          if-no-files-found: error
+          # Uploads fail when an artifact of this name already exists in the run
+          # replace it rather than fail on a re-run.
+          overwrite: true
+
+  backend-tests:
+    needs: gate
+    if: ${{ needs.gate.outputs.verdict != 'force-skip' }}
+    uses: ./.github/workflows/backend.yml
+    secrets: inherit
+
+  # These suites gate themselves; the only thing decided here is whether to call them at all.
+  semantic-search-tests:
+    needs: gate
+    if: ${{ needs.gate.outputs.verdict != 'force-skip' }}
+    uses: ./.github/workflows/semantic-search.yml
+    secrets: inherit
+
+  app-db-tests:
+    needs: gate
+    if: ${{ needs.gate.outputs.verdict != 'force-skip' }}
+    uses: ./.github/workflows/app-db.yml
+    secrets: inherit
+
+  driver-tests:
+    needs: gate
+    if: ${{ needs.gate.outputs.verdict != 'force-skip' }}
+    uses: ./.github/workflows/drivers.yml
+    secrets: inherit
+
+  frontend-tests:
+    needs: [gate, create-test-plan]
+    # `!cancelled()` so a skipped planner (no plan) still runs the suite.
+    if: >-
+      ${{ !cancelled() && needs.gate.result == 'success'
+      && needs.gate.outputs.verdict != 'force-skip' }}
+    uses: ./.github/workflows/frontend.yml
+    secrets: inherit
+    with:
+      # No artifact means the suite runs in full.
+      test-plan-artifact-id: ${{ needs.create-test-plan.outputs.artifact-id }}
+
+  loki-tests:
+    needs: [gate, create-test-plan]
+    # `!cancelled()` so a skipped planner (no plan) still runs the suite.
+    if: >-
+      ${{ !cancelled() && needs.gate.result == 'success'
+      && needs.gate.outputs.verdict != 'force-skip' }}
+    uses: ./.github/workflows/loki.yml
+    with:
+      # No artifact means the suite runs in full.
+      test-plan-artifact-id: ${{ needs.create-test-plan.outputs.artifact-id }}
+
+  e2e-tests:
+    needs: [gate, uberjar, e2e-cljs, create-test-plan]
+    # Skip e2e tests when the uberjar build failed or was cancelled — the
+    # downstream tests can't fetch a missing artifact, and we don't want to
+    # mask the uberjar failure with a wave of misleading e2e errors. We still
+    # enter the workflow when uberjar is `skipped` (docs-only PRs), because
+    # the suite's own gate handles that path and reports the required
+    # `e2e-tests-result` check as success. When the uberjar genuinely failed,
+    # this whole job is skipped, the inner required checks never report, and
+    # branch protection blocks the merge as pending.
+    if: |
+      !cancelled() &&
+      needs.gate.result == 'success' &&
+      needs.gate.outputs.verdict != 'force-skip' &&
+      needs.uberjar.result != 'failure' &&
+      needs.uberjar.result != 'cancelled'
+    uses: ./.github/workflows/e2e-tests.yml
+    secrets: inherit
+    with:
+      # No artifact means the suite runs in full.
+      test-plan-artifact-id: ${{ needs.create-test-plan.outputs.artifact-id }}
+
+  embedding-sdk-package:
+    needs: gate
+    if: ${{ contains(fromJSON(needs.gate.outputs.matched), 'build_embedding_sdk_package') }}
+    uses: ./.github/workflows/embedding-sdk-package-build.yml
+    secrets: inherit
+
+  sdk-tests:
+    needs: [gate, uberjar, embedding-sdk-package]
+    # Same rule as e2e-tests: a `skipped` artifact build still enters the suite, whose own gate then
+    # skips every job and reports the required result check. A genuine failure keeps this job out, so
+    # the check stays pending instead of being buried under missing-artifact errors. A failed gate
+    # skips both builds for a reason the suite's own gate cannot see, so it has to keep this out too.
+    if: |
+      !cancelled() &&
+      needs.gate.result == 'success' &&
+      needs.uberjar.result != 'failure' &&
+      needs.uberjar.result != 'cancelled' &&
+      needs.embedding-sdk-package.result != 'failure' &&
+      needs.embedding-sdk-package.result != 'cancelled'
+    uses: ./.github/workflows/embedding-sdk.yml
+    secrets: inherit
+
+  build-scripts-tests:
+    needs: gate
+    if: ${{ needs.gate.outputs.verdict != 'force-skip' }}
+    uses: ./.github/workflows/build-scripts.yml
+    secrets: inherit

@@ -1,0 +1,16 @@
+name: BODY
+display_name: Body
+visibility_type: normal
+table_id:
+- Sample Database
+- PUBLIC
+- REVIEWS
+database_type: CHARACTER VARYING
+base_type: type/Text
+effective_type: type/Text
+preview_display: false
+position: 4
+database_position: 4
+serdes/meta:
+- model: Field
+database_indexed: false

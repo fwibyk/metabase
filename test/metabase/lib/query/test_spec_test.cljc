@@ -1,0 +1,1638 @@
+(ns metabase.lib.query.test-spec-test
+  (:require
+   #?@(:cljs
+       [[metabase.test-runner.assert-exprs.approximately-equal]])
+   [clojure.test :refer [deftest is testing]]
+   [metabase.lib.core :as lib]
+   [metabase.lib.query.test-spec :as lib.query.test-spec]
+   [metabase.lib.test-metadata :as meta]
+   [metabase.lib.test-util :as lib.tu]))
+
+#?(:cljs (comment metabase.test-runner.assert-exprs.approximately-equal/keep-me))
+
+(def missing-value (symbol "nil #_\"key is not present.\""))
+
+(deftest ^:parallel test-query-basic-table-source-test
+  (testing "test-query creates a basic query from a table source"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source {:type :table
+                                     :id   (meta/id :venues)}}]})]
+      (is (=? {:lib/type :mbql/query
+               :database (meta/id)
+               :stages   [{:lib/type     :mbql.stage/mbql
+                           :source-table (meta/id :venues)}]}
+              query)))))
+
+(deftest ^:parallel test-query-with-card-source-test
+  (testing "test-query creates a query from a card source"
+    (let [query (lib.query.test-spec/test-query
+                 lib.tu/metadata-provider-with-card
+                 {:stages [{:source {:type :card
+                                     :id   1}}]})]
+      (is (=? {:lib/type :mbql/query
+               :database (meta/id)
+               :stages   [{:lib/type    :mbql.stage/mbql
+                           :source-card 1}]}
+              query)))))
+
+(deftest ^:parallel test-query-with-fields-test
+  (testing "test-query adds fields to the query"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source {:type :table
+                                     :id   (meta/id :orders)}
+                            :fields [{:type :column
+                                      :name "ID"}
+                                     {:type :column
+                                      :name "TOTAL"}
+                                     ;; implicitly joined column
+                                     {:type :column
+                                      :name "NAME"
+                                      :source-field-id (meta/id :orders :user-id)}]}]})]
+      (is (=? [[:field {} (meta/id :orders :id)]
+               [:field {} (meta/id :orders :total)]
+               [:field {} (meta/id :people :name)]]
+              (:fields (first (:stages query))))))))
+
+(deftest ^:parallel test-query-with-expressions-test
+  (testing "test-query adds expressions to the query"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source      {:type :table
+                                          :id   (meta/id :venues)}
+                            :expressions [{:name  "double-price"
+                                           :value {:type     :operator
+                                                   :operator :*
+                                                   :args     [{:type :column
+                                                               :name "PRICE"}
+                                                              {:type  :literal
+                                                               :value 2}]}}
+                                          {:name "half-price"
+                                           :value {:type :operator
+                                                   :operator :/
+                                                   :args [{:type :column
+                                                           :name "double-price"}
+                                                          {:type :literal
+                                                           :value 4}]}}]}]})]
+      (is (=? [[:*
+                {:lib/expression-name "double-price"}
+                [:field {} (meta/id :venues :price)]
+                2]
+               [:/
+                {:lib/expression-name "half-price"}
+                [:expression {} "double-price"]
+                4]]
+              (lib/expressions query))))))
+
+(deftest ^:parallel test-query-with-filters-test
+  (testing "test-query adds filters to the query"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source  {:type :table
+                                      :id   (meta/id :venues)}
+                            :filters [{:type     :operator
+                                       :operator :>
+                                       :args     [{:type :column
+                                                   :name "PRICE"}
+                                                  {:type  :literal
+                                                   :value 3}]}]}]})]
+      (is (=? [[:> {} [:field {} (meta/id :venues :price)] 3]]
+              (lib/filters query))))))
+
+(deftest ^:parallel test-query-with-multiple-values-filter-test
+  (testing "a literal argument with several values passes each one as an argument"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source  {:type :table
+                                      :id   (meta/id :venues)}
+                            :filters [{:type     :operator
+                                       :operator :=
+                                       :args     [{:type :column
+                                                   :name "PRICE"}
+                                                  {:type  :literal
+                                                   :value [3 4]}]}]}]})]
+      (is (=? [[:= {} [:field {} (meta/id :venues :price)] 3 4]]
+              (lib/filters query))))))
+
+(deftest ^:parallel test-query-with-aggregations-test
+  (testing "test-query adds aggregations to the query"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source       {:type :table
+                                           :id   (meta/id :venues)}
+                            :aggregations [{:type     :operator
+                                            :operator :count}]}]})]
+      (is (=? [[:count {}]]
+              (lib/aggregations query))))))
+
+(deftest ^:parallel test-query-with-metric-aggregation-test
+  (testing "test-query adds Metrics as aggregations"
+    (let [query (lib.query.test-spec/test-query
+                 lib.tu/metadata-provider-with-metric
+                 {:stages [{:source       {:type :table
+                                           :id   (meta/id :checkins)}
+                            :aggregations [{:type :metric
+                                            :id   1}]}]})]
+      (is (=? [[:metric {} 1]]
+              (lib/aggregations query))))))
+
+(deftest ^:parallel test-query-with-breakouts-test
+  (testing "test-query adds breakouts to the query"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source    {:type :table
+                                        :id   (meta/id :venues)}
+                            :breakouts [{:type :column
+                                         :name "CATEGORY_ID"}]}]})]
+      (is (=? [[:field {} (meta/id :venues :category-id)]]
+              (lib/breakouts query))))))
+
+(deftest ^:parallel test-query-with-temporal-bucket-breakout-test
+  (testing "test-query adds breakouts with temporal bucketing"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source    {:type :table
+                                        :id   (meta/id :checkins)}
+                            :breakouts [{:type :column
+                                         :name "DATE"
+                                         :unit :month}]}]})]
+      (is (=? [[:field
+                {:temporal-unit :month}
+                (meta/id :checkins :date)]]
+              (lib/breakouts query))))))
+
+(deftest ^:parallel test-query-with-bin-count-breakout-test
+  (testing "test-query adds breakouts with bin count binning"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source    {:type :table
+                                        :id   (meta/id :venues)}
+                            :breakouts [{:type    :column
+                                         :name    "PRICE"
+                                         :binning {:strategy :num-bins :num-bins 10}}]}]})]
+      (is (=? [[:field
+                {:binning {:strategy :num-bins :num-bins 10}}
+                (meta/id :venues :price)]]
+              (lib/breakouts query))))))
+
+(deftest ^:parallel test-query-with-preset-bin-counts-test
+  (doseq [num-bins [10 50 100]]
+    (let [column {:type :column :name "PRICE" :binning {:strategy :num-bins :num-bins num-bins}}
+          query  (lib.query.test-spec/test-query
+                  meta/metadata-provider
+                  {:stages [{:source    {:type :table :id (meta/id :venues)}
+                             :breakouts [column]
+                             :order-bys [(assoc column :direction :asc)]}]})
+          binned [:field {:binning {:strategy :num-bins :num-bins num-bins}} (meta/id :venues :price)]]
+      (is (=? [binned] (lib/breakouts query)))
+      (is (=? [[:asc {} binned]] (lib/order-bys query))))))
+
+(deftest ^:parallel test-query-unsupported-bin-count-message-test
+  (doseq [clause [:breakouts :order-bys]]
+    (testing (name clause)
+      (is (thrown-with-msg?
+           #?(:clj Exception :cljs js/Error)
+           #"^Unsupported bin count 20\. Supported counts for this field are 10, 50, and 100\.$"
+           (lib.query.test-spec/test-query
+            meta/metadata-provider
+            {:stages [{:source {:type :table :id (meta/id :venues)}
+                       clause  [{:type :column :name "PRICE" :binning {:strategy :num-bins :num-bins 20}}]}]}))))))
+
+(deftest ^:parallel test-query-with-bin-width-breakout-test
+  (testing "test-query adds breakouts with bin width binning"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source    {:type :table
+                                        :id   (meta/id :venues)}
+                            :breakouts [{:type    :column
+                                         :name    "LATITUDE"
+                                         :binning {:strategy :bin-width :bin-width 20}}]}]})]
+      (is (=? [[:field
+                {:binning {:strategy :bin-width :bin-width 20.0}}
+                (meta/id :venues :latitude)]]
+              (lib/breakouts query))))))
+
+(deftest ^:parallel test-query-with-default-binning-breakout-test
+  (testing "test-query adds breakouts with default binning"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source    {:type :table
+                                        :id   (meta/id :venues)}
+                            :breakouts [{:type    :column
+                                         :name    "PRICE"
+                                         :binning {:strategy :default}}]}]})]
+      (is (=? [[:field
+                {:binning {:strategy :default}}
+                (meta/id :venues :price)]]
+              (lib/breakouts query))))))
+
+(deftest ^:parallel test-query-with-camel-case-binning-test
+  (testing "test-query reads camelCase binning keys and string strategies"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {"stages" [{"source"    {"type" "table"
+                                          "id"   (meta/id :venues)}
+                             "breakouts" [{"type"    "column"
+                                           "name"    "PRICE"
+                                           "binning" {"strategy" "num-bins" "numBins" 10}}
+                                          {"type"    "column"
+                                           "name"    "LATITUDE"
+                                           "binning" {"strategy" "bin-width" "binWidth" 20}}]}]})]
+      (is (=? [[:field {:binning {:strategy :num-bins :num-bins 10}} (meta/id :venues :price)]
+               [:field {:binning {:strategy :bin-width :bin-width 20.0}} (meta/id :venues :latitude)]]
+              (lib/breakouts query))))))
+
+(deftest ^:parallel test-query-with-order-bys-test
+  (testing "test-query adds order-bys to the query"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source    {:type :table
+                                        :id   (meta/id :venues)}
+                            :order-bys [{:type      :column
+                                         :name      "PRICE"
+                                         :direction :asc}]}]})]
+      (is (=? [[:asc {} [:field {} (meta/id :venues :price)]]]
+              (lib/order-bys query))))))
+
+(deftest ^:parallel test-query-with-limit-test
+  (testing "test-query adds a limit to the query"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source {:type :table
+                                     :id   (meta/id :venues)}
+                            :limit  100}]})]
+      (is (= 100 (lib/current-limit query))))))
+
+(deftest ^:parallel test-query-with-joins-test
+  (testing "test-query adds joins to the query"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source {:type :table
+                                     :id   (meta/id :venues)}
+                            :joins  [{:source   {:type :table
+                                                 :id   (meta/id :categories)}
+                                      :strategy :left-join}]}]})]
+      (is (=? [{:strategy :left-join}]
+              (lib/joins query))))))
+
+(deftest ^:parallel test-query-with-join-conditions-test
+  (testing "test-query adds joins with explicit conditions"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source {:type :table
+                                     :id   (meta/id :venues)}
+                            :joins  [{:source     {:type :table
+                                                   :id   (meta/id :categories)}
+                                      :strategy   :left-join
+                                      :conditions [{:operator :=
+                                                    :left     {:type :column
+                                                               :name "CATEGORY_ID"}
+                                                    :right    {:type :column
+                                                               :name "ID"}}]}]}]})]
+      (is (=? [{:alias "Categories"
+                :strategy :left-join
+                :conditions [[:= {}
+                              [:field {:join-alias missing-value} (meta/id :venues :category-id)]
+                              [:field {:join-alias "Categories"} (meta/id :categories :id)]]]}]
+              (lib/joins query))))))
+
+(deftest ^:parallel test-query-with-join-conditions-with-binning-test
+  (testing "test-query adds joins with binned conditions"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source {:type :table
+                                     :id   (meta/id :users)}
+                            :joins  [{:source     {:type :table
+                                                   :id   (meta/id :checkins)}
+                                      :strategy   :left-join
+                                      :conditions [{:operator :=
+                                                    :left     {:type :column
+                                                               :name "LAST_LOGIN"
+                                                               :unit :month}
+                                                    :right    {:type :column
+                                                               :name "DATE"
+                                                               :unit :month}}]}]}]})]
+      (is (=? [{:strategy :left-join
+                :conditions [[:= {}
+                              [:field {:temporal-unit :month :join-alias missing-value}
+                               (meta/id :users :last-login)]
+                              [:field {:temporal-unit :month :join-alias "Checkins - Last Login"}
+                               (meta/id :checkins :date)]]]}]
+              (lib/joins query))))))
+
+(deftest ^:parallel test-query-multi-stage-test
+  (testing "test-query handles multiple stages"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source       {:type :table
+                                           :id   (meta/id :venues)}
+                            :aggregations [{:type     :operator
+                                            :operator :count
+                                            :args     []}]
+                            :breakouts    [{:type :column
+                                            :name "CATEGORY_ID"}]}
+                           {:filters [{:type     :operator
+                                       :operator :>
+                                       :args     [{:type :column
+                                                   :name "count"}
+                                                  {:type  :literal
+                                                   :value 10}]}]}]})]
+      (is (= 2 (count (:stages query))))
+      (is (= 1 (count (lib/aggregations query 0))))
+      (is (= 1 (count (lib/breakouts query 0))))
+      (is (= 1 (count (lib/filters query 1))))
+      (is (empty? (lib/filters query 0)))
+      (is (empty? (lib/aggregations query 1)))
+      (is (empty? (lib/breakouts query 1))))))
+
+(deftest ^:parallel test-query-complex-expression-test
+  (testing "test-query handles complex nested expressions"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source  {:type :table
+                                      :id   (meta/id :venues)}
+                            :filters [{:type     :operator
+                                       :operator :and
+                                       :args     [{:type     :operator
+                                                   :operator :>
+                                                   :args     [{:type :column
+                                                               :name "PRICE"}
+                                                              {:type  :literal
+                                                               :value 2}]}
+                                                  {:type     :operator
+                                                   :operator :<
+                                                   :args     [{:type :column
+                                                               :name "PRICE"}
+                                                              {:type  :literal
+                                                               :value 4}]}]}]}]})]
+      (is (=? [[:and
+                {}
+                [:> {} [:field {} (meta/id :venues :price)] 2]
+                [:< {} [:field {} (meta/id :venues :price)] 4]]]
+              (lib/filters query))))))
+
+(deftest ^:parallel test-query-named-aggregation-test
+  (testing "test-query handles named aggregations"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source       {:type :table
+                                           :id   (meta/id :venues)}
+                            :aggregations [{:name  "my-count"
+                                            :value {:type     :operator
+                                                    :operator :count
+                                                    :args     []}}]}]})]
+      (is (=? [[:count {:display-name "my-count"}]]
+              (lib/aggregations query))))))
+
+(deftest ^:parallel test-query-error-no-column-found-test
+  (testing "test-query throws when column is not found"
+    (is (thrown-with-msg?
+         #?(:clj Exception :cljs js/Error)
+         #"No column found"
+         (lib.query.test-spec/test-query
+          meta/metadata-provider
+          {:stages [{:source {:type :table
+                              :id   (meta/id :venues)}
+                     :fields [{:type :column
+                               :name "NONEXISTENT"}]}]})))))
+
+(deftest ^:parallel test-query-error-multiple-columns-found-test
+  (testing "test-query throws when multiple columns match"
+    (is (thrown-with-msg?
+         #?(:clj Exception :cljs js/Error)
+         #"Multiple columns found"
+         (lib.query.test-spec/test-query
+          meta/metadata-provider
+          {:stages [{:source    {:type :table
+                                 :id   (meta/id :checkins)}
+                     :breakouts [{:type :column :name "DATE" :unit :month}
+                                 {:type :column :name "DATE" :unit :year}]
+                     :order-bys [{:type :column :name "DATE"}]}]})))))
+
+(deftest ^:parallel test-query-aggregation-with-args-test
+  (testing "test-query handles aggregations with column arguments"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source       {:type :table
+                                           :id   (meta/id :venues)}
+                            :aggregations [{:type     :operator
+                                            :operator :sum
+                                            :args     [{:type :column
+                                                        :name "PRICE"}]}]}]})]
+      (is (=? [[:sum {} [:field {} (meta/id :venues :price)]]]
+              (lib/aggregations query))))))
+
+(deftest ^:parallel test-query-aggregation-avg-test
+  (testing "test-query handles avg aggregations"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source       {:type :table
+                                           :id   (meta/id :venues)}
+                            :aggregations [{:type     :operator
+                                            :operator :avg
+                                            :args     [{:type :column
+                                                        :name "PRICE"}]}]}]})]
+      (is (=? [[:avg {} [:field {} (meta/id :venues :price)]]]
+              (lib/aggregations query))))))
+
+(deftest ^:parallel test-query-named-aggregation-with-args-test
+  (testing "test-query handles named aggregations with arguments"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source       {:type :table
+                                           :id   (meta/id :venues)}
+                            :aggregations [{:name  "total-price"
+                                            :value {:type     :operator
+                                                    :operator :sum
+                                                    :args     [{:type :column
+                                                                :name "PRICE"}]}}]}]})]
+      (is (=? [[:sum {:display-name "total-price"} [:field {} (meta/id :venues :price)]]]
+              (lib/aggregations query))))))
+
+(deftest ^:parallel test-query-with-join-card-source-test
+  (testing "test-query supports joins with card sources"
+    (let [query (lib.query.test-spec/test-query
+                 lib.tu/metadata-provider-with-card
+                 {:stages [{:source {:type :table
+                                     :id   (meta/id :venues)}
+                            :joins  [{:source   {:type :card
+                                                 :id   1}
+                                      :strategy :left-join
+                                      :conditions [{:operator :=
+                                                    :left {:type :column
+                                                           :name "ID"}
+                                                    :right {:type :column
+                                                            :name "USER_ID"}}]}]}]})]
+      (is (=? [{:strategy :left-join}]
+              (-> query lib/joins))))))
+
+(deftest ^:parallel test-query-with-join-conditions-with-bin-width-test
+  (testing "test-query adds joins with bin-width binned conditions"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source {:type :table
+                                     :id   (meta/id :venues)}
+                            :joins  [{:source     {:type :table
+                                                   :id   (meta/id :venues)}
+                                      :strategy   :left-join
+                                      :conditions [{:operator  :=
+                                                    :left      {:type    :column
+                                                                :name    "LATITUDE"
+                                                                :binning {:strategy :bin-width :bin-width 20}}
+                                                    :right     {:type    :column
+                                                                :name    "LONGITUDE"
+                                                                :binning {:strategy :bin-width :bin-width 20}}}]}]}]})]
+      (is (=? [{:lib/type   :mbql/join
+                :strategy   :left-join
+                :conditions [[:= {}
+                              [:field {:join-alias missing-value
+                                       :binning    {:bin-width 20.0
+                                                    :strategy  :bin-width}}
+                               (meta/id :venues :latitude)]
+                              [:field {:join-alias "Venues - Latitude"
+                                       :binning    {:bin-width 20.0
+                                                    :strategy  :bin-width}}
+                               (meta/id :venues :longitude)]]]}]
+              (lib/joins query))))))
+
+(deftest ^:parallel test-query-order-by-with-temporal-bucket-test
+  (testing "test-query adds order-by with temporal bucketing"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source    {:type :table
+                                        :id   (meta/id :checkins)}
+                            :order-bys [{:type      :column
+                                         :name      "DATE"
+                                         :unit      :month
+                                         :direction :desc}]}]})]
+      (is (=? [[:desc {}
+                [:field {:temporal-unit :month} (meta/id :checkins :date)]]]
+              (lib/order-bys query))))))
+
+(deftest ^:parallel test-query-order-by-with-temporal-bucket-test-with-duplicate-column
+  (let [date  {:type :column :name "DATE"}
+        query (fn [breakouts order-by]
+                (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source    {:type :table :id (meta/id :checkins)}
+                            :breakouts breakouts
+                            :order-bys [(assoc order-by :direction :desc)]}]}))]
+    (testing "a field broken out twice can't be ordered by, whatever unit the order-by asks for"
+      (is (thrown-with-msg? #?(:clj Exception :cljs js/Error) #"Multiple columns found"
+                            (query [(assoc date :unit :month) (assoc date :unit :year)]
+                                   (assoc date :unit :year)))))
+    (testing "named apart, each breakout is ordered by by its name"
+      (doseq [[column-name unit] [["month" :month] ["year" :year]]]
+        (is (=? [[:desc {} [:field {:temporal-unit unit :name column-name} (meta/id :checkins :date)]]]
+                (lib/order-bys (query [{:type :breakout :name "month" :column (assoc date :unit :month)}
+                                       {:type :breakout :name "year" :column (assoc date :unit :year)}]
+                                      {:type :column :name column-name}))))))))
+
+(deftest ^:parallel test-query-order-by-with-binning-test
+  (testing "test-query adds order-by with binning"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source    {:type :table
+                                        :id   (meta/id :venues)}
+                            :order-bys [{:type      :column
+                                         :name      "PRICE"
+                                         :binning   {:strategy :num-bins :num-bins 10}
+                                         :direction :asc}]}]})]
+      (is (=? [[:asc {} [:field {:binning {:strategy :num-bins :num-bins 10}} (meta/id :venues :price)]]]
+              (lib/order-bys query))))))
+
+(deftest ^:parallel test-query-expression-with-aggregation-test
+  (testing "test-query handles expressions that reference aggregations from earlier stages"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source       {:type :table
+                                           :id   (meta/id :venues)}
+                            :aggregations [{:name  "total-price"
+                                            :value {:type     :operator
+                                                    :operator :sum
+                                                    :args     [{:type :column
+                                                                :name "PRICE"}]}}]
+                            :breakouts    [{:type :column
+                                            :name "CATEGORY_ID"}]}
+                           {:expressions [{:name  "double-total"
+                                           :value {:type     :operator
+                                                   :operator :*
+                                                   :args     [{:type :column
+                                                               :name "total-price"}
+                                                              {:type  :literal
+                                                               :value 2}]}}]}]})]
+      (is (= 2 (count (:stages query))))
+      (is (= 1 (count (lib/aggregations query 0))))
+      (is (= 1 (count (lib/expressions query 1)))))))
+
+(deftest ^:parallel test-query-multiple-filters-test
+  (testing "test-query handles multiple independent filters"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source  {:type :table
+                                      :id   (meta/id :venues)}
+                            :filters [{:type     :operator
+                                       :operator :>
+                                       :args     [{:type :column
+                                                   :name "PRICE"}
+                                                  {:type  :literal
+                                                   :value 2}]}
+                                      {:type     :operator
+                                       :operator :<
+                                       :args     [{:type :column
+                                                   :name "LATITUDE"}
+                                                  {:type  :literal
+                                                   :value 40}]}]}]})]
+      (is (=? [[:> {} [:field {} (meta/id :venues :price)] 2]
+               [:< {} [:field {} (meta/id :venues :latitude)] 40]]
+              (-> query lib/filters))))))
+
+(deftest ^:parallel test-query-multiple-joins-test
+  (testing "test-query handles multiple joins"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source {:type :table
+                                     :id   (meta/id :venues)}
+                            :joins  [{:source   {:type :table
+                                                 :id   (meta/id :categories)}
+                                      :strategy :left-join}
+                                     {:source   {:type :table
+                                                 :id   (meta/id :checkins)}
+                                      :strategy :right-join}]}]})]
+      (is (=? [{:strategy :left-join
+                :alias "Categories"}
+               {:strategy :right-join
+                :alias "Checkins"}]
+              (lib/joins query))))))
+
+(deftest ^:parallel test-query-multiple-dependent-joins-test
+  (testing "test-query handles multiple joins"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source {:type :table
+                                     :id   (meta/id :orders)}
+                            :joins  [{:source   {:type :table
+                                                 :id   (meta/id :products)}
+                                      :strategy :left-join}
+                                     {:source   {:type :table
+                                                 :id   (meta/id :reviews)}
+                                      :strategy :right-join
+                                      :conditions [{:operator :=
+                                                    :left {:type :column
+                                                           :name "ID"
+                                                           :join-alias "Products"}
+                                                    :right {:type :column
+                                                            :name "PRODUCT_ID"}}]}]}]})]
+      (is (=? [{:strategy :left-join
+                :alias "Products"}
+               {:strategy :right-join
+                :alias "Reviews"
+                :conditions [[:= {}
+                              [:field {:join-alias "Products"} (meta/id :products :id)]
+                              [:field {:join-alias "Reviews"} (meta/id :reviews :product-id)]]]}]
+              (lib/joins query))))))
+
+(deftest ^:parallel test-query-with-implicit-join-test
+  (testing "test-query handles implicit joins in most clauses"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source {:type :table
+                                     :id   (meta/id :orders)}
+                            :filters [{:type     :operator
+                                       :operator :=
+                                       :args     [{:type :literal
+                                                   :value "Gadget"}
+                                                  {:type :column
+                                                   :source-field-id (meta/id :orders :product-id)
+                                                   :name "CATEGORY"}]}]
+
+                            :aggregations [{:type     :operator
+                                            :operator :sum
+                                            :args     [{:type :column
+                                                        :source-field-id (meta/id :orders :product-id)
+                                                        :name "PRICE"}]}]
+                            :breakouts    [{:type :column
+                                            :source-field-id (meta/id :orders :product-id)
+                                            :name "CREATED_AT"}]
+
+                            :expressions [{:name  "Custom"
+                                           :value {:type     :operator
+                                                   :operator :+
+                                                   :args [{:type :literal
+                                                           :value 42}
+                                                          {:type :column
+                                                           :name "PRICE"
+                                                           :source-field-id (meta/id :orders :product-id)}]}}]}]})]
+      (is (=? [[:=
+                {} "Gadget"
+                [:field
+                 {:source-field (meta/id :orders :product-id)}
+                 (meta/id :products :category)]]]
+              (lib/filters query)))
+      (is (=? [[:sum {}
+                [:field
+                 {:source-field (meta/id :orders :product-id)}
+                 (meta/id :products :price)]]]
+              (lib/aggregations query)))
+      (is (=? [[:+
+                {:lib/expression-name "Custom"}
+                42
+                [:field
+                 {:source-field (meta/id :orders :product-id)}
+                 (meta/id :products :price)]]]
+              (lib/expressions query)))
+      (is (=? [[:field
+                {:source-field (meta/id :orders :product-id)}
+                (meta/id :products :created-at)]]
+              (lib/breakouts query)))
+      (let [query (lib.query.test-spec/test-query
+                   meta/metadata-provider
+                   {:stages [{:source    {:type :table
+                                          :id   (meta/id :orders)}
+                              :breakouts [{:type            :column
+                                           :name            "CATEGORY"
+                                           :source-field-id (meta/id :orders :product-id)}]}]})]
+        (is (=? [[:field
+                  {:source-field (meta/id :orders :product-id)}
+                  (meta/id :products :category)]]
+                (lib/breakouts query))))
+      (let [query (lib.query.test-spec/test-query
+                   meta/metadata-provider
+                   {:stages [{:source {:type :table
+                                       :id   (meta/id :orders)}
+                              :order-bys [{:type :column
+                                           :name "PRICE"
+                                           :source-field-id (meta/id :orders :product-id)}]}]})]
+        (is (=? [[:asc {} [:field
+                           {:source-field (meta/id :orders :product-id)}
+                           (meta/id :products :price)]]]
+                (lib/order-bys query)))))))
+
+(deftest ^:parallel test-query-three-stage-test
+  (testing "test-query handles three stages"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source       {:type :table
+                                           :id   (meta/id :venues)}
+                            :aggregations [{:type     :operator
+                                            :operator :count
+                                            :args     []}]
+                            :breakouts    [{:type :column
+                                            :name "CATEGORY_ID"}]}
+                           {:filters [{:type     :operator
+                                       :operator :>
+                                       :args     [{:type :column
+                                                   :name "count"}
+                                                  {:type  :literal
+                                                   :value 10}]}]}
+                           {:limit 5}]})]
+      (is (= 3 (count (:stages query))))
+      (is (= 1 (count (lib/aggregations query 0))))
+      (is (= 1 (count (lib/breakouts query 0))))
+      (is (= 1 (count (lib/filters query 1))))
+      (is (= 5 (lib/current-limit query 2))))))
+
+;; intentionally one giant spec: the test-query features compose in one build (:fields covered below)
+#_{:clj-kondo/ignore [:metabase/i-like-making-cams-eyes-bleed-with-horrifically-long-tests]}
+(deftest ^:parallel test-query-comprehensive-all-features-test
+  (testing "test-query exercises all functionality in a comprehensive multi-stage query"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [;; Stage 0
+                           {:source {:type :table
+                                     :id   (meta/id :orders)}
+
+                            :joins [{:source   {:type :table
+                                                :id   (meta/id :products)}
+                                     :strategy :left-join}
+                                    {:source     {:type :table
+                                                  :id   (meta/id :people)}
+                                     :strategy   :inner-join
+                                     :conditions [{:operator :=
+                                                   :left     {:type :column
+                                                              :name "USER_ID"}
+                                                   :right    {:type :column
+                                                              :name "ID"}}]}]
+
+                            :expressions [{:name  "discounted-price"
+                                           :value {:type     :operator
+                                                   :operator :*
+                                                   :args     [{:type :column
+                                                               :name "PRICE"
+                                                               :join-alias "Products"}
+                                                              {:type  :literal
+                                                               :value 0.9}]}}
+                                          {:name  "double-discount"
+                                           :value {:type     :operator
+                                                   :operator :/
+                                                   :args     [{:type :column
+                                                               :name "discounted-price"}
+                                                              {:type  :literal
+                                                               :value 2}]}}]
+
+                            :filters [{:type     :operator
+                                       :operator :and
+                                       :args     [{:type     :operator
+                                                   :operator :>
+                                                   :args     [{:type :column
+                                                               :name "TOTAL"}
+                                                              {:type  :literal
+                                                               :value 50}]}
+                                                  {:type     :operator
+                                                   :operator :or
+                                                   :args     [{:type     :operator
+                                                               :operator :=
+                                                               :args     [{:type :column
+                                                                           :name "CATEGORY"
+                                                                           :join-alias "Products"}
+                                                                          {:type  :literal
+                                                                           :value "Widget"}]}
+                                                              {:type     :operator
+                                                               :operator :<
+                                                               :args     [{:type :column
+                                                                           :name "double-discount"}
+                                                                          {:type  :literal
+                                                                           :value 10}]}]}]}]
+
+                            :aggregations [{:name  "total-count"
+                                            :value {:type     :operator
+                                                    :operator :count
+                                                    :args     []}}
+                                           {:name  "total-revenue"
+                                            :value {:type     :operator
+                                                    :operator :sum
+                                                    :args     [{:type :column
+                                                                :name "TOTAL"}]}}
+                                           {:type     :operator
+                                            :operator :avg
+                                            :args     [{:type :column
+                                                        :name "PRICE"
+                                                        :join-alias "Products"}]}]
+
+                            :breakouts [{:type        :column
+                                         :name        "CREATED_AT"
+                                         :unit        :month}
+                                        {:type    :column
+                                         :name    "QUANTITY"
+                                         :binning {:strategy :num-bins :num-bins 10}}]
+
+                            :order-bys [{:type        :column
+                                         :name        "CREATED_AT"
+                                         :direction   :desc}]}
+                           ;; Stage 1
+                           {:expressions [{:name  "doubled-count"
+                                           :value {:type     :operator
+                                                   :operator :*
+                                                   :args     [{:type :column
+                                                               :name "total-count"}
+                                                              {:type  :literal
+                                                               :value 2}]}}]
+
+                            :filters [{:type     :operator
+                                       :operator :>
+                                       :args     [{:type :column
+                                                   :name "total-revenue"}
+                                                  {:type  :literal
+                                                   :value 1000}]}]
+
+                            :order-bys [{:type      :column
+                                         :name      "total-revenue"
+                                         :direction :asc}]}
+                           ;; Stage 2
+                           {:filters [{:type     :operator
+                                       :operator :<
+                                       :args     [{:type :column
+                                                   :name "doubled-count"}
+                                                  {:type  :literal
+                                                   :value 500}]}]
+
+                            :limit 25}]})]
+      (is (= 3 (lib/stage-count query)))
+      ;; Stage 0
+      (is (=? [{:strategy :left-join
+                :alias "Products"}
+               {:strategy :inner-join
+                :alias "People - User"}]
+              (lib/joins query 0)))
+      (is (=? [[:* {:lib/expression-name "discounted-price"} [:field {} (meta/id :products :price)] 0.9]
+               [:/ {:lib/expression-name "double-discount"} [:expression {} "discounted-price"] 2]]
+              (lib/expressions query 0)))
+      (is (empty? (lib/fields query 0)))
+      (is (=? [[:and {}
+                [:> {} [:field {} (meta/id :orders :total)] 50]
+                [:or {}
+                 [:= {} [:field {:join-alias "Products"} (meta/id :products :category)] "Widget"]
+                 [:< {} [:expression {} "double-discount"] 10]]]]
+              (lib/filters query 0)))
+      (is (=? [[:count {:display-name "total-count"}]
+               [:sum {:display-name "total-revenue"} [:field {} (meta/id :orders :total)]]
+               [:avg {} [:field {:join-alias "Products"} (meta/id :products :price)]]]
+              (lib/aggregations query 0)))
+      (is (=? [[:field {:temporal-unit :month} (meta/id :orders :created-at)]
+               [:field {:binning {:strategy :num-bins :num-bins 10}} (meta/id :orders :quantity)]]
+              (lib/breakouts query 0)))
+      (is (=? [[:desc {} [:field {:temporal-unit :month} (meta/id :orders :created-at)]]]
+              (lib/order-bys query 0)))
+      ;; Stage 1
+      (is (=? [[:* {:lib/expression-name "doubled-count"}
+                [:field {} "total-count"]
+                2]]
+              (lib/expressions query 1)))
+      (is (=? [[:> {} [:field {} "total-revenue"] 1000]]
+              (lib/filters query 1)))
+      (is (=? [[:asc {} [:field {} "total-revenue"]]]
+              (lib/order-bys query 1)))
+      (is (empty? (lib/fields query 1)))
+      ;; Stage 2
+      (is (=? [[:< {} [:field {} "doubled-count"] 500]]
+              (lib/filters query 2)))
+      (is (empty? (lib/fields query 2)))
+      (is (= 25 (lib/current-limit query 2))))))
+
+(deftest ^:parallel test-query-comprehensive-all-features-test-with-fields
+  (testing "test-query exercises all functionality in a comprehensive multi-stage query, with fields clause"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [;; Stage 0
+                           {:source {:type :table
+                                     :id   (meta/id :orders)}
+
+                            :joins [{:source   {:type :table
+                                                :id   (meta/id :products)}
+                                     :strategy :left-join}
+                                    {:source     {:type :table
+                                                  :id   (meta/id :people)}
+                                     :strategy   :inner-join
+                                     :conditions [{:operator :=
+                                                   :left     {:type :column
+                                                              :name "USER_ID"}
+                                                   :right    {:type :column
+                                                              :name "ID"}}]}]
+
+                            :expressions [{:name  "discounted-price"
+                                           :value {:type     :operator
+                                                   :operator :*
+                                                   :args     [{:type :column
+                                                               :name "PRICE"
+                                                               :join-alias "Products"}
+                                                              {:type  :literal
+                                                               :value 0.9}]}}
+                                          {:name  "double-discount"
+                                           :value {:type     :operator
+                                                   :operator :/
+                                                   :args     [{:type :column
+                                                               :name "discounted-price"}
+                                                              {:type  :literal
+                                                               :value 2}]}}]
+
+                            :filters [{:type     :operator
+                                       :operator :and
+                                       :args     [{:type     :operator
+                                                   :operator :>
+                                                   :args     [{:type :column
+                                                               :name "TOTAL"}
+                                                              {:type  :literal
+                                                               :value 50}]}
+                                                  {:type     :operator
+                                                   :operator :or
+                                                   :args     [{:type     :operator
+                                                               :operator :=
+                                                               :args     [{:type :column
+                                                                           :name "CATEGORY"
+                                                                           :join-alias "Products"}
+                                                                          {:type  :literal
+                                                                           :value "Widget"}]}
+                                                              {:type     :operator
+                                                               :operator :<
+                                                               :args     [{:type :column
+                                                                           :name "double-discount"}
+                                                                          {:type  :literal
+                                                                           :value 10}]}]}]}]
+
+                            :order-bys [{:type        :column
+                                         :name        "CREATED_AT"
+                                         :direction   :desc}]
+
+                            :fields [{:type :column
+                                      :name "TOTAL"}
+                                     {:type :column
+                                      :name "CATEGORY"
+                                      :join-alias "Products"}
+                                     {:type :column
+                                      :name "double-discount"}]}
+                           ;; Stage 1
+                           {:expressions [{:name  "half-discount"
+                                           :value {:type     :operator
+                                                   :operator :/
+                                                   :args     [{:type :column
+                                                               :name "double-discount"}
+                                                              {:type  :literal
+                                                               :value 4}]}}]
+
+                            :filters [{:type     :operator
+                                       :operator :>
+                                       :args     [{:type :column
+                                                   :name "half-discount"}
+                                                  {:type  :literal
+                                                   :value 1000}]}]}
+                           ;; Stage 2
+                           {:filters [{:type     :operator
+                                       :operator :<
+                                       :args     [{:type :column
+                                                   :name "half-discount"}
+                                                  {:type  :literal
+                                                   :value 500}]}]
+
+                            :limit 25}]})]
+      (is (= 3 (lib/stage-count query)))
+      ;; Stage 0
+      (is (=? [{:strategy :left-join
+                :alias "Products"}
+               {:strategy :inner-join
+                :alias "People - User"}]
+              (lib/joins query 0)))
+      (is (=? [[:* {:lib/expression-name "discounted-price"} [:field {} (meta/id :products :price)] 0.9]
+               [:/ {:lib/expression-name "double-discount"} [:expression {} "discounted-price"] 2]]
+              (lib/expressions query 0)))
+      (is (=? [[:field {} (meta/id :orders :total)]
+               [:field {:join-alias "Products"} (meta/id :products :category)]
+               [:expression {} "double-discount"]
+               [:expression {} "discounted-price"]]
+              (lib/fields query 0)))
+      (is (=? [[:and {}
+                [:> {} [:field {} (meta/id :orders :total)] 50]
+                [:or {}
+                 [:= {} [:field {:join-alias "Products"} (meta/id :products :category)] "Widget"]
+                 [:< {} [:expression {} "double-discount"] 10]]]]
+              (lib/filters query 0)))
+      (is (empty? (lib/aggregations query 0)))
+      (is (empty? (lib/breakouts query 0)))
+      (is (=? [[:desc {} [:field {} (meta/id :orders :created-at)]]]
+              (lib/order-bys query 0)))
+      ;; Stage 1
+      (is (=? [[:/ {:lib/expression-name "half-discount"}
+                [:field {} "double-discount"]
+                4]]
+              (lib/expressions query 1)))
+      (is (=? [[:> {} [:expression {} "half-discount"] 1000]]
+              (lib/filters query 1)))
+      (is (empty? (lib/order-bys query 1)))
+      (is (empty? (lib/fields query 1)))
+      ;; Stage 2
+      (is (=? [[:< {} [:field {} "half-discount"] 500]]
+              (lib/filters query 2)))
+      (is (empty? (lib/fields query 2)))
+      (is (= 25 (lib/current-limit query 2))))))
+
+(deftest ^:parallel test-native-query-basic-test
+  (testing "test-native-query creates a basic native query without template tags"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id (meta/id)
+                  :query "SELECT * FROM orders"})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM orders"))
+      (is (empty? (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-with-text-tag-test
+  (testing "test-native-query creates a native query with text template tag"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id    (meta/id)
+                  :query          "SELECT * FROM venues WHERE name = {{venue_name}}"
+                  :template-tags  {"venue_name" {:type         :text
+                                                 :name         "venue_name"
+                                                 :display-name "Venue Name"}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM venues WHERE name = {{venue_name}}"))
+      (is (=? [{:type         :text
+                :name         "venue_name"
+                :display-name "Venue Name"}]
+              (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-with-number-tag-test
+  (testing "test-native-query creates a native query with number template tag"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id    (meta/id)
+                  :query          "SELECT * FROM venues WHERE price = {{price}}"
+                  :template-tags  {"price" {:type         :number
+                                            :name         "price"
+                                            :display-name "Price"}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM venues WHERE price = {{price}}"))
+      (is (=? [{:type         :number
+                :name         "price"
+                :display-name "Price"}]
+              (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-with-date-tag-test
+  (testing "test-native-query creates a native query with date template tag"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id    (meta/id)
+                  :query          "SELECT * FROM orders WHERE created_at = {{date}}"
+                  :template-tags  {"date" {:type         :date
+                                           :name         "date"
+                                           :display-name "Date"}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM orders WHERE created_at = {{date}}"))
+      (is (=? [{:type         :date
+                :name         "date"
+                :display-name "Date"}]
+              (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-with-boolean-tag-test
+  (testing "test-native-query creates a native query with boolean template tag"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id    (meta/id)
+                  :query          "SELECT * FROM users WHERE active = {{is_active}}"
+                  :template-tags  {"is_active" {:type         :boolean
+                                                :name         "is_active"
+                                                :display-name "Is Active"}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM users WHERE active = {{is_active}}"))
+      (is (=? [{:type         :boolean
+                :name         "is_active"
+                :display-name "Is Active"}]
+              (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-with-dimension-tag-test
+  (testing "test-native-query creates a native query with dimension (field-filter) template tag"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id    (meta/id)
+                  :query          "SELECT * FROM venues WHERE {{category_filter}}"
+                  :template-tags  {"category_filter" {:type         :dimension
+                                                      :name         "category_filter"
+                                                      :display-name "Category Filter"
+                                                      :dimension    (meta/id :venues :category-id)
+                                                      :widget-type  :text}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM venues WHERE {{category_filter}}"))
+      (is (=? [{:type         :dimension
+                :name         "category_filter"
+                :display-name "Category Filter"
+                :dimension    [:field {} (meta/id :venues :category-id)]
+                :widget-type  :text}]
+              (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-with-temporal-unit-tag-test
+  (testing "test-native-query creates a native query with temporal-unit template tag"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id    (meta/id)
+                  :query          "SELECT * FROM orders WHERE {{date_unit}}"
+                  :template-tags  {"date_unit" {:type         :temporal-unit
+                                                :name         "date_unit"
+                                                :display-name "Date Unit"
+                                                :dimension    (meta/id :orders :created-at)}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM orders WHERE {{date_unit}}"))
+      (is (=? [{:type         :temporal-unit
+                :name         "date_unit"
+                :display-name "Date Unit"
+                :dimension    [:field {} (meta/id :orders :created-at)]}]
+              (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-with-snippet-tag-test
+  (testing "test-native-query creates a native query with snippet template tag"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id    (meta/id)
+                  :query          "SELECT * FROM {{snippet: my-snippet}}"
+                  :template-tags  {"snippet: my-snippet" {:type         :snippet
+                                                          :name         "snippet: my-snippet"
+                                                          :display-name "My Snippet"
+                                                          :snippet-name "my-snippet"}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM {{snippet: my-snippet}}"))
+      (is (=? [{:type         :snippet
+                :name         "snippet: my-snippet"
+                :display-name "My Snippet"
+                :snippet-name "my-snippet"}]
+              (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-with-card-tag-test
+  (testing "test-native-query creates a native query with card (source-query) template tag"
+    (let [query (lib.query.test-spec/test-native-query
+                 lib.tu/metadata-provider-with-card
+                 {:database-id    (meta/id)
+                  :query          "SELECT * FROM {{#123}}"
+                  :template-tags  {"#123" {:type         :card
+                                           :name         "#123"
+                                           :display-name "Card 123"
+                                           :card-id      1}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM {{#123}}"))
+      (is (=? [{:type         :card
+                :name         "#123"
+                :display-name "Card 123"
+                :card-id      1}]
+              (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-with-multiple-tags-test
+  (testing "test-native-query creates a native query with multiple template tags"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id    (meta/id)
+                  :query          "SELECT * FROM venues WHERE name = {{name}} AND price > {{min_price}} AND {{category_filter}}"
+                  :template-tags  {"name"            {:type         :text
+                                                      :name         "name"
+                                                      :display-name "Name"}
+                                   "min_price"       {:type         :number
+                                                      :name         "min_price"
+                                                      :display-name "Min Price"}
+                                   "category_filter" {:type         :dimension
+                                                      :name         "category_filter"
+                                                      :display-name "Category Filter"
+                                                      :dimension    (meta/id :venues :category-id)
+                                                      :widget-type  :text}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM venues WHERE name = {{name}} AND price > {{min_price}} AND {{category_filter}}"))
+      (is (=? [{:type         :text
+                :name         "name"
+                :display-name "Name"}
+               {:type         :number
+                :name         "min_price"
+                :display-name "Min Price"}
+               {:type         :dimension
+                :name         "category_filter"
+                :display-name "Category Filter"
+                :dimension    [:field {} (meta/id :venues :category-id)]
+                :widget-type  :text}]
+              (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-inferred-tags-test
+  (testing "test-native-query infers template tags from query text"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id   (meta/id)
+                  :query         "SELECT * FROM venues WHERE name = {{venue_name}}"
+                  :template-tags {"venue_name" {:type         :text
+                                                :name         "venue_name"
+                                                :display-name "Custom Name"
+                                                :default      "Foo"
+                                                :widget-type  "string/contains"
+                                                :required     true}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM venues WHERE name = {{venue_name}}"))
+      (is (=? [{:type         :text
+                :name         "venue_name"
+                :display-name "Custom Name"
+                :default      "Foo"
+                :required     true
+                :widget-type  :string/contains
+                :id           string?}]
+              (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-empty-template-tags-test
+  (testing "test-native-query handles explicit empty template tags"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id    (meta/id)
+                  :query          "SELECT * FROM orders"
+                  :template-tags  {}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM orders"))
+      (is (empty? (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-inferred-tags-test-from-js
+  (testing "test-native-query infers template tags from query text, when passing spec from JS"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id   (meta/id)
+                  "query"        "SELECT * FROM venues WHERE name = {{venue_name}}"
+                  "templateTags" {"venue_name" {:type        :text
+                                                :displayName "Custom Name"
+                                                :default     "Foo"
+                                                :name        "venue_name"
+                                                :widgetType  "string/contains"
+                                                :required    true}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM venues WHERE name = {{venue_name}}"))
+      (is (=? [{:type         :text
+                :name         "venue_name"
+                :display-name "Custom Name"
+                :default      "Foo"
+                :required     true
+                :widget-type  :string/contains
+                :id           string?}]
+              (lib/template-tags query))))))
+
+(deftest ^:parallel test-native-query-inferred-optional-tags-test
+  (testing "test-native-query infers optional template tags from query text"
+    (let [query (lib.query.test-spec/test-native-query
+                 meta/metadata-provider
+                 {:database-id   (meta/id)
+                  :query         "SELECT * FROM venues [WHERE name = {{venue_name}}]"
+                  :template-tags {"venue_name" {:type         :text
+                                                :display-name "Custom Name"
+                                                :default      "Foo"
+                                                :name         "venue_name"
+                                                :widget-type "string/contains"
+                                                :required     true}}})]
+      (is (=? (lib/raw-native-query query)
+              "SELECT * FROM venues [WHERE name = {{venue_name}}]"))
+      (is (=? [{:type         :text
+                :name         "venue_name"
+                :display-name "Custom Name"
+                :default      "Foo"
+                :required     true
+                :widget-type  :string/contains
+                :id           string?}]
+              (lib/template-tags query))))))
+
+(defn- orders-column
+  [column-name]
+  {:type :column :name column-name})
+
+(defn- orders-then
+  [first-stage second-stage]
+  (lib.query.test-spec/test-query
+   meta/metadata-provider
+   {:stages [(assoc first-stage :source {:type :table :id (meta/id :orders)})
+             second-stage]}))
+
+(deftest ^:parallel test-query-later-stage-column-with-table-id-test
+  (testing "USER_ID in the result makes PEOPLE.CREATED_AT joinable next to the CREATED_AT result column; the table
+            tells them apart"
+    (is (=? [[:> {} [:field {:inherited-temporal-unit :month} "CREATED_AT"] "2024-01-01"]]
+            (lib/filters
+             (orders-then {:aggregations [{:type :operator :operator :count :args []}]
+                           :breakouts    [(assoc (orders-column "CREATED_AT") :unit :month)
+                                          (orders-column "USER_ID")]}
+                          {:filters [{:type     :operator
+                                      :operator :>
+                                      :args     [(orders-column "CREATED_AT")
+                                                 {:type :literal :value "2024-01-01"}]}]})
+             1)))))
+
+(def ^:private named-sums
+  {:aggregations [{:type :operator :operator :sum :name "sum A" :args [(orders-column "TOTAL")]}
+                  {:type :operator :operator :sum :name "sum B" :args [(orders-column "SUBTOTAL")]}]
+   :breakouts    [(orders-column "PRODUCT_ID")]})
+
+(deftest ^:parallel test-query-aggregation-result-name-test
+  (let [query (orders-then named-sums {:order-bys [{:type :column :name "sum B" :direction :desc}]})]
+    (testing "an aggregation's :name names its result column, and keeps the display name"
+      (is (=? [{:name "PRODUCT_ID"}
+               {:name "sum A" :display-name "Sum of Total"}
+               {:name "sum B" :display-name "Sum of Subtotal"}]
+              (lib/returned-columns query 0))))
+    (testing "a later stage refers to it by that name"
+      (is (=? [[:desc {} [:field {} "sum B"]]]
+              (lib/order-bys query 1))))))
+
+(deftest ^:parallel test-query-aggregation-result-name-through-card-test
+  (testing "a stage on a saved question refers to the question's named aggregation by that name"
+    (let [card-query (lib.query.test-spec/test-query
+                      meta/metadata-provider
+                      {:stages [(assoc named-sums :source {:type :table :id (meta/id :orders)})]})
+          query      (lib.query.test-spec/test-query
+                      (lib.tu/metadata-provider-with-card-from-query 1 card-query)
+                      {:stages [{:source {:type :card :id 1}}
+                                {:order-bys [{:type :column :name "sum B" :direction :desc}]}]})]
+      (is (=? [[:desc {} [:field {} "sum B"]]]
+              (lib/order-bys query 1))))))
+
+(deftest ^:parallel test-query-later-stage-tells-joined-result-columns-apart-by-fk-test
+  (testing "PRODUCTS.ID and PEOPLE.ID are both named ID; a later stage picks one by its field id"
+    (is (=? [[:< {} [:field {} "PEOPLE__via__USER_ID__ID"] 10]]
+            (lib/filters
+             (orders-then {:aggregations [{:type :operator :operator :count :args []}]
+                           :breakouts    [{:type :column :name "ID" :source-field-id (meta/id :orders :product-id)}
+                                          {:type :column :name "ID" :source-field-id (meta/id :orders :user-id)}]}
+                          {:filters [{:type     :operator
+                                      :operator :<
+                                      :args     [{:type :column :field-id (meta/id :people :id)}
+                                                 {:type :literal :value 10}]}]})
+             1)))))
+
+(deftest ^:parallel test-query-joined-result-column-through-card-test
+  (testing "a saved card stores the second joined ID as ID_2, and that name is refused as ambiguous"
+    (let [card-query (lib.query.test-spec/test-query
+                      meta/metadata-provider
+                      {:stages [{:source       {:type :table :id (meta/id :orders)}
+                                 :aggregations [{:type :operator :operator :count :args []}]
+                                 :breakouts    [{:type :column :name "ID" :source-field-id (meta/id :orders :product-id)}
+                                                {:type :column :name "ID" :source-field-id (meta/id :orders :user-id)}]}]})
+          ;; Saved result metadata carries the deduplicated names, as the query processor returns them.
+          mp         (lib.tu/metadata-provider-with-card-from-query
+                      meta/metadata-provider 1 card-query
+                      {:result-metadata (mapv #(assoc % :name (:lib/deduplicated-name %))
+                                              (lib/returned-columns card-query))})
+          query      #(lib.query.test-spec/test-query
+                       mp
+                       {:stages [{:source {:type :card :id 1}}
+                                 {:filters [{:type     :operator
+                                             :operator :<
+                                             :args     [{:type :column :name "ID_2"}
+                                                        {:type :literal :value 10}]}]}]})]
+      (is (thrown-with-msg? #?(:clj Exception :cljs js/Error) #"Ambiguous column"
+                            (query))))))
+
+(def ^:private two-fks-to-products-provider
+  "ORDERS with USER_ID as a second FK into PRODUCTS."
+  (lib.tu/merged-mock-metadata-provider
+   meta/metadata-provider
+   {:fields [{:id (meta/id :orders :user-id) :semantic-type :type/FK :fk-target-field-id (meta/id :products :id)}]}))
+
+(deftest ^:parallel test-query-implicit-joins-through-several-fks-test
+  (testing "the FK field picks between implicit joins into the same table"
+    (is (=? [[:field {:source-field (meta/id :orders :product-id)} (meta/id :products :title)]
+             [:field {:source-field (meta/id :orders :user-id)} (meta/id :products :title)]]
+            (lib/breakouts
+             (lib.query.test-spec/test-query
+              two-fks-to-products-provider
+              {:stages [{:source       {:type :table :id (meta/id :orders)}
+                         :aggregations [{:type :operator :operator :count}]
+                         :breakouts    [{:type :column :field-id (meta/id :products :title)
+                                         :source-field-id (meta/id :orders :product-id)}
+                                        {:type :column :name "TITLE" :source-field-id (meta/id :orders :user-id)}]}]})))))
+  (testing "a column without a source field is never an implicitly joined one"
+    (is (thrown-with-msg?
+         #?(:clj Exception :cljs js/Error)
+         #"No column found"
+         (lib.query.test-spec/test-query
+          two-fks-to-products-provider
+          {:stages [{:source    {:type :table :id (meta/id :orders)}
+                     :breakouts [{:type :column :name "TITLE"}]}]})))))
+
+(deftest ^:parallel test-query-implicit-join-through-joined-fk-test
+  (testing "the join alias of the FK picks between the base table's FK and a joined copy of it"
+    (is (=? [[:field {:join-alias "O1"} (meta/id :orders :id)]
+             [:field {:source-field (meta/id :orders :product-id) :source-field-join-alias missing-value}
+              (meta/id :products :title)]
+             [:field {:source-field (meta/id :orders :product-id) :source-field-join-alias "O1"}
+              (meta/id :products :title)]]
+            (lib/breakouts
+             (lib.query.test-spec/test-query
+              meta/metadata-provider
+              {:stages [{:source       {:type :table :id (meta/id :orders)}
+                         :joins        [{:source     {:type :table :id (meta/id :orders)}
+                                         :strategy   :left-join
+                                         :alias      "O1"
+                                         :conditions [{:operator := :left {:type :column :name "ID"} :right {:type :column :name "ID"}}]}]
+                         :aggregations [{:type :operator :operator :count}]
+                         :breakouts    [{:type :column :field-id (meta/id :orders :id) :join-alias "O1"}
+                                        {:type :column :name "TITLE" :source-field-id (meta/id :orders :product-id)}
+                                        {:type                    :column
+                                         :name                    "TITLE"
+                                         :source-field-id         (meta/id :orders :product-id)
+                                         :source-field-join-alias "O1"}]}]}))))))
+
+(deftest ^:parallel test-query-joined-card-columns-by-name-test
+  (testing "a joined card's columns are named with the join's alias; the condition's right side is not yet joined"
+    (let [card-query (lib/aggregate (lib/breakout (lib/query meta/metadata-provider (meta/table-metadata :orders))
+                                                  (meta/field-metadata :orders :product-id))
+                                    (lib/count))
+          query      (lib.query.test-spec/test-query
+                      (lib.tu/metadata-provider-with-card-from-query 1 card-query)
+                      {:stages [{:source    {:type :table :id (meta/id :products)}
+                                 :joins     [{:source     {:type :card :id 1}
+                                              :strategy   :left-join
+                                              :alias      "C"
+                                              :conditions [{:operator := :left {:type :column :name "ID"}
+                                                            :right {:type :column :name "PRODUCT_ID"}}]}]
+                                 :order-bys [{:type :column :name "count" :join-alias "C" :direction :desc}]}]})]
+      (is (=? [[:desc {} [:field {:join-alias "C"} "count"]]]
+              (lib/order-bys query))))))
+
+(deftest ^:parallel test-query-camel-case-column-keys-test
+  (testing "test-query reads camelCase column keys"
+    (is (=? [[:field {:source-field (meta/id :orders :product-id)} (meta/id :products :category)]]
+            (lib/breakouts
+             (lib.query.test-spec/test-query
+              meta/metadata-provider
+              {"stages" [{"source"       {"type" "table" "id" (meta/id :orders)}
+                          "aggregations" [{"type" "operator" "operator" "count"}]
+                          "breakouts"    [{"type"          "column"
+                                           "fieldId"       (meta/id :products :category)
+                                           "sourceFieldId" (meta/id :orders :product-id)}]}]}))))))
+
+(deftest ^:parallel test-query-expression-named-like-a-field-test
+  (testing "an expression named like a field of the stage is ambiguous"
+    (is (thrown-with-msg?
+         #?(:clj Exception :cljs js/Error)
+         #"Multiple columns found"
+         (lib.query.test-spec/test-query
+          meta/metadata-provider
+          {:stages [{:source       {:type :table :id (meta/id :orders)}
+                     :expressions  [{:name  "TOTAL"
+                                     :value {:type :operator :operator :+
+                                             :args [{:type :column :name "TOTAL"} {:type :literal :value 1}]}}]
+                     :aggregations [{:type :operator :operator :count}]
+                     :breakouts    [{:type :column :name "TOTAL"}]}]})))))
+
+(def ^:private metadata-provider-with-measure
+  (lib.tu/mock-metadata-provider
+   meta/metadata-provider
+   {:measures [{:id         1
+                :name       "Revenue"
+                :table-id   (meta/id :venues)
+                :definition (-> (lib/query meta/metadata-provider (meta/table-metadata :venues))
+                                (lib/aggregate (lib/sum (meta/field-metadata :venues :price))))}]}))
+
+(deftest ^:parallel test-query-names-saved-aggregation-test
+  (testing "measure or metric is named by wrapping it as `{:name .. :value ..}`, as an operator aggregation can be"
+    (let [measure-query (lib.query.test-spec/test-query
+                         metadata-provider-with-measure
+                         {:stages [{:source       {:type :table :id (meta/id :venues)}
+                                    :aggregations [{:name "revenue" :value {:type :measure :id 1}}
+                                                   {:type :operator :operator :sum
+                                                    :args [{:type :column :name "PRICE"}]}]}]})
+          metric-query  (lib.query.test-spec/test-query
+                         lib.tu/metadata-provider-with-metric
+                         {:stages [{:source       {:type :table :id (meta/id :checkins)}
+                                    :aggregations [{:name "visits" :value {:type :metric :id 1}}]}]})]
+      (is (=? [[:measure {:name "revenue"} 1] [:sum {} some?]]
+              (lib/aggregations measure-query)))
+      (is (= ["revenue" "sum"] (map :name (lib/returned-columns measure-query))))
+      (is (=? [[:metric {:name "visits"} 1]] (lib/aggregations metric-query)))
+      (is (= ["visits"] (map :name (lib/returned-columns metric-query)))))))
+
+(deftest ^:parallel test-query-ignores-saved-aggregation-own-name-test
+  (testing "measure's own `:name`, as a generated schema carries it, is not its result column's name"
+    (let [query (lib.query.test-spec/test-query
+                 metadata-provider-with-measure
+                 {:stages [{:source       {:type :table :id (meta/id :venues)}
+                            :aggregations [{:type :measure :id 1 :name "Revenue"}]}]})]
+      (is (= ["sum"] (map :name (lib/returned-columns query)))))))
+
+(deftest ^:parallel test-query-aggregation-of-earlier-aggregation-test
+  (testing "aggregation can refer to an earlier aggregation of its stage"
+    (let [query (lib.query.test-spec/test-query
+                 meta/metadata-provider
+                 {:stages [{:source       {:type :table :id (meta/id :venues)}
+                            :aggregations [{:type :operator :operator :count}
+                                           {:type     :operator
+                                            :operator :/
+                                            :args     [{:type :column :name "count"}
+                                                       {:type :literal :value 2}]}]}]})]
+      (is (=? [[:count {}] [:/ {} [:aggregation {} string?] 2]]
+              (lib/aggregations query))))))
+
+(deftest ^:parallel test-query-names-breakouts-test
+  (testing "breakout of type `:breakout` gives its result column its `:name`, and a later stage finds it by that name"
+    (let [created-at {:type :column :name "CREATED_AT"}
+          query      (lib.query.test-spec/test-query
+                      meta/metadata-provider
+                      {:stages [{:source       {:type :table :id (meta/id :orders)}
+                                 :breakouts    [{:type :breakout :name "created_month" :column (assoc created-at :unit :month)}
+                                                {:type :breakout :name "created_year" :column (assoc created-at :unit :year)}]
+                                 :aggregations [{:type :operator :operator :count}]}
+                                {:filters [{:type     :operator
+                                            :operator :>
+                                            :args     [{:type :column :name "count"} {:type :literal :value 1}]}]
+                                 :breakouts [{:type :column :name "created_year"}]}]})]
+      (is (=? [[:field {:name "created_month" :temporal-unit :month} (meta/id :orders :created-at)]
+               [:field {:name "created_year" :temporal-unit :year} (meta/id :orders :created-at)]]
+              (lib/breakouts query 0)))
+      (is (= ["created_month" "created_year" "count"]
+             (map :name (lib/returned-columns query 0))))
+      (is (=? [[:field {} "created_year"]]
+              (lib/breakouts query 1))))))
+
+(deftest ^:parallel test-query-orders-by-named-implicitly-joined-breakout-test
+  (let [category {:type            :column
+                  :name            "CATEGORY"
+                  :field-id        (meta/id :products :category)
+                  :source-field-id (meta/id :orders :product-id)}
+        query    (fn [order-by]
+                   (lib.query.test-spec/test-query
+                    meta/metadata-provider
+                    {:stages [{:source       {:type :table :id (meta/id :orders)}
+                               :aggregations [{:type :operator :operator :count}]
+                               :breakouts    [{:type :breakout :name "category" :column category}]
+                               :order-bys    [order-by]}]}))]
+    (testing "named breakout on an implicitly joined field is found by its name and foreign key"
+      (is (=? [[:asc {} [:field {:name "category" :source-field (meta/id :orders :product-id)} (meta/id :products :category)]]]
+              (lib/order-bys (query {:type :column :name "category" :source-field-id (meta/id :orders :product-id)})))))
+    (testing "its name alone does not say it is implicitly joined"
+      (is (thrown-with-msg? #?(:clj Exception :cljs js/Error) #"No column found"
+                            (query {:type :column :name "category"}))))))
+
+(def ^:private two-ids-stage
+  {:source {:type :table :id (meta/id :orders)}
+   :fields [{:type :column :name "ID" :field-id (meta/id :orders :id)}
+            {:type            :column
+             :name            "ID"
+             :field-id        (meta/id :products :id)
+             :source-field-id (meta/id :orders :product-id)}]})
+
+(deftest ^:parallel test-query-refuses-ambiguous-column-in-later-stage-test
+  (testing "name of a column only a deduplication suffix tells apart from another one of the previous stage is ambiguous"
+    (doseq [[label mp first-stage]
+            [["after a table query" meta/metadata-provider two-ids-stage]
+             ["on a saved question"
+              (lib.tu/metadata-provider-with-card-from-query
+               meta/metadata-provider 1 (lib.query.test-spec/test-query meta/metadata-provider {:stages [two-ids-stage]}))
+              {:source {:type :card :id 1}}]]
+            column [{:type :column :name "ID"}
+                    {:type :column :name "ID_2"}]]
+      (testing (str label " " (pr-str column))
+        (is (thrown-with-msg? #?(:clj Exception :cljs js/Error) #"Ambiguous column"
+                              (lib.query.test-spec/test-query
+                               mp
+                               {:stages [first-stage
+                                         {:filters [{:type     :operator
+                                                     :operator :>
+                                                     :args     [column {:type :literal :value 1}]}]}]})))))))
+
+(deftest ^:parallel test-query-finds-later-stage-column-by-field-id-test
+  (testing "field ID finds its column of the previous stage although another one shares its name"
+    (is (=? [[:> {} [:field {} "PRODUCTS__via__PRODUCT_ID__ID"] 1]]
+            (lib/filters (lib.query.test-spec/test-query
+                          meta/metadata-provider
+                          {:stages [two-ids-stage
+                                    {:filters [{:type     :operator
+                                                :operator :>
+                                                :args     [{:type :column :field-id (meta/id :products :id)}
+                                                           {:type :literal :value 1}]}]}]})
+                         -1)))))
+
+(deftest ^:parallel test-query-refuses-bucketed-column-of-previous-stage-test
+  (testing "previous stage's column bucketed two ways is ambiguous, whatever unit the spec asks for"
+    (let [created-at {:type :column :name "CREATED_AT"}]
+      (is (thrown-with-msg? #?(:clj Exception :cljs js/Error) #"Ambiguous column"
+                            (lib.query.test-spec/test-query
+                             meta/metadata-provider
+                             {:stages [{:source       {:type :table :id (meta/id :orders)}
+                                        :breakouts    [(assoc created-at :unit :month) (assoc created-at :unit :year)]
+                                        :aggregations [{:type :operator :operator :count}]}
+                                       {:order-bys [(assoc created-at :unit :year)]}]}))))))
+
+(deftest ^:parallel test-query-finds-table-column-among-joinable-ones-test
+  (testing "in a table stage, the table's own column is found, not an implicitly joinable one of the same name"
+    (doseq [column [{:type :column :name "ID"}
+                    {:type :column :name "ID" :field-id (meta/id :orders :id)}]]
+      (is (=? [[:field {} (meta/id :orders :id)]]
+              (lib/fields (lib.query.test-spec/test-query
+                           meta/metadata-provider
+                           {:stages [{:source {:type :table :id (meta/id :orders)}
+                                      :fields [column]}]})))))))
+
+(def ^:private metadata-provider-with-segment-and-measure
+  (lib.tu/mock-metadata-provider
+   metadata-provider-with-measure
+   {:segments [{:id         1
+                :name       "Expensive"
+                :table-id   (meta/id :venues)
+                :definition (-> (lib/query meta/metadata-provider (meta/table-metadata :venues))
+                                (lib/filter (lib/> (meta/field-metadata :venues :price) 2)))}]}))
+
+(deftest ^:parallel test-query-operator-with-segment-and-measure-args-test
+  (testing "an operator's args can be segments and measures"
+    (is (=? [[:count-where {} [:segment {} 1]]
+             [:+ {} 1 [:measure {} 1]]]
+            (lib/aggregations
+             (lib.query.test-spec/test-query
+              metadata-provider-with-segment-and-measure
+              {:stages [{:source       {:type :table :id (meta/id :venues)}
+                         :aggregations [{:type :operator :operator :count-where
+                                         :args [{:type :segment :id 1}]}
+                                        {:type :operator :operator :+
+                                         :args [{:type :literal :value 1} {:type :measure :id 1}]}]}]}))))))

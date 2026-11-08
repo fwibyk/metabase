@@ -1,0 +1,5 @@
+built_in_type: hourly
+entity_id: wYLcUPbtF7jVPO0duGGHR
+name: hourly
+serdes/meta:
+- model: TransformTag

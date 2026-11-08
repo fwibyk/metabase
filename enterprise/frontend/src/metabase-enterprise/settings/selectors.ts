@@ -1,0 +1,147 @@
+import noResultsSource from "assets/img/no_results.svg";
+import bridgeImage from "img/bridge.svg?url";
+import type { IllustrationValue } from "metabase/plugins";
+import type { State } from "metabase/redux/store";
+import {
+  getCustomIllustrationUrl,
+  getSetting,
+  getSettings,
+} from "metabase/settings";
+import type {
+  EnterpriseSettings,
+  IllustrationSettingValue,
+} from "metabase-types/api";
+
+import { LOADING_MESSAGE_BY_SETTING } from "../whitelabel/lib/loading-message";
+
+const DEFAULT_LOGO_URL = "app/assets/img/logo.svg";
+
+const getCustomLogoUrl = (settingValues: EnterpriseSettings) => {
+  return (
+    settingValues["application-logo-url"] ||
+    settingValues.application_logo_url ||
+    DEFAULT_LOGO_URL
+  );
+};
+
+export const getLogoUrl = (state: State) =>
+  getCustomLogoUrl(getSettings(state));
+
+export const getIsDefaultMetabaseLogo = (state: State) =>
+  getLogoUrl(state) === DEFAULT_LOGO_URL;
+
+export const getLoadingMessage = (state: State) => {
+  const setting = getSetting(state, "loading-message");
+  // default to empty string to account for a historical bug where the
+  // setting could be set via MB_LOADING_MESSAGE to a value not in our enum
+  return LOADING_MESSAGE_BY_SETTING[setting]?.value ?? (() => "");
+};
+
+// eslint-disable-next-line metabase/no-literal-metabase-strings -- This is a Metabase string we want to keep. It's used for comparison.
+const DEFAULT_APPLICATION_NAME = "Metabase";
+export const getIsWhiteLabeling = (state: State) =>
+  getApplicationName(state) !== DEFAULT_APPLICATION_NAME;
+
+export function getApplicationName(state: State) {
+  return getSetting(state, "application-name");
+}
+
+export function getShowMetabaseLinks(state: State) {
+  return getSetting(state, "show-metabase-links");
+}
+
+export function getLoginPageIllustration(state: State): IllustrationValue {
+  // Unjustified type cast. FIXME
+  const illustrationOption = getSetting(
+    state,
+    "login-page-illustration",
+  ) as IllustrationSettingValue;
+
+  switch (illustrationOption) {
+    case "default":
+      return {
+        src: bridgeImage,
+        isDefault: true,
+      };
+
+    case "none":
+      return null;
+
+    case "custom": {
+      const src = getCustomIllustrationUrl(
+        state,
+        "login-page-illustration-custom",
+      );
+      return src ? { src, isDefault: false } : null;
+    }
+  }
+}
+
+export function getLandingPageIllustration(state: State): IllustrationValue {
+  // Unjustified type cast. FIXME
+  const illustrationOption = getSetting(
+    state,
+    "landing-page-illustration",
+  ) as IllustrationSettingValue;
+
+  switch (illustrationOption) {
+    case "default":
+      return {
+        src: bridgeImage,
+        isDefault: true,
+      };
+
+    case "none":
+      return null;
+
+    case "custom": {
+      const src = getCustomIllustrationUrl(
+        state,
+        "landing-page-illustration-custom",
+      );
+      return src ? { src, isDefault: false } : null;
+    }
+  }
+}
+
+export function getNoDataIllustration(state: State): string | null {
+  // Unjustified type cast. FIXME
+  const illustrationOption = getSetting(
+    state,
+    "no-data-illustration",
+  ) as IllustrationSettingValue;
+
+  switch (illustrationOption) {
+    case "default":
+      return noResultsSource;
+
+    case "none":
+      return null;
+
+    case "custom":
+      return (
+        getCustomIllustrationUrl(state, "no-data-illustration-custom") ?? null
+      );
+  }
+}
+
+export function getNoObjectIllustration(state: State): string | null {
+  // Unjustified type cast. FIXME
+  const illustrationOption = getSetting(
+    state,
+    "no-object-illustration",
+  ) as IllustrationSettingValue;
+
+  switch (illustrationOption) {
+    case "default":
+      return noResultsSource;
+
+    case "none":
+      return null;
+
+    case "custom":
+      return (
+        getCustomIllustrationUrl(state, "no-object-illustration-custom") ?? null
+      );
+  }
+}

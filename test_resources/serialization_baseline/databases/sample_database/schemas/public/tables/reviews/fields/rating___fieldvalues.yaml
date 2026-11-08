@@ -1,0 +1,15 @@
+field_id:
+- Sample Database
+- PUBLIC
+- REVIEWS
+- RATING
+human_readable_values: []
+type: full
+values:
+- 1
+- 2
+- 3
+- 4
+- 5
+serdes/meta:
+- model: FieldValues

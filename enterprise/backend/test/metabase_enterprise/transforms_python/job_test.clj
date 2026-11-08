@@ -1,0 +1,80 @@
+(ns ^:mb/driver-tests ^:mb/transforms-python-test metabase-enterprise.transforms-python.job-test
+  (:require
+   [clojure.test :refer :all]
+   [metabase.driver :as driver]
+   [metabase.lib.metadata :as lib.metadata]
+   [metabase.task.core :as task]
+   [metabase.test :as mt]
+   [metabase.transforms.jobs :as jobs]
+   [metabase.transforms.models.transform-run :as transform-run]
+   [metabase.transforms.schedule :as transforms.schedule]
+   [metabase.transforms.test-dataset :as transforms-dataset]
+   [metabase.transforms.test-util :as transforms.tu]
+   [metabase.util :as u]
+   [toucan2.core :as t2]))
+
+(deftest python-transform-scheduled-job-test
+  (mt/test-helpers-set-global-values!
+    (mt/with-temp-scheduler!
+      (task/init! ::transforms.schedule/RunTransform)
+      (mt/test-drivers #{:postgres}
+        (mt/with-premium-features #{:transforms-python :transforms-basic :hosting}
+          (mt/dataset transforms-dataset/transforms-test
+            (transforms.tu/with-transform-cleanup! [target {:type   "table"
+                                                            :schema (t2/select-one-fn :schema :model/Table :id (mt/id :transforms_products))
+                                                            :name   "target_table"}]
+              (mt/with-temp
+                [:model/TransformTag {tag-id :id}       {:name "every second"}
+                 :model/Transform    {transform-id :id} {:name   "Gadget Products"
+                                                         :source {:type  :python
+                                                                  :source-database (mt/id)
+                                                                  :source-tables [(transforms.tu/source-table-entry "transforms_customers" (mt/id :transforms_customers))]
+                                                                  :body  (str "import pandas as pd\n"
+                                                                              "\n"
+                                                                              "def transform():\n"
+                                                                              "    return pd.DataFrame({'name': ['Alice', 'Bob'], 'age': [25, 30]})")}
+                                                         :target  (assoc target :database (mt/id))}
+                 :model/TransformTransformTag   _  {:transform_id transform-id :tag_id tag-id :position 0}
+                 :model/TransformJob {job-id :id :as job} {:schedule "* * * * * ? *"}
+                 :model/TransformJobTransformTag _ {:job_id job-id :tag_id tag-id :position 0}]
+                (transforms.schedule/initialize-job! job)
+                (transforms.schedule/update-job! job-id "* * * * * ? *")
+                (is (true? (u/poll {:thunk   (fn [] (driver/table-exists? driver/*driver* (lib.metadata/database (mt/metadata-provider)) target))
+                                    :done?   true?
+                                    :timeout-ms 20000
+                                    :interval-ms 1000})))
+                (is (true? (u/poll {:thunk   (fn [] (t2/exists? :model/Table :name (:name target)))
+                                    :done?   true?
+                                    :timeout-ms 10000
+                                    :interval-ms 1000})))))))))))
+
+(def ^:private python-source {:type :python :source-tables [] :body "pass"})
+
+(deftest run-transform-feature-flag-test
+  (testing "Python transforms are skipped without :transforms-python feature"
+    (mt/with-premium-features #{:transforms-basic}
+      (mt/with-temp [:model/Transform {transform-id :id} {:name   "Test Python Transform"
+                                                          :source python-source
+                                                          :target {:type "table" :name "python_feature_flag_target"}}]
+        (let [python-transform (t2/select-one :model/Transform :id transform-id)
+              run-id           101]
+          (mt/with-log-messages-for-level [messages [metabase.transforms.jobs :warn]]
+            (mt/with-dynamic-fn-redefs [transform-run/running-run-for-transform-id (constantly nil)]
+              (#'jobs/run-transform! {:plan              []
+                                      :deps              {}
+                                      :parent-run        [:job run-id]
+                                      :run-gone?         (constantly false)
+                                      :run-method        :cron
+                                      :user-id           nil
+                                      :add-run-activity! (constantly nil)
+                                      :lanes             {:sql 1 :py 1}
+                                      :timeout-ms        1000}
+                                     (promise)
+                                     python-transform)
+              (is (= 1 (count (messages)))
+                  "Should log exactly one warning")
+              (is (= :warn (:level (first (messages))))
+                  "Should log at warn level")
+              (is (re-matches (re-pattern (str ".*Skip running transform " transform-id " due to lacking premium features.*"))
+                              (:message (first (messages))))
+                  "Warning message should indicate transform was skipped due to missing features"))))))))

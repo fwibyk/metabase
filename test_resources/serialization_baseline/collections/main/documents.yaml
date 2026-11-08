@@ -1,0 +1,5 @@
+name: Documents
+entity_id: cOlDoCuMeNtS0ExAmPlx2
+slug: documents
+serdes/meta:
+- model: Collection

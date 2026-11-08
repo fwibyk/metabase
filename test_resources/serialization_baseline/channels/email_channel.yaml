@@ -1,0 +1,8 @@
+description: Email notification channel
+details:
+  host: smtp.example.com
+  port: 587
+name: Email Channel
+type: channel/email
+serdes/meta:
+- model: Channel

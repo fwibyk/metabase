@@ -1,0 +1,12 @@
+name: hourly_product_stats
+display_name: Hourly Product Stats
+db_id: Sample Database
+schema: TRANSFORMS
+active: false
+field_order: database
+initial_sync_status: complete
+serdes/meta:
+- model: Table
+data_authority: computed
+data_layer: internal
+data_source: metabase-transform

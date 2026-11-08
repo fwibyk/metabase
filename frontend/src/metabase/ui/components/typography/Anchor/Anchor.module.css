@@ -1,0 +1,7 @@
+.root {
+  color: var(--mb-color-text-brand-strong);
+
+  &:hover {
+    color: var(--mb-color-text-brand-strong-hover);
+  }
+}

@@ -1,0 +1,12 @@
+built_in_type: weekly
+description: Executes transforms tagged with 'weekly' once per week
+entity_id: lXIFa2SUrXLgaLZJx33oU
+job_tags:
+- entity_id: lXIFa2SUrXLgaLZJx33oU
+  position: 0
+  tag_id: qPGCJu7t97kn-X07_fgSj
+name: Weekly job
+schedule: 0 0 0 ? * 1 *
+ui_display_type: cron/builder
+serdes/meta:
+- model: TransformJob

@@ -1,0 +1,138 @@
+// eslint-disable-next-line eslint-js/no-restricted-imports -- We sometimes need css-in-js in the SDK
+import { Global } from "@emotion/react";
+import { useContext, useId, useMemo } from "react";
+
+import { UnsupportedReactVersionError } from "embedding-sdk-bundle/components/private/UnsupportedReactVersionError/UnsupportedReactVersionError";
+import { DEFAULT_FONT } from "embedding-sdk-bundle/config";
+import { useEmbeddingThemeOverride } from "embedding-sdk-bundle/hooks/private/use-embedding-theme-override";
+import { isHostReactVersionSupported } from "embedding-sdk-bundle/lib/host-react-version";
+import type { SdkStore } from "embedding-sdk-bundle/store/types";
+import { EnsureSingleInstance } from "embedding-sdk-shared/components/EnsureSingleInstance/EnsureSingleInstance";
+import {
+  type MetabaseEmbeddingTheme,
+  isEmbeddingThemeV1,
+  isEmbeddingThemeV2,
+} from "metabase/embedding-sdk/theme";
+import { MetabaseReduxProvider, useSelector } from "metabase/redux";
+import { useSetting } from "metabase/settings";
+import { getFont } from "metabase/styled-components/selectors";
+import { getMetabaseSdkCssVariables } from "metabase/styled-components/theme/css-variables";
+import { ThemeProvider, useMantineTheme } from "metabase/ui";
+import { ThemeProviderContext } from "metabase/ui/components/theme/ThemeProvider/context";
+import type { ResolvedColorScheme } from "metabase/utils/color-scheme";
+
+interface Props {
+  theme?: MetabaseEmbeddingTheme;
+  children: React.ReactNode;
+}
+
+const getResolvedColorSchemeFromTheme = (
+  theme: MetabaseEmbeddingTheme | undefined,
+): ResolvedColorScheme | undefined => {
+  if (!isEmbeddingThemeV1(theme)) {
+    return undefined;
+  }
+  return theme.preset === "dark" || theme.preset === "light"
+    ? theme.preset
+    : undefined;
+};
+
+export const SdkThemeProvider = ({ theme, children }: Props) => {
+  const themeOverride = useEmbeddingThemeOverride(theme);
+
+  const resolvedColorScheme = getResolvedColorSchemeFromTheme(theme);
+
+  const whitelabelColors = useSetting("application-colors");
+
+  const themeBrandColor = isEmbeddingThemeV2(theme)
+    ? (theme.colors?.["core-brand"] ?? theme.colors?.brand)
+    : theme?.colors?.brand;
+
+  const hasCustomBrandColor = Boolean(
+    themeBrandColor ?? whitelabelColors?.brand,
+  );
+
+  const { withCssVariables, withGlobalClasses } =
+    useContext(ThemeProviderContext);
+
+  const ensureSingleInstanceId = useId();
+
+  return (
+    <EnsureSingleInstance
+      groupId="sdk-theme-provider"
+      instanceId={ensureSingleInstanceId}
+    >
+      {({ isInstanceToRender }) => (
+        <ThemeProviderContext.Provider
+          value={{
+            withCssVariables: withCssVariables ?? isInstanceToRender,
+            withGlobalClasses: withGlobalClasses ?? isInstanceToRender,
+          }}
+        >
+          <ThemeProvider
+            theme={themeOverride}
+            resolvedColorScheme={resolvedColorScheme}
+            cssVariablesSelector=".mb-wrapper"
+            forceDynamicBrandRamp={hasCustomBrandColor}
+          >
+            {isInstanceToRender && (
+              <GlobalSdkCssVariables
+                forceDynamicBrandRamp={hasCustomBrandColor}
+              />
+            )}
+
+            {children}
+          </ThemeProvider>
+        </ThemeProviderContext.Provider>
+      )}
+    </EnsureSingleInstance>
+  );
+};
+
+/**
+ * `SdkThemeProvider` reads whitelabel colors and the font from the SDK redux
+ * store, so it can only render under a redux provider. Hosts that sit outside
+ * the SDK component tree (the data-app dev preview reaches this through the
+ * bundle global) use this variant, which brings its own provider — the same
+ * pattern as `MetabotSubscriber`.
+ */
+export const SdkThemeProviderWithStore = ({
+  store,
+  theme,
+  children,
+}: Props & { store: SdkStore }) => {
+  // The data-app dev preview is the whole page, so the error replaces it
+  // rather than rendering the app without its providers.
+  if (!isHostReactVersionSupported()) {
+    return <UnsupportedReactVersionError />;
+  }
+
+  return (
+    <MetabaseReduxProvider store={store}>
+      <SdkThemeProvider theme={theme}>{children}</SdkThemeProvider>
+    </MetabaseReduxProvider>
+  );
+};
+
+function GlobalSdkCssVariables({
+  forceDynamicBrandRamp,
+}: {
+  forceDynamicBrandRamp: boolean;
+}) {
+  const theme = useMantineTheme();
+  const whitelabelColors = useSetting("application-colors");
+
+  // the default is needed for when the sdk can't connect to the instance and get the default from there
+  const font = useSelector(getFont) ?? DEFAULT_FONT;
+
+  const styles = useMemo(() => {
+    return getMetabaseSdkCssVariables({
+      theme,
+      font,
+      whitelabelColors,
+      forceDynamicBrandRamp,
+    });
+  }, [theme, font, whitelabelColors, forceDynamicBrandRamp]);
+
+  return <Global styles={styles} />;
+}

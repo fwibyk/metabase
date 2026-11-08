@@ -1,0 +1,15 @@
+collection_id: cOlMiNiMaL000ExAmPlx2
+creator_id: admin@example.com
+entity_id: jqbQYdaqb_vXFlZnjvshP
+events:
+- creator_id: admin@example.com
+  entity_id: UlA1lYjo2tSI6497Ovj_4
+  icon: star
+  name: First Event
+  time_matters: true
+  timestamp: '2020-04-11T00:00:00Z'
+  timezone: US/Pacific
+icon: star
+name: Populated Timeline
+serdes/meta:
+- model: Timeline

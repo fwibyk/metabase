@@ -1,0 +1,698 @@
+import { clone } from "metabase/utils/clone";
+const { H } = cy;
+
+import * as SQLFilter from "../native/helpers/e2e-sql-filter-helpers";
+
+import {
+  questionDetails as questionDetails2,
+  questionDetailsWithDefaults,
+} from "./shared/embedding-dashboard";
+import { questionDetails } from "./shared/embedding-native";
+
+describe("scenarios > embedding > native questions", () => {
+  beforeEach(() => {
+    H.restore();
+    cy.signInAsAdmin();
+  });
+
+  context("UI", () => {
+    function createAndVisitQuestion({ requiredTagName, defaultValue } = {}) {
+      const details = clone(questionDetails);
+
+      if (requiredTagName) {
+        details.native["template-tags"][requiredTagName].default = defaultValue;
+        details.native["template-tags"][requiredTagName].required = true;
+      }
+
+      H.createNativeQuestion(details, {
+        wrapId: true,
+        visitQuestion: true,
+      });
+
+      cy.get("@questionId").then((questionId) => {
+        H.openLegacyStaticEmbeddingModal({
+          resource: "question",
+          resourceId: questionId,
+          activeTab: "parameters",
+        });
+      });
+    }
+
+    it("should not display disabled parameters", () => {
+      createAndVisitQuestion();
+
+      H.publishChanges("card", ({ request }) => {
+        assert.deepEqual(request.body.embedding_params, {
+          id: "disabled",
+          state: "disabled",
+          created_at: "disabled",
+          total: "disabled",
+          source: "disabled",
+          product_id: "disabled",
+        });
+      });
+
+      H.visitIframe();
+
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.contains("Lora Cronin");
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.contains("Organic");
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.contains("39.58");
+
+      H.filterWidget().should("not.exist");
+    });
+
+    it("should display and work with enabled parameters while hiding the locked one", () => {
+      createAndVisitQuestion();
+
+      cy.log(
+        "should (dis)allow setting parameters as required for a published embedding",
+      );
+      H.setEmbeddingParameter("Order ID", "Editable");
+      H.setEmbeddingParameter("Total", "Locked");
+
+      H.publishChanges("card");
+      H.closeStaticEmbeddingModal();
+
+      cy.findByTestId("native-query-editor-container")
+        .findByText("Open Editor")
+        .click();
+
+      cy.findByTestId("native-query-editor-action-buttons")
+        .icon("variable")
+        .click();
+
+      assertRequiredEnabledForName({ name: "id", enabled: true });
+      assertRequiredEnabledForName({ name: "total", enabled: true });
+      assertRequiredEnabledForName({ name: "created_at", enabled: false });
+      assertRequiredEnabledForName({ name: "source", enabled: false });
+      assertRequiredEnabledForName({ name: "state", enabled: false });
+      assertRequiredEnabledForName({ name: "product_id", enabled: false });
+
+      cy.log("should display and work with enabled parameters");
+      H.visitQuestion("@questionId");
+
+      cy.get("@questionId").then((questionId) => {
+        H.openLegacyStaticEmbeddingModal({
+          resource: "question",
+          resourceId: questionId,
+          activeTab: "parameters",
+          unpublishBeforeOpen: false,
+        });
+      });
+
+      H.assertEmbeddingParameter("Order ID", "Editable");
+      H.assertEmbeddingParameter("Total", "Locked");
+      H.setEmbeddingParameter("Created At", "Editable");
+      H.setEmbeddingParameter("State", "Editable");
+      H.setEmbeddingParameter("Product ID", "Editable");
+
+      H.publishChanges("card", ({ request }) => {
+        const actual = request.body.embedding_params;
+
+        const expected = {
+          id: "enabled",
+          created_at: "enabled",
+          total: "locked",
+          state: "enabled",
+          product_id: "enabled",
+          source: "disabled",
+        };
+
+        assert.deepEqual(actual, expected);
+      });
+
+      cy.get("@questionId").then((questionId) => {
+        const payload = {
+          resource: { question: questionId },
+          params: { total: [] },
+        };
+
+        H.visitEmbeddedPage(payload);
+      });
+
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.contains("Organic");
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.contains("Twitter").should("not.exist");
+
+      // Created At: Q2 2026
+      H.filterWidget().contains("Created At").click();
+      H.popover().within(() => {
+        cy.findByText(/20\d+/).click();
+        cy.contains("2026").click();
+      });
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.findByText("Q2").click();
+
+      // State: is not KS
+      H.filterWidget().contains("State").click();
+      cy.findByPlaceholderText("Search the list").type("KS{enter}");
+      cy.findAllByTestId(/-filter-value$/).should("have.length", 1);
+      cy.findByLabelText("KS").should("be.visible").click();
+      cy.button("Add filter").click();
+
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.findByText("Logan Weber").should("not.exist");
+
+      // Product ID is 10
+      cy.findByPlaceholderText("Product ID").type("10{enter}");
+
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.contains("Affiliate").should("not.exist");
+
+      // Let's try to remove one filter
+      H.filterWidget({ name: "Q2 2026" }).icon("close").click();
+
+      // Order ID is 926 - there should be only one result after this
+      H.filterWidget().contains("Order ID").click();
+      cy.findByPlaceholderText("Enter an ID").type("926");
+      cy.button("Add filter").click();
+
+      H.tableInteractiveBody().findAllByRole("row").should("have.length", 1);
+
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.findByText("December 29, 2027, 4:54 AM");
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.findByText("CO");
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.findByText("Sid Mills").should("not.exist");
+
+      cy.location("search")
+        .should("include", "product_id=10")
+        .and("include", "created_at=")
+        .and("include", "id=926")
+        .and("include", "state=KS");
+    });
+
+    it("should handle required parameters", () => {
+      createAndVisitQuestion({ requiredTagName: "total", defaultValue: [100] });
+
+      H.assertEmbeddingParameter("Total", "Editable");
+
+      cy.log(
+        "should let the user lock a text parameter to a specific value (metabase#20634)",
+      );
+      H.setEmbeddingParameter("Source", "Locked");
+      H.modal().findByPlaceholderText("Source").type("Organic{enter}");
+
+      H.publishChanges("card", ({ request }) => {
+        const actual = request.body.embedding_params;
+
+        // We only expect total to be "enabled" because the rest
+        // (except the locked source) weren't touched and therefore aren't changed,
+        // whereas "enabled" must be set by default for required params.
+        const expected = {
+          id: "disabled",
+          state: "disabled",
+          created_at: "disabled",
+          total: "enabled",
+          source: "locked",
+          product_id: "disabled",
+        };
+
+        assert.deepEqual(actual, expected);
+      });
+
+      H.visitIframe();
+
+      // Filter widget must be visible
+      H.filterWidget().should("have.length", 1).and("contain", "Total");
+
+      // And its default value must be in the URL
+      cy.location("search").should("eq", "?total=100");
+
+      H.tableInteractiveBody()
+        .should("contain", "Organic")
+        .and("not.contain", "Affiliate");
+    });
+  });
+
+  context("API", () => {
+    beforeEach(() => {
+      H.createNativeQuestion(questionDetails, {
+        wrapId: true,
+      });
+    });
+
+    it("should hide filters, set filter values via url and lock all parameters", () => {
+      cy.log("should hide filters via url");
+      cy.get("@questionId").then((questionId) => {
+        cy.request("PUT", `/api/card/${questionId}`, {
+          enable_embedding: true,
+          embedding_params: {
+            id: "enabled",
+            product_id: "enabled",
+            state: "enabled",
+            created_at: "enabled",
+            total: "enabled",
+          },
+        });
+
+        const payload = {
+          resource: { question: questionId },
+          params: {},
+        };
+
+        // It should be possible to both set the filter value and hide it at the same time.
+        // That's the synonymous to the locked filter.
+        H.visitEmbeddedPage(payload, {
+          setFilters: { id: 92 },
+          additionalHashOptions: {
+            hideFilters: ["id", "product_id", "state", "created_at", "total"],
+          },
+        });
+
+        H.tableInteractiveBody().findAllByRole("row").should("have.length", 1);
+        cy.findByText("92");
+
+        H.filterWidget().should("not.exist");
+      });
+
+      cy.log("should set multiple filter values via url");
+      cy.signInAsAdmin();
+      cy.get("@questionId").then((questionId) => {
+        cy.request("PUT", `/api/card/${questionId}`, {
+          enable_embedding: true,
+          embedding_params: {
+            created_at: "enabled",
+            source: "enabled",
+            state: "enabled",
+            total: "enabled",
+          },
+        });
+
+        const payload = {
+          resource: { question: questionId },
+          params: {},
+        };
+
+        H.visitEmbeddedPage(payload, {
+          setFilters: { created_at: "Q2-2028", source: "Organic", state: "OR" },
+        });
+
+        H.filterWidget()
+          .should("have.length", 4)
+          .and("contain", "OR")
+          .and("contain", "Q2 2028");
+        // Why do we use input field in one filter widget but a simple `span` in the other one?
+        cy.findByDisplayValue("Organic");
+
+        // Total's value should fall back to the default one (`0`) because we didn't set it explicitly
+        H.filterWidget({ name: "Total" }).should("contain", "0");
+
+        cy.contains("Emilie Goyette");
+        cy.contains("35.7");
+
+        // OTOH, we should also be able to override the default filter value by eplixitly setting it
+        H.visitEmbeddedPage(payload, {
+          setFilters: { total: 80 },
+        });
+
+        H.filterWidget({ name: "Total" }).should("contain", "80");
+
+        cy.contains("35.7").should("not.exist");
+      });
+
+      cy.log("should lock all parameters");
+      cy.signInAsAdmin();
+      cy.get("@questionId").then((questionId) => {
+        cy.request("PUT", `/api/card/${questionId}`, {
+          enable_embedding: true,
+          embedding_params: {
+            id: "locked",
+            product_id: "locked",
+            state: "locked",
+            created_at: "locked",
+            total: "locked",
+            source: "locked",
+          },
+        });
+
+        const payload = {
+          resource: { question: questionId },
+          params: {
+            id: [92, 96, 102, 104],
+            product_id: [140],
+            state: ["AK", "TX"],
+            created_at: "Q3-2027",
+            total: [10],
+            source: ["Organic"],
+          },
+        };
+
+        H.visitEmbeddedPage(payload);
+
+        H.tableInteractiveBody().findAllByRole("row").should("have.length", 1);
+        cy.findByText("66.8");
+
+        H.filterWidget().should("not.exist");
+      });
+    });
+  });
+
+  describe("locked parameters", () => {
+    beforeEach(() => {
+      const nameParameter = questionDetails2.native["template-tags"]["name"];
+      const sourceParameter =
+        questionDetails2.native["template-tags"]["source"];
+
+      H.createNativeQuestion(questionDetails2, {
+        wrapId: true,
+      });
+
+      cy.get("@questionId").then((questionId) => {
+        cy.request("PUT", `/api/card/${questionId}`, {
+          enable_embedding: true,
+          embedding_params: {
+            [nameParameter.name]: "enabled",
+            [sourceParameter.name]: "locked",
+          },
+        });
+      });
+    });
+
+    it("locked parameters should still render results in the preview by default and require a value in the JWT (metabase#47570)", () => {
+      H.visitQuestion("@questionId").then((id) => {
+        H.openLegacyStaticEmbeddingModal({
+          resource: "question",
+          resourceId: id,
+          activeTab: "parameters",
+          unpublishBeforeOpen: false,
+        });
+      });
+
+      H.visitIframe();
+
+      cy.log("should show card results by default");
+      cy.findByTestId("visualization-root")
+        .findByText("2,500")
+        .should("be.visible");
+      cy.findByRole("heading", { name: "test question" }).should("be.visible");
+
+      cy.log("locked parameters require a value to be specified in the JWT");
+      cy.get("@questionId").then((questionId) => {
+        const payload = {
+          resource: { question: questionId },
+          params: { source: null },
+        };
+
+        H.visitEmbeddedPage(payload);
+      });
+
+      // eslint-disable-next-line metabase/no-unscoped-text-selectors -- deprecated usage
+      cy.findByText("You must specify a value for :source in the JWT.").should(
+        "be.visible",
+      );
+    });
+  });
+
+  describe("locked numeric parameters (metabase#20845)", () => {
+    function getQuestionDetails(defaultValue = undefined) {
+      return {
+        name: "20845",
+        native: {
+          "template-tags": {
+            qty_locked: {
+              id: "6bd8d7be-bd5b-382c-cfa2-683461891663",
+              name: "qty_locked",
+              "display-name": "Qty locked",
+              type: "number",
+              required: defaultValue ? true : false,
+              default: defaultValue,
+            },
+          },
+          query:
+            "select count(*) from orders where true [[AND quantity={{qty_locked}}]]",
+        },
+        enable_embedding: true,
+        embedding_params: {
+          qty_locked: "locked",
+        },
+      };
+    }
+
+    it("locked parameter should work with numeric values, with and without a required filter with a default value", () => {
+      H.createNativeQuestion(getQuestionDetails(), {
+        wrapId: true,
+        idAlias: "questionId",
+      });
+      H.createNativeQuestion(getQuestionDetails("10"), {
+        wrapId: true,
+        idAlias: "requiredQuestionId",
+      });
+
+      [
+        { alias: "@questionId", label: "without a default value" },
+        {
+          alias: "@requiredQuestionId",
+          label: "with a required default value",
+        },
+      ].forEach(({ alias, label }) => {
+        cy.get(alias).then((questionId) => {
+          // This issue is not possible to reproduce using UI from this point on.
+          // We have to manually send the payload in order to make sure it works for both strings and integers.
+          ["string", "integer"].forEach((type) => {
+            cy.log(
+              `Make sure it works with ${type.toUpperCase()} in the payload ${label}`,
+            );
+
+            H.visitEmbeddedPage({
+              resource: { question: questionId },
+              params: {
+                qty_locked: type === "string" ? "15" : 15, // IMPORTANT: integer
+              },
+            });
+
+            H.tableInteractiveHeader("COUNT(*)");
+            cy.findByRole("gridcell").should("have.text", "5");
+          });
+        });
+      });
+    });
+  });
+});
+
+describe("scenarios > embedding > native questions with default parameters", () => {
+  beforeEach(() => {
+    H.restore();
+    cy.signInAsAdmin();
+
+    H.createNativeQuestion(questionDetailsWithDefaults, {
+      visitQuestion: true,
+      wrapId: true,
+    });
+
+    cy.get("@questionId").then((questionId) => {
+      H.openLegacyStaticEmbeddingModal({
+        resource: "question",
+        resourceId: questionId,
+        activeTab: "parameters",
+      });
+    });
+
+    // Note: ID is disabled
+    H.setEmbeddingParameter("Source", "Locked");
+    H.setEmbeddingParameter("Name", "Editable");
+    H.publishChanges("card", ({ request }) => {
+      assert.deepEqual(request.body.embedding_params, {
+        id: "disabled",
+        source: "locked",
+        name: "enabled",
+        user_id: "disabled",
+      });
+    });
+  });
+
+  it("card parameter defaults should apply for disabled parameters, but not for editable or locked parameters", () => {
+    cy.get("@questionId").then((questionId) => {
+      const payload = {
+        resource: { question: questionId },
+        params: { source: [] },
+      };
+
+      H.visitEmbeddedPage(payload);
+    });
+    // Remove default filter value
+    H.clearFilterWidget();
+    // The ID default (1, 2) should apply, because it is disabled.
+    // The Name default ('Lina Heaney') should not apply, because the Name param is editable and empty
+    // The Source default ('Facebook') should not apply because the param is locked but the value is unset
+    // If either the Name or Source default applied the result would be 0.
+    cy.findByTestId("scalar-value").invoke("text").should("eq", "2");
+  });
+});
+
+function assertRequiredEnabledForName({ name, enabled }) {
+  cy.findByTestId(`tag-editor-variable-${name}`).within(() => {
+    SQLFilter.getRequiredInput().should(
+      enabled ? "be.enabled" : "not.be.enabled",
+    );
+  });
+}
+
+// TODO:
+// - Add tests for embedding previews in both cases
+// - Add tests for disabled, editable and locked parameters in both cases
+// BONUS: Ideally add tests for email subscriptions with the filter applied
+describe("issue 27643", { tags: "@external" }, () => {
+  const PG_DB_ID = 2;
+  const TEMPLATE_TAG_NAME = "expected_invoice";
+  const getQuestionDetails = (fieldId) => {
+    return {
+      name: "27643",
+      database: PG_DB_ID,
+      native: {
+        query:
+          "SELECT * FROM INVOICES [[ where {{ expected_invoice }} ]] limit 1",
+        "template-tags": {
+          [TEMPLATE_TAG_NAME]: {
+            id: "3cfb3686-0d13-48db-ab5b-100481a3a830",
+            dimension: ["field", fieldId, null],
+            name: TEMPLATE_TAG_NAME,
+            "display-name": "Expected Invoice",
+            type: "dimension",
+            "widget-type": "string/=",
+          },
+        },
+      },
+      enable_embedding: true,
+      embedding_params: {
+        [TEMPLATE_TAG_NAME]: "enabled",
+      },
+    };
+  };
+
+  beforeEach(() => {
+    // This issue was only reproducible against the Postgres database.
+    H.restore("postgres-12");
+    cy.signInAsAdmin();
+    H.withDatabase(PG_DB_ID, ({ INVOICES }) => {
+      cy.wrap(INVOICES.EXPECTED_INVOICE).as(
+        "postgresInvoicesExpectedInvoiceId",
+      );
+    });
+  });
+
+  describe("should allow a dashboard filter to map to a boolean field filter parameter (metabase#27643)", () => {
+    beforeEach(() => {
+      const dashboardParameter = {
+        id: "2850aeab",
+        name: "Text filter for boolean field",
+        slug: "text_filter_for_boolean_field",
+        type: "string/=",
+      };
+
+      const dashboardDetails = {
+        name: "Dashboard with card with boolean field filter",
+        enable_embedding: true,
+        embedding_params: {
+          [dashboardParameter.slug]: "enabled",
+        },
+        parameters: [dashboardParameter],
+      };
+
+      cy.get("@postgresInvoicesExpectedInvoiceId")
+        .then((fieldId) => {
+          H.createNativeQuestionAndDashboard({
+            questionDetails: getQuestionDetails(fieldId),
+            dashboardDetails,
+          });
+        })
+        .then(({ body: dashboardCard }) => {
+          const { card_id, dashboard_id } = dashboardCard;
+
+          cy.wrap(dashboard_id).as("dashboardId");
+          cy.wrap(card_id).as("questionId");
+
+          const mapFilterToCard = {
+            parameter_mappings: [
+              {
+                parameter_id: dashboardParameter.id,
+                card_id,
+                target: ["dimension", ["template-tag", TEMPLATE_TAG_NAME]],
+              },
+            ],
+          };
+
+          H.editDashboardCard(dashboardCard, mapFilterToCard);
+        });
+    });
+
+    it("in static embedding and in public dashboard scenarios (metabase#27643-1)", () => {
+      cy.log("Test the dashboard");
+      H.visitDashboard("@dashboardId");
+      H.getDashboardCard().should("contain", "true");
+      H.toggleFilterWidgetValues(["false"]);
+      H.getDashboardCard().should("contain", "false");
+
+      cy.log("Test the embedded dashboard");
+      cy.get("@dashboardId").then((dashboard) => {
+        H.visitEmbeddedPage({
+          resource: { dashboard },
+          params: {},
+        });
+
+        H.getDashboardCard().should("contain", "true");
+        H.toggleFilterWidgetValues(["false"]);
+        H.getDashboardCard().should("contain", "false");
+      });
+
+      cy.log("Test the public dashboard");
+      cy.get("@dashboardId").then((dashboardId) => {
+        // We were signed out due to the previous visitEmbeddedPage
+        cy.signInAsAdmin();
+        H.visitPublicDashboard(dashboardId);
+
+        H.getDashboardCard().should("contain", "true");
+        H.toggleFilterWidgetValues(["false"]);
+        H.getDashboardCard().should("contain", "false");
+      });
+    });
+  });
+
+  describe("should allow a native question filter to map to a boolean field filter parameter (metabase#27643)", () => {
+    beforeEach(() => {
+      cy.get("@postgresInvoicesExpectedInvoiceId").then((fieldId) => {
+        H.createNativeQuestion(getQuestionDetails(fieldId), {
+          wrapId: true,
+          idAlias: "questionId",
+        });
+      });
+    });
+
+    it("in static embedding and in public question scenarios (metabase#27643-2)", () => {
+      cy.log("Test the question");
+      H.visitQuestion("@questionId");
+      cy.findAllByRole("gridcell").should("contain", "true");
+      H.toggleFilterWidgetValues(["false"]);
+      H.queryBuilderMain().button("Get Answer").click();
+      cy.findAllByRole("gridcell").should("contain", "false");
+
+      cy.log("Test the embedded question");
+      cy.get("@questionId").then((question) => {
+        H.visitEmbeddedPage({
+          resource: { question },
+          params: {},
+        });
+
+        cy.findAllByRole("gridcell").should("contain", "true");
+        H.toggleFilterWidgetValues(["false"]);
+        cy.findAllByRole("gridcell").should("contain", "false");
+      });
+
+      cy.log("Test the public question");
+      cy.get("@questionId").then((questionId) => {
+        // We were signed out due to the previous visitEmbeddedPage
+        cy.signInAsAdmin();
+        H.visitPublicQuestion(questionId);
+
+        cy.findAllByRole("gridcell").should("contain", "true");
+        H.toggleFilterWidgetValues(["false"]);
+        cy.findAllByRole("gridcell").should("contain", "false");
+      });
+    });
+  });
+});

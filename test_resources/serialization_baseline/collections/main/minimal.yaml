@@ -1,0 +1,5 @@
+name: Minimal
+entity_id: cOlMiNiMaL000ExAmPlx2
+slug: minimal
+serdes/meta:
+- model: Collection

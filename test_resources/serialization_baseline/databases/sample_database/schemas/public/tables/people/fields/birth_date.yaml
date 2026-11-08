@@ -1,0 +1,15 @@
+name: BIRTH_DATE
+display_name: Birth Date
+visibility_type: normal
+table_id:
+- Sample Database
+- PUBLIC
+- PEOPLE
+database_type: DATE
+base_type: type/Date
+effective_type: type/Date
+position: 9
+database_position: 9
+serdes/meta:
+- model: Field
+database_indexed: false

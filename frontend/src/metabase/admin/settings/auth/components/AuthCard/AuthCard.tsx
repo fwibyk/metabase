@@ -1,0 +1,204 @@
+import type { ReactNode } from "react";
+import { useCallback, useState } from "react";
+import { c, t } from "ttag";
+
+import { useGetEnvVarDocsUrl } from "metabase/admin/settings/utils";
+import { ConfirmModal } from "metabase/common/components/ConfirmModal";
+import { Link } from "metabase/common/components/Link";
+import { SettingsSection } from "metabase/settings-components";
+import {
+  ActionIcon,
+  Anchor,
+  Box,
+  Button,
+  Flex,
+  Icon,
+  Menu,
+  Text,
+  Title,
+} from "metabase/ui";
+import type { SettingDefinition } from "metabase-types/api";
+
+export interface AuthCardProps {
+  setting?: Pick<SettingDefinition, "is_env_setting" | "env_name">;
+  type: string;
+  name: string;
+  title?: string;
+  description: string;
+  isEnabled: boolean;
+  isConfigured: boolean;
+  onChange?: (value: boolean) => void;
+  onDeactivate?: () => void;
+}
+
+export const AuthCard = ({
+  setting,
+  type,
+  name,
+  title = name,
+  description,
+  isEnabled,
+  isConfigured,
+  onChange,
+  onDeactivate,
+}: AuthCardProps) => {
+  const isEnvSetting = setting?.is_env_setting;
+
+  const [isOpened, setIsOpened] = useState(false);
+
+  const handleOpen = useCallback(() => {
+    setIsOpened(true);
+  }, []);
+
+  const handleClose = useCallback(() => {
+    setIsOpened(false);
+  }, []);
+
+  const handleDeactivate = useCallback(async () => {
+    await onDeactivate?.();
+    handleClose();
+  }, [onDeactivate, handleClose]);
+
+  const { url: docsUrl } = useGetEnvVarDocsUrl(setting?.env_name);
+
+  const footer = isEnvSetting ? (
+    <Text>
+      {c("{0} is the name of a variable")
+        .jt`Set with env var ${<Anchor key="anchor" href={docsUrl} target="_blank">{`$${setting.env_name}`}</Anchor>}`}
+    </Text>
+  ) : null;
+
+  return (
+    <AuthCardBody
+      type={type}
+      title={title}
+      description={description}
+      isEnabled={isEnabled}
+      isConfigured={isConfigured && !isEnvSetting}
+      footer={footer}
+    >
+      {isConfigured && !isEnvSetting && onChange && (
+        <AuthCardMenu
+          isEnabled={isEnabled}
+          onChange={onChange}
+          onDeactivate={handleOpen}
+        />
+      )}
+      <ConfirmModal
+        opened={isOpened}
+        title={c("{0} is the name of an authentication service")
+          .t`Deactivate ${name}?`}
+        message={t`This will clear all your settings.`}
+        confirmButtonText={t`Deactivate`}
+        onConfirm={handleDeactivate}
+        onClose={handleClose}
+      />
+    </AuthCardBody>
+  );
+};
+
+interface AuthCardBodyProps {
+  type: string;
+  title: string;
+  description: string;
+  isEnabled: boolean;
+  isConfigured: boolean;
+  badgeText?: string;
+  buttonText?: string;
+  buttonEnabled?: boolean;
+  footer?: ReactNode;
+  children?: ReactNode;
+}
+
+export const AuthCardBody = ({
+  type,
+  title,
+  description,
+  isEnabled,
+  isConfigured,
+  badgeText,
+  buttonText,
+  footer,
+  children,
+}: AuthCardBodyProps) => {
+  const badgeContent = badgeText ?? (isEnabled ? t`Active` : t`Paused`);
+  const buttonLabel = buttonText ?? (isConfigured ? t`Edit` : t`Set up`);
+
+  return (
+    <SettingsSection>
+      <Box flex={1} maw="52rem" data-testid={`${type}-setting`}>
+        <Flex align="flex-end" gap="lg" mb="xxs">
+          <Title order={2} c="text-primary">
+            {title}
+          </Title>
+          {isConfigured && (
+            <Box
+              c={isEnabled ? "core-brand" : "feedback-negative"}
+              bg={
+                isEnabled
+                  ? "background_surface-brand-subtle"
+                  : "background_page-secondary"
+              }
+              py="xxs"
+              px="xs"
+              bdrs="xxs"
+              fw="bold"
+              data-testid="card-badge"
+            >
+              {badgeContent}
+            </Box>
+          )}
+          {children}
+        </Flex>
+        <Box c="text-primary" fz="md" lh="1.5rem" mb="lg" maw="40rem">
+          {description}
+        </Box>
+        {footer ? (
+          footer
+        ) : (
+          <Link to={`/admin/settings/authentication/${type}`}>
+            <Button>{buttonLabel}</Button>
+          </Link>
+        )}
+      </Box>
+    </SettingsSection>
+  );
+};
+
+interface AuthCardMenuProps {
+  isEnabled: boolean;
+  onChange: (isEnabled: boolean) => void;
+  onDeactivate?: () => void;
+}
+
+const AuthCardMenu = ({
+  isEnabled,
+  onChange,
+  onDeactivate,
+}: AuthCardMenuProps): JSX.Element => {
+  return (
+    <Menu position="bottom-end">
+      <Menu.Target>
+        <ActionIcon aria-label={t`Actions`} variant="subtle" ml="auto">
+          <Icon name="ellipsis" />
+        </ActionIcon>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Item
+          leftSection={<Icon name={isEnabled ? "pause" : "play"} aria-hidden />}
+          onClick={() => onChange(!isEnabled)}
+        >
+          {isEnabled ? t`Pause` : t`Resume`}
+        </Menu.Item>
+        {onDeactivate && (
+          <Menu.Item
+            leftSection={<Icon name="close" aria-hidden />}
+            onClick={onDeactivate}
+          >
+            {t`Deactivate`}
+          </Menu.Item>
+        )}
+      </Menu.Dropdown>
+    </Menu>
+  );
+};

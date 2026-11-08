@@ -1,0 +1,228 @@
+import path from "path";
+
+import {
+  getCSVWithHeaderRow,
+  uploadTranslationDictionaryViaAPI,
+} from "e2e/support/helpers/e2e-content-translation-helpers";
+
+import {
+  germanFieldNames,
+  multipleInvalidLocales,
+  nonAsciiFieldNames,
+  portugueseFieldNames,
+  stringTranslatedTwice,
+} from "./helpers/constants";
+import {
+  assertOnlyTheseTranslationsAreStored,
+  generateLargeCSV,
+  uploadTranslationDictionary,
+} from "./helpers/e2e-content-translation-helpers";
+
+const { H } = cy;
+
+describe("scenarios > admin > embedding > guest embeds> content translation", () => {
+  describe("oss", () => {
+    beforeEach(() => {
+      H.restore();
+      cy.signInAsAdmin();
+    });
+
+    it("admin settings configuration form is not present", () => {
+      cy.visit("/embedding/localization");
+      cy.findByTestId("content-translation-configuration").should("not.exist");
+    });
+  });
+
+  describe("ee", () => {
+    before(() => {
+      H.restore();
+      cy.signInAsAdmin();
+      H.activateToken("pro-self-hosted");
+      H.snapshot("snapshot-for-upload-and-download");
+    });
+
+    beforeEach(() => {
+      cy.intercept(
+        "POST",
+        "api/ee/content-translation/upload-dictionary",
+        cy.spy().as("uploadDictionarySpy"),
+      ).as("uploadDictionary");
+      // Unjustified type cast. FIXME
+      H.restore("snapshot-for-upload-and-download" as any);
+      cy.signInAsAdmin();
+    });
+
+    describe("The translation download button", () => {
+      it("downloads the stored translations", () => {
+        uploadTranslationDictionaryViaAPI(germanFieldNames);
+        cy.visit("/embedding/localization");
+        cy.findByTestId("content-translation-configuration")
+          .button(/Get translation dictionary template/i)
+          .click();
+        const downloadsFolder = Cypress.config("downloadsFolder");
+        cy.readFile(
+          path.join(downloadsFolder, "metabase-content-translations.csv"),
+        ).then((fileContents) => {
+          expect(fileContents).to.include("de,Rating,Bewertung");
+        });
+      });
+    });
+
+    describe("The translation upload form", () => {
+      it("accepts a CSV upload with non-ASCII characters and hyphenated locales", () => {
+        uploadTranslationDictionary([
+          ...nonAsciiFieldNames,
+          ...portugueseFieldNames,
+        ]);
+        cy.findByTestId("content-localization-setting").findByText(
+          "Dictionary uploaded",
+        );
+        nonAsciiFieldNames.forEach(({ locale, msgid, msgstr }) => {
+          assertOnlyTheseTranslationsAreStored(
+            [{ locale, msgid, msgstr }],
+            locale,
+          );
+        });
+
+        cy.log("accepts a CSV upload with a hyphenated locale (pt-BR)");
+        assertOnlyTheseTranslationsAreStored(portugueseFieldNames, "pt-BR");
+      });
+
+      it("does not store rows with translations made of only whitespace and/or semicolons", () => {
+        const blankTranslation = { locale: "de", msgid: "Cat", msgstr: "" };
+        const translationWithJustSpaces = {
+          locale: "de",
+          msgid: "Spaces",
+          msgstr: "  ",
+        };
+        const translationWithJustTabs = {
+          locale: "de",
+          msgid: "Tabs",
+          msgstr: "\t\t",
+        };
+        const translationWithJustSemicolons = {
+          locale: "de",
+          msgid: "Semicolons",
+          msgstr: ";;",
+        };
+        const translationsWithBlanks = [
+          ...germanFieldNames,
+          blankTranslation,
+          translationWithJustSpaces,
+          translationWithJustTabs,
+          translationWithJustSemicolons,
+        ];
+        uploadTranslationDictionary(translationsWithBlanks);
+        assertOnlyTheseTranslationsAreStored(germanFieldNames);
+      });
+
+      it("rejects a CSV upload that provides two translations for the same string", () => {
+        uploadTranslationDictionary(stringTranslatedTwice);
+        cy.findAllByRole("alert")
+          .contains(/couldn.*t upload the file/)
+          .should("exist");
+        cy.findAllByRole("alert")
+          .contains(
+            new RegExp(
+              `Row ${stringTranslatedTwice.length + 1}.*earlier in the file`,
+            ),
+          )
+          .should("exist");
+      });
+
+      it("accepts a CSV upload with ASCII characters, and erases previously stored translations when a new CSV is uploaded", () => {
+        uploadTranslationDictionary(germanFieldNames);
+
+        cy.log("accepts a CSV upload with ASCII characters");
+        cy.findByRole("status").findByText("Dictionary uploaded");
+        cy.findByTestId("content-localization-setting").findByText(
+          "Dictionary uploaded",
+        );
+        assertOnlyTheseTranslationsAreStored(germanFieldNames).then(() => {
+          cy.log(
+            "erases previously stored translations when a new CSV is uploaded",
+          );
+          const oneArabicFieldName = [nonAsciiFieldNames[0]];
+          uploadTranslationDictionary(oneArabicFieldName);
+          assertOnlyTheseTranslationsAreStored(oneArabicFieldName, "ar");
+
+          cy.log("the German translations from the first upload are gone");
+          assertOnlyTheseTranslationsAreStored([], "de");
+        });
+      });
+
+      it("rejects a CSV upload with invalid locales in multiple rows, without erasing previously stored translations", () => {
+        uploadTranslationDictionary(germanFieldNames);
+        assertOnlyTheseTranslationsAreStored(germanFieldNames);
+        uploadTranslationDictionary(multipleInvalidLocales);
+
+        cy.log("rejects a CSV upload with invalid locales in multiple rows");
+        cy.findAllByRole("alert")
+          .contains(/couldn.*t upload the file/)
+          .should("exist");
+        cy.log("The first error is in row 2 (the first row is the header)");
+        cy.findAllByRole("alert")
+          .contains(/Row 2: Invalid locale: ze/)
+          .should("exist");
+        cy.findAllByRole("alert")
+          .contains(/Row 5: Invalid locale: qe/)
+          .should("exist");
+
+        cy.log(
+          "does not erase previously stored translations when an upload fails",
+        );
+        assertOnlyTheseTranslationsAreStored(germanFieldNames);
+      });
+
+      it("rejects, in the frontend, a CSV upload that is too big", () => {
+        cy.visit("/embedding/localization");
+        cy.get("#content-translation-dictionary-upload-input").selectFile(
+          {
+            contents: Cypress.Buffer.from(
+              generateLargeCSV({ sizeInMebibytes: 1.6 }),
+            ),
+            fileName: "file.csv",
+            mimeType: "text/csv",
+          },
+          { force: true }, // We need this because the input has display: none
+        );
+
+        cy.findByRole("dialog", { name: /upload new dictionary/i })
+          .button("Replace existing dictionary")
+          .click();
+
+        cy.findAllByRole("alert")
+          .contains(/The file is larger than 1.5 MB/)
+          .should("exist");
+        cy.log(
+          "The frontend should prevent the upload attempt; the endpoint should not be called",
+        );
+        cy.get("@uploadDictionarySpy").should("not.have.been.called");
+      });
+
+      it("rejects invalid CSV", () => {
+        cy.visit("/embedding/localization");
+        const validCSV = getCSVWithHeaderRow(germanFieldNames);
+        const invalidCSV = validCSV + '\nde,Price,"Preis"X';
+
+        cy.get("#content-translation-dictionary-upload-input").selectFile(
+          {
+            contents: Cypress.Buffer.from(invalidCSV),
+            fileName: "file.csv",
+            mimeType: "text/csv",
+          },
+          { force: true },
+        );
+
+        cy.findByRole("dialog", { name: /upload new dictionary/i })
+          .button("Replace existing dictionary")
+          .click();
+        cy.findAllByRole("alert")
+          .contains(/CSV error/)
+          .should("exist");
+        cy.wait("@uploadDictionary");
+        cy.findByRole("status").findByText("Could not upload dictionary");
+      });
+    });
+  });
+});

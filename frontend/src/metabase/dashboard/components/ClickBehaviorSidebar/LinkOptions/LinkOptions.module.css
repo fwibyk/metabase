@@ -1,0 +1,13 @@
+.SelectedEntityPickerIcon {
+  border-color: transparent;
+}
+
+.SelectedEntityPickerContent {
+  font-weight: bold;
+}
+
+.ButtonLabel {
+  /* we need to show chevron on the right */
+  flex-grow: 1;
+  text-align: left;
+}

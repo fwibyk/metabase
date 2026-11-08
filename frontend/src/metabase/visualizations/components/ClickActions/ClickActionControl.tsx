@@ -1,0 +1,154 @@
+import { useDispatch } from "metabase/redux";
+import { Box, Button, Icon, Text, Tooltip } from "metabase/ui";
+import {
+  type ClickAction,
+  isCustomClickAction,
+  isCustomClickActionWithView,
+  isRegularClickAction,
+} from "metabase/visualizations/types";
+
+import S from "./ClickActionControl.module.css";
+
+interface Props {
+  action: ClickAction;
+  close: () => void;
+  onClick: (action: ClickAction) => void;
+}
+
+export const ClickActionControl = ({
+  action,
+  close,
+  onClick,
+}: Props): JSX.Element | null => {
+  const dispatch = useDispatch();
+
+  if (
+    !isRegularClickAction(action) &&
+    !isCustomClickAction(action) &&
+    !isCustomClickActionWithView(action)
+  ) {
+    return null;
+  }
+
+  const handleClick =
+    isCustomClickAction(action) && action.onClick
+      ? () =>
+          action.onClick?.({
+            dispatch,
+            closePopover: close,
+          })
+      : () => onClick(action);
+
+  if (isCustomClickActionWithView(action)) {
+    return action.view({ dispatch, closePopover: close });
+  }
+
+  const { buttonType } = action;
+
+  switch (buttonType) {
+    case "token-filter":
+      return (
+        <Button
+          variant="subtle"
+          size="sm"
+          onClick={handleClick}
+          className={S.tokenFilterActionButton}
+          leftSection={
+            typeof action.icon === "string" && (
+              <Icon
+                className={S.clickActionButtonIcon}
+                name={action.icon}
+                m={0}
+              />
+            )
+          }
+        >
+          {action.title}
+        </Button>
+      );
+
+    case "token":
+      return (
+        <Button
+          variant="subtle"
+          size="sm"
+          className={S.tokenFilterActionTokenButton}
+          onClick={handleClick}
+        >
+          {action.title}
+        </Button>
+      );
+
+    case "sort":
+      return (
+        <Tooltip label={action.tooltip}>
+          <Button
+            variant="subtle"
+            size="sm"
+            className={S.tokenFilterActionButton}
+            data-testid={`click-actions-sort-control-${action.name}`}
+            leftSection={
+              typeof action.icon === "string" ? (
+                <Icon size={14} name={action.icon} />
+              ) : undefined
+            }
+            onClick={handleClick}
+          />
+        </Tooltip>
+      );
+
+    case "formatting":
+      return (
+        <Tooltip label={action.tooltip}>
+          <Button
+            size="sm"
+            leftSection={
+              typeof action.icon === "string" ? (
+                <Icon name={action.icon} />
+              ) : undefined
+            }
+            onClick={handleClick}
+          />
+        </Tooltip>
+      );
+
+    case "horizontal":
+      return (
+        <Button
+          p="0.5rem"
+          mx="-0.5rem"
+          variant="subtle"
+          color="neutral"
+          classNames={{
+            root: S.horizontalButton,
+            label: S.label,
+            inner: S.inner,
+          }}
+          leftSection={
+            action.iconText ? (
+              <Box className={S.clickActionButtonTextIcon}>
+                {action.iconText}
+              </Box>
+            ) : action.icon ? (
+              <Icon
+                className={S.clickActionButtonIcon}
+                name={action.icon}
+                m={0}
+              />
+            ) : null
+          }
+          onClick={handleClick}
+        >
+          {action.title}
+          {action.subTitle && <Box>{action.subTitle}</Box>}
+        </Button>
+      );
+
+    case "info":
+      return (
+        <Text c="text-primary" fw="bold" lh="1.5rem" maw="10.75rem">
+          {action.title}
+        </Text>
+      );
+  }
+};

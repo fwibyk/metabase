@@ -1,0 +1,470 @@
+import userEvent from "@testing-library/user-event";
+
+import { setupEnterpriseOnlyPlugin } from "__support__/enterprise";
+import { setupBugReportingDetailsEndpoint } from "__support__/server-mocks";
+import { mockSettings } from "__support__/settings";
+import {
+  createMockAdminAppState,
+  createMockAdminState,
+} from "__support__/state";
+import { renderWithProviders, screen, waitFor, within } from "__support__/ui";
+import { dayjs } from "metabase/dayjs";
+import { Route } from "metabase/router";
+import type { HelpLinkSetting, TokenFeatures } from "metabase-types/api";
+import {
+  createMockMetabaseInfo,
+  createMockTokenFeatures,
+  createMockTokenStatus,
+  createMockUser,
+} from "metabase-types/api/mocks";
+
+import { AppSwitcher } from "./AppSwitcher";
+import type { CurrentApp } from "./useGetCurrentApp";
+
+jest.mock("metabase/common/monitor/analytics", () => ({
+  trackMonitorOpened: jest.fn(),
+}));
+
+const { trackMonitorOpened } = jest.requireMock(
+  "metabase/common/monitor/analytics",
+);
+
+const USER = createMockUser();
+
+const REGULAR_ITEMS = [
+  // Unjustified type cast. FIXME
+  USER.first_name as string,
+  USER.email,
+  "Help",
+  "Sign out",
+];
+const ADMIN_ITEMS = [...REGULAR_ITEMS, "Main app", "Admin"];
+const HOSTED_ITEMS = [...ADMIN_ITEMS];
+
+const WITH_AREAS = [...ADMIN_ITEMS, "Data studio", "Monitor", "Embedding hub"];
+
+const adminNavItem = {
+  getName: () => `People`,
+  path: "/admin/people",
+  key: "people",
+} as const;
+
+async function setup({
+  isAdmin = false,
+  isAnalyst = false,
+  isHosted = false,
+  isPaidPlan = true,
+  helpLinkSetting = "metabase",
+  helpLinkCustomDestinationSetting = "https://custom-destination.com/help",
+  instanceCreationDate = dayjs().toISOString(),
+  tokenFeatures = {},
+  applicationName,
+}: {
+  isAdmin?: boolean;
+  isAnalyst?: boolean;
+  isHosted?: boolean;
+  isPaidPlan?: boolean;
+  helpLinkSetting?: HelpLinkSetting;
+  helpLinkCustomDestinationSetting?: string;
+  instanceCreationDate?: string;
+  tokenFeatures?: Partial<TokenFeatures>;
+  applicationName?: string;
+} = {}) {
+  setupBugReportingDetailsEndpoint();
+
+  const settings = mockSettings({
+    "is-hosted?": isHosted,
+    "token-status": createMockTokenStatus({ valid: isPaidPlan }),
+    "help-link": helpLinkSetting,
+    "help-link-custom-destination": helpLinkCustomDestinationSetting,
+    "instance-creation": instanceCreationDate,
+    "token-features": createMockTokenFeatures(tokenFeatures),
+    ...(applicationName && {
+      "application-name": applicationName,
+      // A non-SVG data URI renders without a fetch of the whitelabel logo
+      "application-logo-url": "data:image/png;base64,iVBORw0KGgo=",
+    }),
+  });
+
+  if (applicationName) {
+    setupEnterpriseOnlyPlugin("whitelabel");
+  }
+
+  const admin = createMockAdminState({
+    app: createMockAdminAppState({
+      paths: isAdmin ? [adminNavItem] : [],
+    }),
+  });
+
+  renderWithProviders(
+    <>
+      <Route path="/" element={<AppSwitcher />} />
+      <Route path="/admin" element={<AppSwitcher />} />
+      <Route path="/data-studio" element={<AppSwitcher />} />
+      <Route path="/monitor" element={<AppSwitcher />} />
+      <Route path="/embedding" element={<AppSwitcher />} />
+    </>,
+    {
+      withRouter: true,
+      storeInitialState: {
+        admin,
+        settings,
+        currentUser: {
+          ...USER,
+          is_superuser: isAdmin,
+          is_data_analyst: isAnalyst,
+        },
+      },
+    },
+  );
+
+  await openProfileLink();
+}
+
+async function setupHosted(opts = {}) {
+  return setup({ ...opts, isHosted: true });
+}
+
+describe("ProfileLink", () => {
+  it("should render standard links", async () => {
+    await setup();
+
+    // Should always render a profile link
+    expect(
+      // Unjustified type cast. FIXME
+      await screen.findByText(USER.first_name as string),
+    ).toBeInTheDocument();
+    expect(await screen.findByText(USER.email)).toBeInTheDocument();
+
+    //Should render a help submenu
+    expect(
+      await screen.findByRole("menuitem", { name: "Help" }),
+    ).toBeInTheDocument();
+
+    // Should render logout
+    expect(
+      await screen.findByRole("menuitem", { name: "Sign out" }),
+    ).toBeInTheDocument();
+  });
+
+  describe("self-hosted", () => {
+    it("should show the proper set of items for normal users", async () => {
+      await setup({ isAdmin: false });
+
+      REGULAR_ITEMS.forEach((title) => {
+        expect(screen.getByText(title)).toBeInTheDocument();
+      });
+      expect(screen.queryByText("Admin settings")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("img", { name: /mode/i }),
+      ).not.toBeInTheDocument();
+
+      expect(screen.getByTestId("app-switcher-target")).toHaveTextContent("TT");
+    });
+
+    it("should show the proper set of items for admin users", async () => {
+      await setup({ isAdmin: true });
+
+      ADMIN_ITEMS.forEach((title) => {
+        expect(screen.getByText(title)).toBeInTheDocument();
+      });
+
+      expect(
+        await within(screen.getByTestId("app-switcher-target")).findByRole(
+          "img",
+          { name: /mode/ },
+        ),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe("current app", () => {
+    it("should update it's apps section as you navigate", async () => {
+      await setup({ isAdmin: true });
+
+      await assertActiveApp("main");
+
+      await userEvent.click(await getAdminMenuItem());
+      await openProfileLink();
+      await waitFor(() => assertActiveApp("admin"));
+
+      await userEvent.click(await getDataStudioMenuItem());
+      await openProfileLink();
+      await assertActiveApp("data-studio");
+
+      await userEvent.click(await getMonitorMenuItem());
+      await openProfileLink();
+      await assertActiveApp("monitor");
+
+      await userEvent.click(await getEmbeddingHubMenuItem());
+      await openProfileLink();
+      await assertActiveApp("embedding-hub");
+
+      await userEvent.click(await getMainAppMenuItem());
+      await openProfileLink();
+      await assertActiveApp("main");
+    });
+  });
+
+  describe("hosted", () => {
+    it("should show the proper set of items for normal users", async () => {
+      await setupHosted({ isAdmin: false });
+
+      REGULAR_ITEMS.forEach((title) => {
+        expect(screen.getByText(title)).toBeInTheDocument();
+      });
+      expect(screen.queryByText("Admin settings")).not.toBeInTheDocument();
+    });
+
+    it("should show the proper set of items for admin users", async () => {
+      await setupHosted({ isAdmin: true });
+
+      HOSTED_ITEMS.forEach((title) => {
+        expect(screen.getByText(title)).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe("with areas", () => {
+    it("should show data studio and monitor apps when appropriate", async () => {
+      await setup({ isAdmin: true });
+
+      WITH_AREAS.forEach((title) => {
+        expect(screen.getByText(title)).toBeInTheDocument();
+      });
+    });
+
+    it("should not show the embedding hub to non-admins", async () => {
+      await setup({ isAdmin: false });
+
+      expect(screen.queryByText("Embedding hub")).not.toBeInTheDocument();
+    });
+
+    it("should render the app entries in the designed order", async () => {
+      await setup({ isAdmin: true });
+
+      const appOrder = [
+        "Main app",
+        "Admin",
+        "Data studio",
+        "Monitor",
+        "Embedding hub",
+      ];
+      const menuItems = await screen.findAllByRole("menuitem");
+      const appMenuItems = menuItems.filter((menuItem) =>
+        appOrder.includes(menuItem.textContent ?? ""),
+      );
+
+      expect(appMenuItems.map((menuItem) => menuItem.textContent)).toEqual(
+        appOrder,
+      );
+    });
+
+    it("should show data studio and monitor for analysts when advanced-permissions is available", async () => {
+      await setup({
+        isAnalyst: true,
+        tokenFeatures: { advanced_permissions: true },
+      });
+
+      expect(screen.getByText("Data studio")).toBeInTheDocument();
+      expect(screen.getByText("Monitor")).toBeInTheDocument();
+    });
+
+    // Data Studio and Monitor diagnostics both come with the Data Analyst role rather than a
+    // permissions graph, so both pause while the plan lacks the feature.
+    it("should hide data studio and monitor from analysts when advanced-permissions is absent", async () => {
+      await setup({
+        isAnalyst: true,
+        tokenFeatures: { advanced_permissions: false },
+      });
+
+      expect(screen.queryByText("Data studio")).not.toBeInTheDocument();
+      expect(screen.queryByText("Monitor")).not.toBeInTheDocument();
+    });
+
+    it("should show data studio for admins when advanced-permissions is absent", async () => {
+      await setup({
+        isAdmin: true,
+        tokenFeatures: { advanced_permissions: false },
+      });
+
+      expect(screen.getByText("Data studio")).toBeInTheDocument();
+    });
+
+    it("tracks opening Monitor from the app switcher", async () => {
+      trackMonitorOpened.mockClear();
+      await setup({ isAdmin: true });
+
+      await userEvent.click(await getMonitorMenuItem());
+
+      expect(trackMonitorOpened).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("help submenu", () => {
+    describe("'How to use Metabase' link", () => {
+      it("should render if the instance was created more than 30 days ago", async () => {
+        await setup({
+          instanceCreationDate: dayjs().subtract(42, "days").toISOString(),
+        });
+        await openHelpSubmenu();
+
+        expect(screen.getByText("How to use Metabase")).toBeInTheDocument();
+      });
+
+      it("should not render for new instances (younger than 30 days)", async () => {
+        await setup({
+          instanceCreationDate: dayjs().subtract(14, "days").toISOString(),
+        });
+        await openHelpSubmenu();
+
+        expect(
+          screen.queryByText("How to use Metabase"),
+        ).not.toBeInTheDocument();
+      });
+    });
+
+    describe("help link", () => {
+      describe("when the setting is set to hidden", () => {
+        it("should return not be visible", async () => {
+          await setup({
+            helpLinkSetting: "hidden",
+          });
+          await openHelpSubmenu();
+
+          const link = screen.queryByRole("menuitem", { name: /get help/i });
+
+          expect(link).not.toBeInTheDocument();
+        });
+      });
+
+      describe("when the setting is `custom`", () => {
+        it("should return the custom destination", async () => {
+          await setup({
+            helpLinkSetting: "custom",
+            helpLinkCustomDestinationSetting: "https://custom.example.org/help",
+          });
+          await openHelpSubmenu();
+
+          const link = screen.getByRole("menuitem", { name: /get help/i });
+
+          expect(link).toBeInTheDocument();
+          expect(link).toHaveProperty(
+            "href",
+            "https://custom.example.org/help",
+          );
+        });
+      });
+
+      describe("when the setting is `metabase`", () => {
+        describe("when admin on paid plan", () => {
+          it("should return the default /help-premium link", async () => {
+            await setup({
+              isAdmin: true,
+              isPaidPlan: true,
+              helpLinkSetting: "metabase",
+            });
+
+            await openHelpSubmenu();
+
+            const link = screen.getByRole("menuitem", { name: /get help/i });
+
+            expect(link).toBeInTheDocument();
+            const mockBugReportDetails = encodeURIComponent(
+              JSON.stringify(createMockMetabaseInfo()),
+            );
+            const expected = `https://www.metabase.com/help-premium?utm_source=in-product&utm_medium=menu&utm_campaign=help&instance_version=v1&diag=${mockBugReportDetails}`;
+            await waitFor(() => expect(link).toHaveProperty("href", expected));
+
+            expect(link).toHaveProperty("href", expected);
+          });
+        });
+
+        describe("when non admin", () => {
+          it("should return the default /help link", async () => {
+            await setup({
+              isAdmin: false,
+              isPaidPlan: true,
+              helpLinkSetting: "metabase",
+            });
+
+            await openHelpSubmenu();
+
+            const link = screen.getByRole("menuitem", { name: /get help/i });
+
+            expect(link).toBeInTheDocument();
+            expect(link).toHaveProperty(
+              "href",
+              "https://www.metabase.com/help?utm_source=in-product&utm_medium=menu&utm_campaign=help&instance_version=v1",
+            );
+          });
+        });
+      });
+    });
+
+    it("should use the whitelabel application name in the About menu item and modal", async () => {
+      await setup({
+        applicationName: "New Test Co",
+        tokenFeatures: { whitelabel: true },
+      });
+      await openHelpSubmenu();
+
+      await userEvent.click(
+        screen.getByRole("menuitem", { name: "About New Test Co" }),
+      );
+
+      expect(
+        within(await screen.findByRole("dialog")).getByRole("heading", {
+          name: "Thanks for using New Test Co!",
+        }),
+      ).toBeInTheDocument();
+    });
+  });
+});
+
+const openProfileLink = async () => {
+  await userEvent.click(screen.getByTestId("app-switcher-target"));
+  await screen.findByRole("menu");
+};
+
+const openHelpSubmenu = async () =>
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Help" }));
+
+const assertActiveApp = async (current: CurrentApp) => {
+  expect(
+    await within(await getMainAppMenuItem()).findByRole("img", {
+      name: current === "main" ? /check_filled/i : /dashboard/i,
+    }),
+  ).toBeInTheDocument();
+  expect(
+    await within(await getAdminMenuItem()).findByRole("img", {
+      name: current === "admin" ? /check_filled/i : /io/i,
+    }),
+  ).toBeInTheDocument();
+  expect(
+    await within(await getDataStudioMenuItem()).findByRole("img", {
+      name: current === "data-studio" ? /check_filled/i : /table/i,
+    }),
+  ).toBeInTheDocument();
+  expect(
+    await within(await getMonitorMenuItem()).findByRole("img", {
+      name: current === "monitor" ? /check_filled/i : /pulse/i,
+    }),
+  ).toBeInTheDocument();
+  expect(
+    await within(await getEmbeddingHubMenuItem()).findByRole("img", {
+      name: current === "embedding-hub" ? /check_filled/i : /embed/i,
+    }),
+  ).toBeInTheDocument();
+};
+
+const getMainAppMenuItem = () =>
+  screen.findByRole("menuitem", { name: /main app/i });
+const getAdminMenuItem = () =>
+  screen.findByRole("menuitem", { name: /admin/i });
+const getDataStudioMenuItem = () =>
+  screen.findByRole("menuitem", { name: /data studio/i });
+const getMonitorMenuItem = () =>
+  screen.findByRole("menuitem", { name: /monitor/i });
+const getEmbeddingHubMenuItem = () =>
+  screen.findByRole("menuitem", { name: /embedding hub/i });

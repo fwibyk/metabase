@@ -1,0 +1,197 @@
+(ns metabase.server.routes.static-test
+  (:require
+   [clojure.string :as str]
+   [clojure.test :refer :all]
+   [metabase.server.routes.static :as static]))
+
+(set! *warn-on-reflection* true)
+
+(deftest ^:parallel parse-accept-encoding-nil-header-test
+  (testing "nil header returns identity-only defaults"
+    (is (= {:identity 1.0 :* 0.0}
+           (#'static/parse-accept-encoding nil)))))
+
+(deftest ^:parallel parse-accept-encoding-simple-test
+  (testing "single encoding without q-value defaults to 1.0"
+    (is (= {:identity 1.0 :* 0.0 :gzip 1.0}
+           (#'static/parse-accept-encoding "gzip")))))
+
+(deftest ^:parallel parse-accept-encoding-multiple-test
+  (testing "multiple encodings without q-values"
+    (is (= {:identity 1.0 :* 0.0 :gzip 1.0 :brotli 1.0}
+           (#'static/parse-accept-encoding "gzip, br")))))
+
+(deftest ^:parallel parse-accept-encoding-with-quality-test
+  (testing "encodings with explicit q-values"
+    (is (= {:identity 1.0 :* 0.0 :brotli 1.0 :gzip 0.5}
+           (#'static/parse-accept-encoding "br, gzip;q=0.5")))))
+
+(deftest ^:parallel parse-accept-encoding-identity-override-test
+  (testing "explicit identity q-value overrides the default"
+    (is (= {:identity 0.5 :* 0.0 :gzip 1.0}
+           (#'static/parse-accept-encoding "gzip, identity;q=0.5")))))
+
+(deftest ^:parallel parse-accept-encoding-wildcard-test
+  (testing "wildcard encoding is parsed"
+    (is (= {:identity 1.0 :* 0.5 :brotli 1.0}
+           (#'static/parse-accept-encoding "br, *;q=0.5")))))
+
+(deftest ^:parallel parse-accept-encoding-zero-quality-test
+  (testing "q=0 means encoding is explicitly refused"
+    (is (= {:identity 1.0 :* 0.0 :gzip 0.0 :brotli 1.0}
+           (#'static/parse-accept-encoding "gzip;q=0, br")))))
+
+(deftest ^:parallel parse-accept-encoding-whitespace-test
+  (testing "extra whitespace is tolerated"
+    (is (= {:identity 1.0 :* 0.0 :gzip 1.0 :brotli 0.8}
+           (#'static/parse-accept-encoding "  gzip ,  br ; q=0.8  ")))))
+
+(deftest ^:parallel parse-accept-encoding-unknown-encoding-test
+  (testing "unknown encodings are ignored"
+    (is (= {:identity 1.0 :* 0.0 :gzip 1.0}
+           (#'static/parse-accept-encoding "gzip, zstd")))))
+
+(defn- request-with-encoding [header-value]
+  {:headers {"accept-encoding" header-value}})
+
+(deftest ^:parallel accepts-encoding-basic-test
+  (testing "returns true when encoding is listed"
+    (is (true? (#'static/accepts-encoding? (request-with-encoding "gzip, br") :brotli)))
+    (is (true? (#'static/accepts-encoding? (request-with-encoding "gzip, br") :gzip)))))
+
+(deftest ^:parallel accepts-encoding-refused-test
+  (testing "returns false when encoding has q=0"
+    (is (false? (#'static/accepts-encoding? (request-with-encoding "gzip;q=0, br") :gzip)))))
+
+(deftest ^:parallel accepts-encoding-wildcard-fallback-test
+  (testing "falls back to wildcard when specific encoding not listed"
+    (is (true? (#'static/accepts-encoding? (request-with-encoding "*") :brotli)))
+    (is (true? (#'static/accepts-encoding? (request-with-encoding "*;q=0.5") :brotli)))))
+
+(deftest ^:parallel accepts-encoding-wildcard-zero-test
+  (testing "wildcard q=0 means unlisted encodings are refused"
+    (is (false? (#'static/accepts-encoding? (request-with-encoding "gzip, *;q=0") :brotli)))))
+
+(deftest ^:parallel accepts-encoding-no-header-test
+  (testing "missing header accepts identity only"
+    (is (true?  (#'static/accepts-encoding? {} :identity)))
+    (is (false? (#'static/accepts-encoding? {} :gzip)))
+    (is (false? (#'static/accepts-encoding? {} :brotli)))))
+
+(deftest ^:parallel static-resource-prefers-brotli-test
+  (testing "serves brotli when client supports it and .br file exists"
+    (let [response (static/static-resource
+                    (request-with-encoding "gzip, br")
+                    "static_test/app.js")]
+      (is (some? response))
+      (is (= "br" (get-in response [:headers "Content-Encoding"])))
+      (is (= "text/javascript" (get-in response [:headers "Content-Type"]))))))
+
+(deftest ^:parallel static-resource-falls-back-to-gzip-test
+  (testing "serves gzip when client doesn't support brotli"
+    (let [response (static/static-resource
+                    (request-with-encoding "gzip")
+                    "static_test/app.js")]
+      (is (some? response))
+      (is (= "gzip" (get-in response [:headers "Content-Encoding"]))))))
+
+(deftest ^:parallel static-resource-falls-back-to-identity-test
+  (testing "serves uncompressed when client refuses compressed encodings"
+    (let [response (static/static-resource
+                    (request-with-encoding "gzip;q=0, br;q=0")
+                    "static_test/app.js")]
+      (is (some? response))
+      (is (= "identity" (get-in response [:headers "Content-Encoding"]))))))
+
+(deftest ^:parallel static-resource-no-header-test
+  (testing "serves uncompressed when no Accept-Encoding header"
+    (let [response (static/static-resource {} "static_test/app.js")]
+      (is (some? response))
+      (is (= "identity" (get-in response [:headers "Content-Encoding"]))))))
+
+(deftest ^:parallel static-resource-missing-file-test
+  (testing "returns nil for a resource that doesn't exist"
+    (is (nil? (static/static-resource
+               (request-with-encoding "gzip, br")
+               "static_test/nonexistent.js")))))
+
+(deftest ^:parallel static-resource-sets-vary-header-test
+  (testing "response includes Vary: Accept-Encoding"
+    (let [response (static/static-resource
+                    (request-with-encoding "gzip, br")
+                    "static_test/app.js")]
+      (is (= "Accept-Encoding" (get-in response [:headers "Vary"]))))))
+
+(def ^:private static-handler
+  (static/precompressed-resources "/" {:root "frontend_client"}))
+
+(defn- get-static
+  ([path] (get-static path nil))
+  ([path validators]
+   (static-handler {:request-method :get
+                    :uri            path
+                    :route-params   {:* (subs path 1)}
+                    :headers        (or validators {})})))
+
+(defn- etag-of [path]
+  (get-in (get-static path) [:headers "ETag"]))
+
+(deftest ^:parallel static-resource-reports-its-own-last-modified-test
+  (testing "a static resource carries the time it was modified, not the time it was served"
+    (let [response (get-static "/index_template.html")]
+      (is (= 200 (:status response)))
+      (is (some? (get-in response [:headers "Last-Modified"]))))))
+
+(deftest ^:parallel static-resource-carries-a-strong-content-etag-test
+  (testing "a static resource is validated by a strong hash of its bytes"
+    (is (re-matches #"\"[0-9a-f]{64}\"" (etag-of "/index_template.html")))))
+
+(deftest ^:parallel static-resource-answers-conditional-request-test
+  (testing "a client that already holds the resource is answered without the body"
+    (let [response (get-static "/index_template.html"
+                               {"if-none-match" (etag-of "/index_template.html")})]
+      (is (= 304 (:status response)))
+      (is (str/blank? (:body response)))))
+  (testing "a client holding different bytes is sent the resource"
+    (let [response (get-static "/index_template.html" {"if-none-match" "\"not-the-one\""})]
+      (is (= 200 (:status response)))
+      (is (some? (:body response))))))
+
+(deftest ^:parallel static-resource-never-validates-on-a-date-test
+  (testing "a date validator alone is never enough for a 304, whichever way it points"
+    (doseq [held ["Tue, 03 Jul 2001 06:00:00 GMT"
+                  "Fri, 01 Jan 2100 00:00:00 GMT"
+                  (get-in (get-static "/index_template.html") [:headers "Last-Modified"])]]
+      (testing (str "if-modified-since " held)
+        (let [response (get-static "/index_template.html" {"if-modified-since" held})]
+          (is (= 200 (:status response)))
+          (is (some? (:body response))))))))
+
+(deftest ^:parallel each-encoding-is-validated-separately-test
+  (testing "every encoding is its own representation, so each carries its own validator"
+    (let [gzipped (static/static-resource (request-with-encoding "gzip") "static_test/app.js")
+          plain   (static/static-resource {} "static_test/app.js")]
+      (is (= "gzip" (get-in gzipped [:headers "Content-Encoding"])))
+      (is (re-matches #"[0-9a-f]{64}" (::static/content-hash plain)))
+      (is (not= (::static/content-hash gzipped)
+                (::static/content-hash plain))))))
+
+(deftest ^:parallel file-on-disk-is-hashed-on-every-request-test
+  (testing "a file on disk can change under a running dev process, so its hash is never memoised"
+    (let [file (doto (java.io.File/createTempFile "static-test" ".js") .deleteOnExit)
+          hash #(#'static/content-hash {:body file} "static_test/app.js")]
+      (spit file "one")
+      (let [before (hash)]
+        (spit file "two")
+        (is (not= before (hash)))))))
+
+(deftest ^:parallel not-modified-carries-only-cache-headers-test
+  (testing "a 304 echoes the headers that guide a cache and drops the metadata of a body it has no room for"
+    (let [served   (get-static "/index_template.html")
+          response (get-static "/index_template.html"
+                               {"if-none-match" (get-in served [:headers "ETag"])})]
+      (is (= 304 (:status response)))
+      (is (some? (get-in response [:headers "ETag"])))
+      (doseq [header ["Content-Type" "Content-Encoding" "Content-Length"]]
+        (testing header
+          (is (nil? (get-in response [:headers header]))))))))

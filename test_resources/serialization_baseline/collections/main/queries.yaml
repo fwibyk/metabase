@@ -1,0 +1,5 @@
+name: Queries
+entity_id: cOlQuErIeS0ExAmPlE2x1
+slug: queries
+serdes/meta:
+- model: Collection

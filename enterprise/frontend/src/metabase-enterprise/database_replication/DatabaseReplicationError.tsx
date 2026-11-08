@@ -1,0 +1,43 @@
+import { t } from "ttag";
+
+import { ExternalLink } from "metabase/common/components/ExternalLink";
+import { useSelector } from "metabase/redux";
+import { getShowMetabaseLinks } from "metabase/selectors/whitelabel";
+import { Button, Flex, Group, Icon, Stack, Text } from "metabase/ui";
+
+export const DatabaseReplicationError = ({
+  error,
+  onClose,
+}: {
+  error?: string;
+  onClose: () => void;
+}) => {
+  const showMetabaseLinks = useSelector(getShowMetabaseLinks);
+
+  return (
+    <Stack gap="xxl" mt="xxl">
+      <Text c="text-secondary" fz="md" lh="1.25rem">
+        {error || "Unknown error"}
+      </Text>
+
+      <Flex justify="end">
+        <Group align="center">
+          {showMetabaseLinks && (
+            <Button
+              component={ExternalLink}
+              rightSection={<Icon name="external" />}
+              role="link"
+              href="https://www.metabase.com/docs/latest/"
+            >
+              {t`Read the docs`}
+            </Button>
+          )}
+
+          <Button variant="filled" onClick={onClose}>
+            {t`Close`}
+          </Button>
+        </Group>
+      </Flex>
+    </Stack>
+  );
+};

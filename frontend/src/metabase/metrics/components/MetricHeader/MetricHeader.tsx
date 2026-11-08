@@ -1,0 +1,62 @@
+import type { ReactNode } from "react";
+
+import {
+  PaneHeader,
+  PanelHeaderTitle,
+} from "metabase/common/data-studio/components/PaneHeader";
+import type { MetricUrls } from "metabase/common/metrics/types";
+import { PLUGIN_MODERATION } from "metabase/plugins";
+import { Flex } from "metabase/ui";
+import type { Card } from "metabase-types/api";
+
+import { MetricNameInput } from "./MetricNameInput";
+import { MetricTabs } from "./MetricTabs";
+import { MetricToolbar } from "./MetricToolbar";
+
+interface MetricHeaderProps {
+  card: Card;
+  urls: MetricUrls;
+  actions?: ReactNode;
+  breadcrumbs?: ReactNode;
+  showAppSwitcher?: boolean;
+  showDataStudioLink: boolean;
+}
+
+export function MetricHeader({
+  card,
+  urls,
+  actions,
+  breadcrumbs,
+  showAppSwitcher = false,
+  showDataStudioLink,
+}: MetricHeaderProps) {
+  return (
+    <PaneHeader
+      data-testid="metric-header"
+      showAppSwitcher={showAppSwitcher}
+      title={
+        <Flex align="center" gap="sm">
+          {card.can_write ? (
+            <MetricNameInput card={card} />
+          ) : (
+            <PanelHeaderTitle>{card.name}</PanelHeaderTitle>
+          )}
+          <PLUGIN_MODERATION.EntityModerationIcon
+            moderationReviews={card.moderation_reviews}
+          />
+        </Flex>
+      }
+      icon="metric"
+      tabs={<MetricTabs card={card} urls={urls} />}
+      menu={
+        <MetricToolbar
+          card={card}
+          urls={urls}
+          showDataStudioLink={showDataStudioLink}
+        />
+      }
+      actions={actions}
+      breadcrumbs={breadcrumbs}
+    />
+  );
+}

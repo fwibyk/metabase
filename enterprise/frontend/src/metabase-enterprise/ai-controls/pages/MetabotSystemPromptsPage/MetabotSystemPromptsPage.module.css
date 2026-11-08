@@ -1,0 +1,20 @@
+/*
+ * 8rem accounts for the admin layout chrome above this wrapper (nav header +
+ * page top padding) plus a small gap below so the content doesn't touch the
+ * viewport edge.
+ */
+.wrapper {
+  height: calc(100dvh - 8rem);
+  overflow: hidden;
+}
+
+.editor {
+  flex: 1;
+  min-height: 0;
+  /* Keeps the editor's internal scroller inside the rounded border */
+  overflow: hidden;
+  padding: 1rem;
+  background-color: var(--mb-color-background_surface-primary);
+  border: 1px solid var(--mb-color-border);
+  border-radius: 0.5rem;
+}

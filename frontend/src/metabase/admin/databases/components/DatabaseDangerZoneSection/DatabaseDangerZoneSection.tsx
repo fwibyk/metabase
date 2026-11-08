@@ -1,0 +1,90 @@
+import { useDisclosure } from "@mantine/hooks";
+import { t } from "ttag";
+
+import { DeleteDatabaseModal } from "metabase/admin/databases/components/DeleteDatabaseModel/DeleteDatabaseModal";
+import { useDiscardDatabaseFieldValuesMutation } from "metabase/api";
+import { ConfirmModal } from "metabase/common/components/ConfirmModal";
+import { Button, Flex } from "metabase/ui";
+import { isSyncCompleted } from "metabase/utils/syncing";
+import type { Database, DatabaseId } from "metabase-types/api";
+
+import { DatabaseInfoSection } from "../DatabaseInfoSection";
+
+export const DatabaseDangerZoneSection = ({
+  isAdmin,
+  database,
+  deleteDatabase,
+}: {
+  isAdmin: boolean;
+  database: Database;
+  deleteDatabase: (databaseId: DatabaseId) => Promise<void>;
+}) => {
+  const [discardDatabaseFieldValues] = useDiscardDatabaseFieldValuesMutation();
+
+  const [isSavedFieldsModalOpen, saveFieldsModal] = useDisclosure(false);
+  const [isDeleteDbModalOpen, deleteDbModal] = useDisclosure(false);
+
+  const handleDiscardFieldValues = async () => {
+    return discardDatabaseFieldValues(database.id).then(() =>
+      saveFieldsModal.close(),
+    );
+  };
+
+  const handleDeleteDatabase = async () => {
+    return deleteDatabase(database.id).then(() => deleteDbModal.close());
+  };
+
+  const canDiscardFieldValues =
+    !database.is_attached_dwh && isSyncCompleted(database) && !database.is_stub;
+  const canDelete = !database.is_attached_dwh && isAdmin;
+
+  if (!canDiscardFieldValues && !canDelete) {
+    return null;
+  }
+
+  return (
+    <DatabaseInfoSection
+      name={t`Danger zone`}
+      description={t`Remove this database and other destructive actions.`}
+      data-testid="database-danger-zone-section"
+    >
+      <Flex gap="sm" wrap="wrap">
+        {canDiscardFieldValues && (
+          <>
+            <Button
+              variant="filled"
+              color="negative"
+              onClick={saveFieldsModal.open}
+            >{t`Discard saved field values`}</Button>
+            <ConfirmModal
+              opened={isSavedFieldsModalOpen}
+              title={t`Discard saved field values`}
+              onClose={saveFieldsModal.close}
+              onConfirm={handleDiscardFieldValues}
+              padding="xxl"
+              data-testid="discard-field-values-confirm-modal"
+            />
+          </>
+        )}
+        {canDelete && (
+          <>
+            <Button
+              variant="filled"
+              color="negative"
+              onClick={deleteDbModal.open}
+            >{t`Remove this database`}</Button>
+            <DeleteDatabaseModal
+              opened={isDeleteDbModalOpen}
+              title={t`Delete the ${database.name} database?`}
+              defaultDatabaseRemovalMessage={t`This will delete every saved question, model, metric, segment, and transform you’ve made that uses this data, and can’t be undone!`}
+              database={database}
+              onClose={deleteDbModal.close}
+              onDelete={handleDeleteDatabase}
+              data-testid="remove-database-confirm-modal"
+            />
+          </>
+        )}
+      </Flex>
+    </DatabaseInfoSection>
+  );
+};

@@ -1,0 +1,16 @@
+name: EAN
+display_name: Ean
+visibility_type: normal
+table_id:
+- Sample Database
+- PUBLIC
+- PRODUCTS
+database_type: CHARACTER VARYING
+base_type: type/Text
+effective_type: type/Text
+position: 1
+database_position: 1
+has_field_values: auto-list
+serdes/meta:
+- model: Field
+database_indexed: false

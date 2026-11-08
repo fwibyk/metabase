@@ -1,0 +1,12 @@
+name: PEOPLE
+display_name: People
+db_id: Sample Database
+schema: PUBLIC
+entity_type: entity/UserTable
+active: true
+field_order: database
+initial_sync_status: complete
+serdes/meta:
+- model: Table
+data_authority: unconfigured
+data_layer: internal

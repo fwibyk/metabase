@@ -1,0 +1,556 @@
+import { createMockStoreDashboard } from "__support__/state";
+import { INITIALIZE } from "metabase/redux/dashboard";
+import { createMockDashboard } from "metabase-types/api/mocks";
+
+import {
+  ADD_DASHCARD_IDS_TO_LOADING_QUEUE,
+  CLOSE_SIDEBAR,
+  FETCH_DASHBOARD_CARD_DATA,
+  REMOVE_PARAMETER,
+  SET_DASHBOARD_ATTRIBUTES,
+  SET_EDITING_DASHBOARD,
+  SET_SIDEBAR,
+  clearCardData,
+  fetchCardDataAction,
+  fetchDashboard,
+  markTimelineEventsShown,
+  selectTimelineEvents,
+  setDashCardTimelineEventsEnabled,
+  setDashCardTimelineEventsVisibility,
+} from "./actions";
+import { SIDEBAR_NAME } from "./constants";
+import { dashboardReducers as reducer } from "./reducers";
+import { timelineEvents } from "./reducers-typed";
+
+const TEST_DASHBOARD = createMockDashboard();
+
+describe("dashboard reducers", () => {
+  let initState: ReturnType<typeof reducer>;
+
+  beforeEach(() => {
+    initState = reducer(undefined, { type: "__INIT__" });
+  });
+
+  it("should return the initial state", () => {
+    expect(initState).toEqual({
+      dashboardId: null,
+      selectedTabId: null,
+      dashboards: {},
+      dashcardData: {},
+      dashcards: {},
+      linkTargets: { questions: {}, dashboards: {} },
+      isAddParameterPopoverOpen: false,
+      isNavigatingBackToDashboard: false,
+      editingDashboard: null,
+      loadingDashCards: {
+        loadingIds: [],
+        startTime: null,
+        endTime: null,
+        loadingStatus: "idle",
+      },
+      parameterValues: {},
+      draftParameterValues: {},
+      sidebar: { props: {} },
+      timelineEvents: {
+        overrides: {},
+        enabledByDashCard: {},
+        selection: null,
+        hasTrackedEventsShown: false,
+      },
+      slowCards: {},
+      loadingControls: {
+        isLoading: false,
+      },
+      missingActionParameters: null,
+      autoApplyFilters: {
+        toastId: null,
+        toastDashboardId: null,
+      },
+      tabDeletions: {},
+    });
+  });
+
+  describe("SET_SIDEBAR", () => {
+    it("should set the sidebar", () => {
+      expect(
+        reducer(undefined, {
+          type: SET_SIDEBAR,
+          payload: { name: "sharing", props: { abc: 123 } },
+        }),
+      ).toEqual({
+        ...initState,
+        sidebar: { name: "sharing", props: { abc: 123 } },
+      });
+    });
+
+    it("should default `props` to an object", () => {
+      expect(
+        reducer(undefined, {
+          type: SET_SIDEBAR,
+          payload: { name: "sharing" },
+        }),
+      ).toEqual({
+        ...initState,
+        sidebar: { name: "sharing", props: {} },
+      });
+    });
+  });
+
+  describe("CLOSE_SIDEBAR", () => {
+    it("should return `sidebar` to initial state", () => {
+      expect(
+        reducer(
+          {
+            ...initState,
+            sidebar: { name: "sharing", props: { abc: 123 } },
+          },
+          {
+            type: CLOSE_SIDEBAR,
+          },
+        ),
+      ).toEqual(initState);
+    });
+  });
+
+  describe("INITIALIZE", () => {
+    it("should return `sidebar` to initial state", () => {
+      expect(
+        reducer(
+          {
+            ...initState,
+            sidebar: { name: "sharing", props: { abc: 123 } },
+          },
+          {
+            type: INITIALIZE,
+          },
+        ),
+      ).toEqual({ ...initState, editingDashboard: null });
+    });
+
+    it("should return unchanged state if `clearCache: false` passed", () => {
+      expect(
+        reducer(
+          {
+            ...initState,
+            draftParameterValues: {
+              "60bca071": ["Gadget", "Doohickey", "Gizmo"],
+            },
+          },
+          {
+            type: INITIALIZE,
+            payload: {
+              clearCache: false,
+            },
+          },
+        ),
+      ).toEqual({
+        ...initState,
+        draftParameterValues: {
+          "60bca071": ["Gadget", "Doohickey", "Gizmo"],
+        },
+      });
+    });
+
+    it("should reset state if `clearCache`: false` is not passed", () => {
+      expect(
+        reducer(
+          {
+            ...initState,
+            draftParameterValues: {
+              "60bca071": ["Gadget", "Doohickey", "Gizmo"],
+            },
+          },
+          {
+            type: INITIALIZE,
+          },
+        ),
+      ).toEqual(initState);
+    });
+  });
+
+  describe("SET_EDITING_DASHBOARD", () => {
+    it("should clear sidebar state when entering edit mode", () => {
+      const state = {
+        ...initState,
+        sidebar: { name: "sharing", props: { abc: 123 } },
+      } satisfies ReturnType<typeof reducer>;
+      expect(
+        reducer(state, {
+          type: SET_EDITING_DASHBOARD,
+          payload: TEST_DASHBOARD,
+        }),
+      ).toEqual({
+        ...state,
+        editingDashboard: TEST_DASHBOARD,
+        sidebar: { props: {} },
+      });
+    });
+
+    it("should clear sidebar state when leaving edit mode", () => {
+      const state = {
+        ...initState,
+        sidebar: { name: "sharing", props: { abc: 123 } },
+      } satisfies ReturnType<typeof reducer>;
+      expect(
+        reducer(state, {
+          type: SET_EDITING_DASHBOARD,
+          payload: null,
+        }),
+      ).toEqual({ ...initState, editingDashboard: null });
+    });
+  });
+
+  describe("REMOVE_PARAMETER", () => {
+    it("should clear sidebar state and remove the associated parameter value", () => {
+      expect(
+        reducer(
+          {
+            ...initState,
+            sidebar: { name: "sharing", props: { abc: 123 } },
+            parameterValues: { 123: "abc", 456: "def" },
+          },
+          {
+            type: REMOVE_PARAMETER,
+            payload: { id: 123 },
+          },
+        ),
+      ).toEqual({ ...initState, parameterValues: { 456: "def" } });
+    });
+  });
+
+  describe("SET_DASHBOARD_ATTRIBUTES", () => {
+    const emptyDashboard = createMockStoreDashboard({
+      id: 1,
+      dashcards: [],
+      parameters: [],
+    });
+
+    it("should set attribute and isDirty", () => {
+      expect(
+        reducer(
+          {
+            ...initState,
+            dashboards: { 1: emptyDashboard },
+          },
+          {
+            type: SET_DASHBOARD_ATTRIBUTES,
+            payload: {
+              id: 1,
+              attributes: { name: "New Name" },
+            },
+          },
+        ),
+      ).toEqual({
+        ...initState,
+        dashboards: {
+          1: {
+            ...emptyDashboard,
+            name: "New Name",
+            isDirty: true,
+          },
+        },
+      });
+    });
+
+    it("should set isDirty to false", () => {
+      expect(
+        reducer(
+          {
+            ...initState,
+            dashboards: { 1: emptyDashboard },
+          },
+          {
+            type: SET_DASHBOARD_ATTRIBUTES,
+            payload: {
+              id: 1,
+              attributes: { name: "New Name" },
+              isDirty: false,
+            },
+          },
+        ),
+      ).toEqual({
+        ...initState,
+        dashboards: {
+          1: {
+            ...emptyDashboard,
+            name: "New Name",
+            isDirty: false,
+          },
+        },
+      });
+    });
+  });
+
+  describe("Should accurately describe loading state", () => {
+    //Can't check straight equality due to state.loadingDashCards.startTime being a time.
+    it("should change to running when loading cards", () => {
+      const dashcardIds = [1, 2, 3];
+      const loadingMatch = {
+        loadingIds: dashcardIds,
+        loadingStatus: "running",
+        startTime: expect.any(Number),
+      };
+
+      expect(
+        reducer(
+          {
+            ...initState,
+            loadingDashCards: {
+              loadingIds: dashcardIds,
+              loadingStatus: "idle",
+              startTime: null,
+              endTime: null,
+            },
+          },
+          {
+            type: FETCH_DASHBOARD_CARD_DATA,
+            payload: { currentTime: 100, loadingIds: dashcardIds },
+          },
+        ),
+      ).toMatchObject({
+        ...initState,
+        loadingDashCards: loadingMatch,
+      });
+    });
+
+    it("should be complete when the dashboard doesn't have cards to load", () => {
+      expect(
+        reducer(initState, {
+          type: FETCH_DASHBOARD_CARD_DATA,
+          payload: { currentTime: 100, loadingIds: [] },
+        }),
+      ).toEqual({
+        ...initState,
+        loadingDashCards: {
+          loadingIds: [],
+          loadingStatus: "complete",
+          startTime: null,
+          endTime: null,
+        },
+      });
+    });
+
+    it("should be complete when loading finishes", () => {
+      expect(
+        reducer(
+          {
+            ...initState,
+            loadingDashCards: {
+              loadingIds: [3],
+              loadingStatus: "running",
+              startTime: 100,
+              endTime: null,
+            },
+          },
+          {
+            type: fetchCardDataAction.fulfilled.type,
+            payload: {
+              dashcard_id: 3,
+              card_id: 1,
+              result: {},
+              currentTime: 200,
+            },
+          },
+        ),
+      ).toEqual({
+        ...initState,
+        loadingDashCards: {
+          loadingIds: [],
+          loadingStatus: "complete",
+          startTime: 100,
+          endTime: 200,
+        },
+        dashcardData: { 3: { 1: {} } },
+      });
+    });
+
+    it("should not have duplicated elements in loadingIds on pending (metabase#33692, metabase#34767)", () => {
+      const result = reducer(
+        {
+          ...initState,
+          loadingDashCards: {
+            loadingIds: [3],
+            loadingStatus: "running",
+            startTime: 100,
+            endTime: null,
+          },
+        },
+        {
+          type: ADD_DASHCARD_IDS_TO_LOADING_QUEUE,
+          payload: {
+            dashcard_id: 3,
+            card_id: 1,
+          },
+        },
+      );
+      expect(result.loadingDashCards.loadingIds).toEqual([3]);
+    });
+
+    it("should not overwrite existing dashcardData with null on cancellation (#70534)", () => {
+      const existingResult = { data: { rows: [[1, 2]] } };
+
+      // First, populate dashcardData with a valid result
+      const stateWithData = reducer(
+        {
+          ...initState,
+          loadingDashCards: {
+            loadingIds: [3],
+            loadingStatus: "running",
+            startTime: 100,
+            endTime: null,
+          },
+        },
+        {
+          type: fetchCardDataAction.fulfilled.type,
+          payload: {
+            dashcard_id: 3,
+            card_id: 1,
+            result: existingResult,
+            currentTime: 200,
+          },
+        },
+      );
+      expect(stateWithData.dashcardData).toEqual({ 3: { 1: existingResult } });
+
+      // Then dispatch a fulfilled action with null result (simulating a
+      // cancelled request). The existing data should be preserved.
+      const stateAfterNull = reducer(stateWithData, {
+        type: fetchCardDataAction.fulfilled.type,
+        payload: {
+          dashcard_id: 3,
+          card_id: 1,
+          result: null,
+          currentTime: 300,
+        },
+      });
+      expect(stateAfterNull.dashcardData).toEqual({
+        3: { 1: existingResult },
+      });
+    });
+
+    it("should store non-null results in dashcardData normally", () => {
+      const result = reducer(initState, {
+        type: fetchCardDataAction.fulfilled.type,
+        payload: {
+          dashcard_id: 5,
+          card_id: 2,
+          result: { data: [] },
+          currentTime: 100,
+        },
+      });
+      expect(result.dashcardData).toEqual({ 5: { 2: { data: [] } } });
+    });
+
+    it("keeps every dashcard's results readable as more results arrive and clear", () => {
+      const fulfilled = (dashcard_id: number, card_id: number) => ({
+        type: fetchCardDataAction.fulfilled.type,
+        payload: { dashcard_id, card_id, result: { data: [card_id] } },
+      });
+      const state = [
+        fulfilled(1, 10),
+        fulfilled(2, 20),
+        fulfilled(3, 30),
+        clearCardData(30, 3),
+        fulfilled(1, 11),
+      ].reduce(reducer, initState);
+
+      expect(state.dashcardData).toEqual({
+        1: { 10: { data: [10] }, 11: { data: [11] } },
+        2: { 20: { data: [20] } },
+        3: {},
+      });
+    });
+  });
+
+  describe("timelineEvents selection", () => {
+    const selectedState = () =>
+      reducer(
+        undefined,
+        selectTimelineEvents({ dashcardId: 1, eventIds: [100] }),
+      );
+
+    it("keeps the selected events while the events sidebar is open", () => {
+      const state = reducer(selectedState(), {
+        type: SET_SIDEBAR,
+        payload: { name: SIDEBAR_NAME.events },
+      });
+      expect(state.timelineEvents.selection).toEqual({
+        dashcardId: 1,
+        eventIds: [100],
+      });
+    });
+
+    it("drops the selected events when another sidebar replaces the events one", () => {
+      const state = reducer(selectedState(), {
+        type: SET_SIDEBAR,
+        payload: { name: SIDEBAR_NAME.sharing },
+      });
+      expect(state.timelineEvents.selection).toBeNull();
+    });
+
+    it("drops the selected events when the sidebar closes", () => {
+      const state = reducer(selectedState(), { type: CLOSE_SIDEBAR });
+      expect(state.timelineEvents.selection).toBeNull();
+    });
+
+    const overriddenState = () =>
+      reducer(
+        reducer(
+          selectedState(),
+          setDashCardTimelineEventsVisibility({
+            1: { "timeline.selected_timeline_ids": [10] },
+          }),
+        ),
+        setDashCardTimelineEventsEnabled({ dashcardId: 1, isEnabled: false }),
+      );
+
+    it.each([
+      {
+        name: "dashboard editing starts",
+        action: { type: SET_EDITING_DASHBOARD, payload: TEST_DASHBOARD },
+      },
+      { name: "another dashboard is opened", action: { type: INITIALIZE } },
+    ])("resets when $name", ({ action }) => {
+      const state = reducer(overriddenState(), action);
+      expect(state.timelineEvents).toEqual({
+        overrides: {},
+        enabledByDashCard: {},
+        selection: null,
+        hasTrackedEventsShown: false,
+      });
+    });
+
+    it("keeps the session overrides when the dashboard is refetched", () => {
+      const state = timelineEvents(overriddenState().timelineEvents, {
+        type: fetchDashboard.fulfilled.type,
+      });
+      expect(state).toEqual({
+        overrides: { 1: { "timeline.selected_timeline_ids": [10] } },
+        enabledByDashCard: { 1: false },
+        selection: { dashcardId: 1, eventIds: [100] },
+        hasTrackedEventsShown: false,
+      });
+    });
+  });
+
+  describe("timelineEvents tracking", () => {
+    const trackedState = () => reducer(undefined, markTimelineEventsShown());
+
+    it("remembers that the shown events were tracked", () => {
+      expect(trackedState().timelineEvents.hasTrackedEventsShown).toBe(true);
+    });
+
+    it("keeps the tracking across dashboard editing", () => {
+      const state = reducer(trackedState(), {
+        type: SET_EDITING_DASHBOARD,
+        payload: TEST_DASHBOARD,
+      });
+      expect(state.timelineEvents.hasTrackedEventsShown).toBe(true);
+    });
+
+    it("forgets the tracking when another dashboard is opened", () => {
+      const state = reducer(trackedState(), { type: INITIALIZE });
+      expect(state.timelineEvents.hasTrackedEventsShown).toBe(false);
+    });
+  });
+});

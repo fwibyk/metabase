@@ -1,0 +1,70 @@
+import { useElementSize } from "@mantine/hooks";
+import { useLayoutEffect } from "react";
+import _ from "underscore";
+
+import { Button, type ButtonProps, Icon, Tooltip } from "metabase/ui";
+import type { IconName } from "metabase-types/api";
+interface Props extends Omit<ButtonProps, "leftSection"> {
+  children: string;
+  icon: IconName;
+  showLabel: boolean;
+  showIconWithLabel?: boolean;
+  onRequestWidth?: (width: number) => void;
+}
+
+export const ResponsiveButton = ({
+  children,
+  icon,
+  showLabel,
+  showIconWithLabel = true,
+  onRequestWidth = _.noop,
+  ...props
+}: Props) => {
+  const { ref: measureRef, width: desiredWidth } = useElementSize();
+
+  useLayoutEffect(() => {
+    if (desiredWidth > 0) {
+      onRequestWidth(desiredWidth);
+    }
+  }, [onRequestWidth, desiredWidth]);
+
+  return (
+    <>
+      <Tooltip disabled={showLabel} label={children}>
+        <Button
+          aria-label={children}
+          leftSection={
+            !showLabel || showIconWithLabel ? <Icon name={icon} /> : undefined
+          }
+          px={showLabel ? (showIconWithLabel ? "sm" : "lg") : "xxs"}
+          w={showLabel ? undefined : 32}
+          {...props}
+        >
+          {showLabel ? children : null}
+        </Button>
+      </Tooltip>
+
+      {/** rendered only to measure desired width */}
+      <span
+        style={{
+          position: "absolute",
+          visibility: "hidden",
+          height: 0,
+          overflow: "hidden",
+          whiteSpace: "nowrap",
+        }}
+      >
+        <Button
+          disabled
+          hidden
+          leftSection={showIconWithLabel ? <Icon name={icon} /> : undefined}
+          px={showIconWithLabel ? "sm" : "lg"}
+          ref={measureRef}
+          {...props}
+        >
+          {children}
+        </Button>
+      </span>
+    </>
+  );
+};

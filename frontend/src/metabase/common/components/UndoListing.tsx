@@ -1,0 +1,420 @@
+import {
+  type CSSProperties,
+  type FocusEvent,
+  Fragment,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  Transition,
+  TransitionGroup,
+  type TransitionStatus,
+} from "react-transition-group";
+import { t } from "ttag";
+
+import ZIndex from "metabase/css/core/z-index.module.css";
+import { useDispatch, useSelector } from "metabase/redux";
+import type { Undo } from "metabase/redux/store/undo";
+import {
+  dismissUndo,
+  pauseUndo,
+  performUndo,
+  resumeUndo,
+} from "metabase/redux/undo";
+import {
+  Button,
+  Card,
+  Ellipsified,
+  Flex,
+  Icon,
+  Portal,
+  Progress,
+  Stack,
+} from "metabase/ui";
+import { isFocusVisible } from "metabase/utils/dom";
+import { capitalize, inflect } from "metabase/utils/formatting";
+
+import S from "./UndoListing.module.css";
+
+const TOAST_TRANSITION_DURATION = 300;
+const MARGIN = 8;
+const TOAST_MESSAGE_MAX_LINES = 4;
+
+function defaultMessage({
+  verb = t`modified`,
+  count = 1,
+  subject = t`item`,
+}: Pick<Undo, "verb" | "count" | "subject">) {
+  return count > 1
+    ? `${capitalize(verb)} ${count} ${inflect(subject, count)}`
+    : `${capitalize(verb)} ${subject}`;
+}
+
+function renderMessage(undo: Undo) {
+  const { message } = undo;
+  if (!message) {
+    return defaultMessage(undo);
+  }
+  return typeof message === "function" ? message(undo) : message;
+}
+
+function UndoToast({
+  undo,
+  onUndo,
+  onDismiss,
+  style,
+}: {
+  undo: Undo;
+  onUndo: () => void;
+  onDismiss: () => void;
+  style: CSSProperties;
+}) {
+  const dispatch = useDispatch();
+  const interaction = useRef({ isHovered: false, isFocused: false });
+  const hasTimer = Boolean(undo.timeout);
+
+  const updateInteraction = (
+    change: Partial<{ isHovered: boolean; isFocused: boolean }>,
+  ) => {
+    const wasInteracting =
+      interaction.current.isHovered || interaction.current.isFocused;
+    interaction.current = { ...interaction.current, ...change };
+    const isInteracting =
+      interaction.current.isHovered || interaction.current.isFocused;
+
+    if (!hasTimer || wasInteracting === isInteracting) {
+      return;
+    }
+    dispatch(isInteracting ? pauseUndo(undo) : resumeUndo(undo.id));
+  };
+
+  // handle the case where a hovered toast with no timer changes
+  // to one with a timer - pause it.
+  useEffect(() => {
+    const { isHovered, isFocused } = interaction.current;
+    if ((isHovered || isFocused) && hasTimer && undo.pausedAt == null) {
+      dispatch(pauseUndo(undo));
+    }
+  }, [undo, hasTimer, dispatch]);
+
+  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
+    const isFocusStillInside =
+      event.relatedTarget instanceof Node &&
+      event.currentTarget.contains(event.relatedTarget);
+    if (!isFocusStillInside) {
+      updateInteraction({ isFocused: false });
+    }
+  };
+
+  const handleFocus = (event: FocusEvent<HTMLDivElement>) => {
+    if (isFocusVisible(event.target)) {
+      updateInteraction({ isFocused: true });
+    }
+  };
+
+  const dark = undo.dark ?? true;
+  const noBorder = undo.showProgress;
+  const pausedProgressColor = dark
+    ? "tooltip-text-secondary"
+    : "background_page-tertiary-inverse";
+
+  return (
+    <Card
+      ref={undo.ref}
+      data-testid="toast-undo"
+      role="status"
+      className={S.toast}
+      data-paused={undo.pausedAt != null || undefined}
+      onMouseEnter={() => updateInteraction({ isHovered: true })}
+      onMouseLeave={() => updateInteraction({ isHovered: false })}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
+      bg={dark ? "tooltip-background" : "background_page-primary"}
+      c={dark ? "tooltip-text" : "text-primary"}
+      withBorder={!noBorder}
+      radius="sm"
+      p="lg"
+      mt="sm"
+      maw="calc(100vw - 2 * var(--mantine-spacing-lg))"
+      style={{
+        overflowX: noBorder ? "hidden" : undefined,
+        ...style,
+        ...undo.style,
+      }}
+    >
+      {undo.showProgress && (
+        <Progress
+          size="sm"
+          color={undo.pausedAt ? pausedProgressColor : "core-brand"}
+          /* we intentionally break a11y - css animation is smoother */
+          value={100}
+          pos="absolute"
+          top={0}
+          left={0}
+          w="100%"
+          className={S.progress}
+          /* override animation duration based on timeout */
+          style={{
+            animationDuration: `${undo.initialTimeout}ms`,
+          }}
+        />
+      )}
+      <Flex align="flex-start" justify="space-between" gap="sm">
+        <Flex className={S.message} align="flex-start" maw="75ch">
+          {undo.icon && (
+            <Icon
+              className={S.messageIcon}
+              name={undo.icon}
+              c={undo.iconColor ?? "tooltip-text"}
+              mr="sm"
+              flex="0 0 auto"
+            />
+          )}
+          {undo.renderChildren ? (
+            undo.renderChildren(undo)
+          ) : (
+            <Ellipsified showTooltip={false} lines={TOAST_MESSAGE_MAX_LINES}>
+              {renderMessage(undo)}
+            </Ellipsified>
+          )}
+        </Flex>
+        <Flex className={S.controls} align="center" gap="sm" flex="0 0 auto">
+          {undo.actions && undo.actions.length > 0 && (
+            <Button
+              className={S.actionButton}
+              variant={dark ? "on-dark-primary" : "default"}
+              size="sm"
+              onClick={onUndo}
+            >
+              {undo.actionLabel ?? t`Undo`}
+            </Button>
+          )}
+          {undo.extraAction && (
+            <Button
+              className={S.actionButton}
+              variant={dark ? "on-dark-secondary" : "default"}
+              size="sm"
+              onClick={() => {
+                undo.extraAction?.action();
+                if (undo.canDismiss) {
+                  onDismiss();
+                }
+              }}
+            >
+              {undo.extraAction.label}
+            </Button>
+          )}
+          {undo.canDismiss && (
+            <Icon
+              className={S.dismissIcon}
+              color={undo.dismissIconColor || "tooltip-text"}
+              name="close"
+              onClick={onDismiss}
+              ml="sm"
+            />
+          )}
+        </Flex>
+      </Flex>
+    </Card>
+  );
+}
+
+export function UndoListing() {
+  const dispatch = useDispatch();
+  const undos = useSelector((state) => state.undo);
+
+  return (
+    <UndoListOverlay
+      undos={undos}
+      onUndo={(undo) => dispatch(performUndo(undo.id))}
+      onDismiss={(undo) => {
+        undo.onDismiss?.(undo.id);
+        dispatch(dismissUndo({ undoId: undo.id }));
+      }}
+    />
+  );
+}
+
+const target = document.createElement("div");
+document.body.appendChild(target);
+
+// The react transition group state transitions are flaky in cypress
+// so disable them for altogether.
+const Group = "Cypress" in window ? MockGroup : TransitionGroup;
+
+function MockGroup({ children }: { children: ReactNode }) {
+  return <Fragment>{children}</Fragment>;
+}
+
+const Item =
+  "Cypress" in window
+    ? function MockItem({
+        children,
+      }: {
+        children: (state: TransitionStatus) => ReactNode;
+      }) {
+        return children("entered");
+      }
+    : Transition;
+
+export function UndoListOverlay({
+  undos,
+  onUndo,
+  onDismiss,
+}: {
+  undos: Undo[];
+  onUndo: (undo: Undo) => void;
+  onDismiss: (undo: Undo) => void;
+}) {
+  const prevUndos = useRef<Undo[]>([]);
+
+  const [heights, setHeights] = useState<number[]>([]);
+  const [transitionState, setTransitionState] = useState<
+    Record<string, boolean>
+  >({});
+
+  useEffect(() => {
+    // When a new undo is added, we move the Portals' target to the
+    // end of the body so that its renders on top of the z-index stack, and
+    // thus on top of any other overlays.
+    //
+    // To be reliable this needs to happen after other renders have settled,
+    // so we do this in a timeout. Otherwise there might be other Portals
+    // that end up rendering at the same time and this makes the order unpredictable.
+    //
+    // To avoid resetting the transition state of the toasts, we track the
+    // when the target was appended to the body and only enable the transition
+    // once the target has been appended (via the custom in: prop on the Undo).
+    const timeout = setTimeout(() => {
+      const prev = prevUndos.current ?? [];
+      prevUndos.current = undos;
+
+      if (prev.length < undos.length) {
+        // Avoid moving the portal if we're not adding new undos.
+        // Undos transitioning out do not need to be rendered on top.
+        document.body.appendChild(target);
+      }
+
+      // Allow new items to transition
+      setTransitionState(function (prevState) {
+        const newState = Object.fromEntries(
+          undos.map((undo) => [undo.id, true]),
+        );
+        return { ...prevState, ...newState };
+      });
+    }, 1);
+    return () => clearTimeout(timeout);
+  }, [undos]);
+
+  useLayoutEffect(() => {
+    // We measure the height of all toasts so we know where to render
+    // the next one.
+    setHeights(
+      undos
+        .map((undo) => undo.ref?.current?.getBoundingClientRect().height ?? 0)
+        .filter((height) => height > 0),
+    );
+  }, [undos]);
+
+  function heightAtIndex(index: number) {
+    return heights.reduce((acc, height, idx) => {
+      if (idx < index) {
+        return acc + height + MARGIN;
+      }
+      return acc;
+    }, 0);
+  }
+
+  return (
+    <Portal target={target}>
+      <Stack
+        component="ul"
+        data-testid="undo-list"
+        aria-label="undo-list"
+        className={ZIndex.Overlay}
+        pos="fixed"
+        left={0}
+        bottom={0}
+        m="lg"
+        gap={0}
+        align="flex-start"
+      >
+        <Group appear enter exit component={null}>
+          {undos.map(
+            (undo, index) =>
+              transitionState[undo.id] && (
+                <Item
+                  key={undo._domId}
+                  in
+                  timeout={{
+                    enter: 0,
+                    exit: TOAST_TRANSITION_DURATION,
+                  }}
+                  nodeRef={undo.ref}
+                  mountOnEnter
+                  unmountOnExit
+                >
+                  {(state) => (
+                    <UndoToast
+                      undo={undo}
+                      onUndo={() => onUndo(undo)}
+                      onDismiss={() => onDismiss(undo)}
+                      style={transition(state, heightAtIndex(index))}
+                    />
+                  )}
+                </Item>
+              ),
+          )}
+        </Group>
+      </Stack>
+    </Portal>
+  );
+}
+
+function transition(state: TransitionStatus, bottom: number) {
+  const transition = `
+    opacity ${TOAST_TRANSITION_DURATION}ms ease,
+    transform ${TOAST_TRANSITION_DURATION}ms ease,
+    bottom ${TOAST_TRANSITION_DURATION}ms ease
+  `;
+
+  if (state === "entering") {
+    return {
+      opacity: 0,
+      transform: `translate(-30px, ${-bottom}px)`,
+      zIndex: 1,
+    };
+  }
+
+  if (state === "entered") {
+    return {
+      opacity: 1,
+      transform: `translate(0, ${-bottom}px)`,
+      transition,
+      zIndex: 1,
+    };
+  }
+
+  if (state === "exiting") {
+    return {
+      opacity: 0,
+      transform: `translate(0, ${-bottom + 25}px) scale(0.9)`,
+      transition,
+      zIndex: 0,
+    };
+  }
+
+  if (state === "exited") {
+    return {
+      opacity: 0,
+      transform: `translate(-30px, ${-bottom}px)`,
+      transition,
+      zIndex: 1,
+    };
+  }
+
+  throw new Error(`Unexpected state: ${state}`);
+}

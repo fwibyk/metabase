@@ -1,0 +1,1207 @@
+import { registerVisualizations } from "metabase/visualizations/register";
+import type {
+  AnalysisFindingError,
+  AnalysisFindingErrorType,
+  CardType,
+  DependencyEntry,
+  DependencyGroupType,
+  DependencyNode,
+  DependencyType,
+  IconName,
+} from "metabase-types/api";
+import {
+  createMockActionDependencyNode,
+  createMockActionDependencyNodeData,
+  createMockActionParameter,
+  createMockAnalysisFindingError,
+  createMockCardDependencyNode,
+  createMockCardDependencyNodeData,
+  createMockCollection,
+  createMockDashboardDependencyNode,
+  createMockDashboardDependencyNodeData,
+  createMockDataAppDependencyNode,
+  createMockDataAppDependencyNodeData,
+  createMockDatabase,
+  createMockDocumentDependencyNode,
+  createMockDocumentDependencyNodeData,
+  createMockMeasureDependencyNode,
+  createMockParameter,
+  createMockSandboxDependencyNode,
+  createMockSegmentDependencyNode,
+  createMockSegmentDependencyNodeData,
+  createMockSnippetDependencyNode,
+  createMockSnippetDependencyNodeData,
+  createMockTable,
+  createMockTableDependencyNode,
+  createMockTableDependencyNodeData,
+  createMockTransformDependencyNode,
+  createMockUserInfo,
+} from "metabase-types/api/mocks";
+
+import type {
+  DependencyError,
+  DependencyGroupTypeInfo,
+  DependentGroup,
+  NodeLink,
+} from "./types";
+import {
+  canNodeHaveViewCount,
+  getCardType,
+  getCardTypes,
+  getDependencyErrorGroups,
+  getDependencyErrorInfo,
+  getDependencyErrors,
+  getDependencyGroupIcon,
+  getDependencyGroupTitle,
+  getDependencyGroupType,
+  getDependencyGroupTypeInfo,
+  getDependencyType,
+  getDependencyTypes,
+  getDependentErrorNodesCount,
+  getDependentErrorNodesLabel,
+  getDependentGroupLabel,
+  getDependentGroups,
+  getErrorTypeLabel,
+  getErrorTypeLabelWithCount,
+  getNodeCreatedAt,
+  getNodeCreatedBy,
+  getNodeDescription,
+  getNodeIcon,
+  getNodeId,
+  getNodeLabel,
+  getNodeLastEditedAt,
+  getNodeLastEditedBy,
+  getNodeLink,
+  getNodeLocationInfo,
+  getNodeParameters,
+  getNodeSourceReplacementEntry,
+  getNodeTypeInfo,
+  getNodeViewCount,
+  getParameterIcon,
+  getSearchQuery,
+  isSameNode,
+} from "./utils";
+
+registerVisualizations();
+
+describe("getNodeIcon", () => {
+  it.each<{
+    node: DependencyNode;
+    expectedIcon: IconName;
+  }>([
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          type: "question",
+          display: "pie",
+          query_type: "query",
+        }),
+      }),
+      expectedIcon: "pie",
+    },
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          type: "question",
+          display: "table",
+          query_type: "native",
+        }),
+      }),
+      expectedIcon: "sql",
+    },
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          type: "model",
+          display: "table",
+        }),
+      }),
+      expectedIcon: "model",
+    },
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          type: "metric",
+          display: "scalar",
+        }),
+      }),
+      expectedIcon: "metric",
+    },
+    {
+      node: createMockTableDependencyNode(),
+      expectedIcon: "table",
+    },
+    {
+      node: createMockTransformDependencyNode(),
+      expectedIcon: "transform",
+    },
+    {
+      node: createMockSnippetDependencyNode(),
+      expectedIcon: "snippet",
+    },
+    {
+      node: createMockActionDependencyNode(),
+      expectedIcon: "bolt",
+    },
+    {
+      node: createMockDataAppDependencyNode(),
+      expectedIcon: "app",
+    },
+  ])("should get the $node.type node icon", ({ node, expectedIcon }) => {
+    expect(getNodeIcon(node)).toBe(expectedIcon);
+  });
+});
+
+describe("getNodeLink", () => {
+  it.each<{
+    node: DependencyNode;
+    expectedLink: NodeLink;
+  }>([
+    {
+      node: createMockCardDependencyNode({
+        id: 1,
+        data: createMockCardDependencyNodeData({
+          type: "question",
+          name: "My question",
+        }),
+      }),
+      expectedLink: {
+        label: "View this question",
+        url: "/question/1-my-question",
+      },
+    },
+    {
+      node: createMockCardDependencyNode({
+        id: 1,
+        data: createMockCardDependencyNodeData({
+          type: "model",
+          name: "My model",
+        }),
+      }),
+      expectedLink: {
+        label: "View this model",
+        url: "/model/1-my-model",
+      },
+    },
+    {
+      node: createMockCardDependencyNode({
+        id: 1,
+        data: createMockCardDependencyNodeData({
+          type: "metric",
+          name: "My metric",
+        }),
+      }),
+      expectedLink: {
+        label: "View this metric",
+        url: "/metric/1-my-metric",
+      },
+    },
+    {
+      node: createMockTableDependencyNode({
+        id: 1,
+        data: createMockTableDependencyNodeData({
+          db_id: 2,
+          schema: "not public",
+        }),
+      }),
+      expectedLink: {
+        label: "View metadata",
+        url: "/data-studio/data/database/2/schema/2:not%20public/table/1",
+      },
+    },
+    {
+      node: createMockSegmentDependencyNode({
+        id: 1,
+        data: createMockSegmentDependencyNodeData({
+          table: createMockTable({
+            id: 1,
+            name: "My table",
+          }),
+        }),
+      }),
+      expectedLink: {
+        label: "View this segment",
+        url: "/data-studio/data/database/1/schema/1:public/table/1/segments/1",
+      },
+    },
+    {
+      node: createMockActionDependencyNode({
+        id: 1,
+        data: createMockActionDependencyNodeData({ model_id: null }),
+      }),
+      expectedLink: {
+        label: "View this action",
+        url: "/data-studio/actions/1",
+      },
+    },
+    {
+      node: createMockDataAppDependencyNode({
+        data: createMockDataAppDependencyNodeData({ name: "bird-sightings" }),
+      }),
+      expectedLink: {
+        label: "View this data app",
+        url: "/apps/bird-sightings",
+      },
+    },
+  ])("should get the $node.type node link", ({ node, expectedLink }) => {
+    expect(getNodeLink(node)).toEqual(expectedLink);
+  });
+
+  it("should not link an action of a model", () => {
+    const node = createMockActionDependencyNode({
+      data: createMockActionDependencyNodeData({ model_id: 2 }),
+    });
+    expect(getNodeLink(node)).toBeNull();
+  });
+
+  it.each<DependencyNode>([
+    createMockCardDependencyNode({
+      data: createMockCardDependencyNodeData({
+        collection: createMockCollection({ namespace: "data-apps" }),
+      }),
+    }),
+    createMockActionDependencyNode({
+      data: createMockActionDependencyNodeData({
+        model_id: null,
+        collection: createMockCollection({ namespace: "data-apps" }),
+      }),
+    }),
+  ])("should not link the $type node in a data app's collection", (node) => {
+    expect(getNodeLink(node)).toBeNull();
+  });
+});
+
+describe("getNodeTypeInfo", () => {
+  it.each<{
+    node: DependencyNode;
+    expectedTypeInfo: DependencyGroupTypeInfo;
+  }>([
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          type: "question",
+          query_type: "native",
+        }),
+      }),
+      expectedTypeInfo: { label: "SQL question", color: "text-secondary" },
+    },
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          type: "question",
+          query_type: "query",
+        }),
+      }),
+      expectedTypeInfo: { label: "Question", color: "text-secondary" },
+    },
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          type: "model",
+        }),
+      }),
+      expectedTypeInfo: { label: "Model", color: "core-brand" },
+    },
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          type: "metric",
+        }),
+      }),
+      expectedTypeInfo: { label: "Metric", color: "core-summarize" },
+    },
+    {
+      node: createMockTableDependencyNode(),
+      expectedTypeInfo: { label: "Table", color: "core-brand" },
+    },
+    {
+      node: createMockSnippetDependencyNode(),
+      expectedTypeInfo: { label: "SQL snippet", color: "text-secondary" },
+    },
+  ])(
+    "should get the $node.type node type info",
+    ({ node, expectedTypeInfo }) => {
+      expect(getNodeTypeInfo(node)).toEqual(expectedTypeInfo);
+    },
+  );
+});
+
+describe("isSameNode", () => {
+  it.each<{
+    entry1: DependencyEntry;
+    entry2: DependencyEntry;
+    expected: boolean;
+  }>([
+    {
+      entry1: { id: 1, type: "card" },
+      entry2: { id: 1, type: "card" },
+      expected: true,
+    },
+    {
+      entry1: { id: 1, type: "card" },
+      entry2: { id: 2, type: "card" },
+      expected: false,
+    },
+    {
+      entry1: { id: 1, type: "card" },
+      entry2: { id: 1, type: "table" },
+      expected: false,
+    },
+  ])("should compare nodes correctly", ({ entry1, entry2, expected }) => {
+    expect(isSameNode(entry1, entry2)).toBe(expected);
+  });
+});
+
+describe("getNodeId", () => {
+  it.each<{ id: number; type: DependencyType; expected: string }>([
+    { id: 1, type: "card", expected: "1-card" },
+    { id: 42, type: "table", expected: "42-table" },
+    { id: 100, type: "dashboard", expected: "100-dashboard" },
+  ])("should generate node id for $type", ({ id, type, expected }) => {
+    expect(getNodeId(id, type)).toBe(expected);
+  });
+});
+
+describe("getNodeLabel", () => {
+  it.each<{ node: DependencyNode; expected: string }>([
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({ name: "My Card" }),
+      }),
+      expected: "My Card",
+    },
+    {
+      node: createMockTableDependencyNode({
+        data: createMockTableDependencyNodeData({ display_name: "My Table" }),
+      }),
+      expected: "My Table",
+    },
+    {
+      node: createMockSandboxDependencyNode({
+        data: {
+          table_id: 1,
+          table: createMockTable({ display_name: "Sandboxed Table" }),
+        },
+      }),
+      expected: "Sandboxed Table",
+    },
+    {
+      node: createMockSandboxDependencyNode({ data: { table_id: 1 } }),
+      expected: "Row and column security rule",
+    },
+    {
+      node: createMockDataAppDependencyNode({
+        data: createMockDataAppDependencyNodeData({
+          name: "bird-sightings",
+          display_name: "Bird sightings",
+        }),
+      }),
+      expected: "Bird sightings",
+    },
+  ])("should get label for $node.type", ({ node, expected }) => {
+    expect(getNodeLabel(node)).toBe(expected);
+  });
+});
+
+describe("getNodeDescription", () => {
+  it.each<{ node: DependencyNode; expected: string | null }>([
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          description: "Card description",
+        }),
+      }),
+      expected: "Card description",
+    },
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({ description: null }),
+      }),
+      expected: "",
+    },
+    {
+      node: createMockDocumentDependencyNode(),
+      expected: null,
+    },
+    {
+      node: createMockSandboxDependencyNode(),
+      expected: null,
+    },
+  ])("should get description for $node.type", ({ node, expected }) => {
+    expect(getNodeDescription(node)).toBe(expected);
+  });
+});
+
+describe("getNodeParameters", () => {
+  it("should return the parameters of a data action", () => {
+    const parameter = createMockActionParameter();
+    const node = createMockActionDependencyNode({
+      data: createMockActionDependencyNodeData({
+        model_id: null,
+        parameters: [parameter],
+      }),
+    });
+    expect(getNodeParameters(node)).toEqual([parameter]);
+  });
+
+  it("should return null for an action of a model, whose parameters come from the model", () => {
+    const node = createMockActionDependencyNode({
+      data: createMockActionDependencyNodeData({
+        model_id: 2,
+        type: "implicit",
+        parameters: [],
+      }),
+    });
+    expect(getNodeParameters(node)).toBeNull();
+  });
+});
+
+describe("getParameterIcon", () => {
+  it.each<{ type: string; expected: IconName }>([
+    { type: "id", expected: "label" },
+    { type: "number/=", expected: "int" },
+    { type: "date/single", expected: "calendar" },
+    { type: "boolean/=", expected: "io" },
+    { type: "string/=", expected: "string" },
+    { type: "category", expected: "string" },
+    { type: "unknown/type", expected: "string" },
+  ])("should map $type to $expected", ({ type, expected }) => {
+    expect(getParameterIcon(createMockParameter({ type }))).toBe(expected);
+  });
+});
+
+describe("getNodeLocationInfo", () => {
+  it("should return dashboard location for card in dashboard", () => {
+    const node = createMockCardDependencyNode({
+      data: createMockCardDependencyNodeData({
+        dashboard: { id: 1, name: "My Dashboard" },
+      }),
+    });
+    const result = getNodeLocationInfo(node);
+    expect(result?.icon).toBe("dashboard");
+    expect(result?.links[0].label).toBe("My Dashboard");
+  });
+
+  it("should return document location for card in document", () => {
+    const node = createMockCardDependencyNode({
+      data: createMockCardDependencyNodeData({
+        dashboard: null,
+        document: { id: 1, name: "My Document" },
+      }),
+    });
+    const result = getNodeLocationInfo(node);
+    expect(result?.icon).toBe("document");
+    expect(result?.links[0].label).toBe("My Document");
+  });
+
+  it("should return collection location for card in collection", () => {
+    const node = createMockCardDependencyNode({
+      data: createMockCardDependencyNodeData({
+        dashboard: null,
+        collection: createMockCollection({ name: "My Collection" }),
+      }),
+    });
+    const result = getNodeLocationInfo(node);
+    expect(result?.icon).toBe("collection");
+    expect(result?.links[0].label).toBe("My Collection");
+  });
+
+  it("should link a snippet's folder to the SQL snippets tab", () => {
+    const node = createMockSnippetDependencyNode({
+      data: createMockSnippetDependencyNodeData({
+        collection: createMockCollection({ name: "My Folder" }),
+      }),
+    });
+    const result = getNodeLocationInfo(node);
+    expect(result?.links[0]).toEqual({
+      label: "My Folder",
+      url: "/data-studio/snippets",
+    });
+  });
+
+  it("should return database location for table", () => {
+    const node = createMockTableDependencyNode({
+      data: createMockTableDependencyNodeData({
+        db: createMockDatabase({ id: 1, name: "My Database" }),
+        db_id: 1,
+        schema: "public",
+      }),
+    });
+    const result = getNodeLocationInfo(node);
+    expect(result?.icon).toBe("database");
+    expect(result?.links[0].label).toBe("My Database");
+    expect(result?.links[1].label).toBe("public");
+  });
+
+  it("should link an action in a data actions folder to that folder in Data Studio", () => {
+    const node = createMockActionDependencyNode({
+      data: createMockActionDependencyNodeData({
+        collection: createMockCollection({
+          id: 7,
+          name: "My Folder",
+          namespace: "data-actions",
+          location: "/5/",
+        }),
+      }),
+    });
+    expect(getNodeLocationInfo(node)).toEqual({
+      icon: "collection",
+      links: [
+        {
+          label: "My Folder",
+          url: "/data-studio/actions?expandedId=5&expandedId=7",
+        },
+      ],
+    });
+  });
+
+  it.each([
+    { name: "without a collection", collection: null },
+    {
+      name: "in the data actions root",
+      collection: createMockCollection({
+        id: "root",
+        name: "Data actions",
+        namespace: "data-actions",
+        location: undefined,
+      }),
+    },
+  ])(
+    "should link an action $name to the Data Studio actions root",
+    ({ collection }) => {
+      const node = createMockActionDependencyNode({
+        data: createMockActionDependencyNodeData({ collection }),
+      });
+      expect(getNodeLocationInfo(node)).toEqual({
+        icon: "collection",
+        links: [{ label: "Data actions", url: "/data-studio/actions" }],
+      });
+    },
+  );
+
+  it("should return null for an action of a model", () => {
+    const node = createMockActionDependencyNode({
+      data: createMockActionDependencyNodeData({
+        model_id: 2,
+        collection: createMockCollection({ name: "My Collection" }),
+      }),
+    });
+    expect(getNodeLocationInfo(node)).toBeNull();
+  });
+
+  it("should not link an action in a data app collection to the Data Studio actions root", () => {
+    const node = createMockActionDependencyNode({
+      data: createMockActionDependencyNodeData({
+        collection: createMockCollection({
+          id: 9,
+          name: "App collection",
+          namespace: "data-apps",
+        }),
+      }),
+    });
+    expect(getNodeLocationInfo(node)).toBeNull();
+  });
+
+  it("should return null for sandbox", () => {
+    const node = createMockSandboxDependencyNode();
+    expect(getNodeLocationInfo(node)).toBeNull();
+  });
+
+  it("should return null for transform", () => {
+    const node = createMockTransformDependencyNode();
+    expect(getNodeLocationInfo(node)).toBeNull();
+  });
+
+  it("should return null for data app", () => {
+    const node = createMockDataAppDependencyNode();
+    expect(getNodeLocationInfo(node)).toBeNull();
+  });
+});
+
+describe("getNodeCreatedAt", () => {
+  it.each<{ node: DependencyNode; expected: string | null }>([
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          created_at: "2020-01-01T00:00:00Z",
+        }),
+      }),
+      expected: "2020-01-01T00:00:00Z",
+    },
+    {
+      node: createMockTableDependencyNode(),
+      expected: null,
+    },
+    {
+      node: createMockSandboxDependencyNode(),
+      expected: null,
+    },
+    {
+      node: createMockDataAppDependencyNode({
+        data: createMockDataAppDependencyNodeData({
+          created_at: "2021-02-03T00:00:00Z",
+        }),
+      }),
+      expected: "2021-02-03T00:00:00Z",
+    },
+  ])("should get created_at for $node.type", ({ node, expected }) => {
+    expect(getNodeCreatedAt(node)).toBe(expected);
+  });
+});
+
+describe("getNodeCreatedBy", () => {
+  it("should return creator for card", () => {
+    const creator = createMockUserInfo({ common_name: "Test User" });
+    const node = createMockCardDependencyNode({
+      data: createMockCardDependencyNodeData({ creator }),
+    });
+    expect(getNodeCreatedBy(node)).toEqual(creator);
+  });
+
+  it("should return null for table", () => {
+    const node = createMockTableDependencyNode();
+    expect(getNodeCreatedBy(node)).toBeNull();
+  });
+});
+
+describe("getNodeLastEditedAt", () => {
+  it("should return last edit timestamp for card", () => {
+    const node = createMockCardDependencyNode({
+      data: createMockCardDependencyNodeData({
+        "last-edit-info": {
+          id: 1,
+          email: "test@example.com",
+          first_name: "Test",
+          last_name: "User",
+          timestamp: "2020-06-01T00:00:00Z",
+        },
+      }),
+    });
+    expect(getNodeLastEditedAt(node)).toBe("2020-06-01T00:00:00Z");
+  });
+
+  it("should return null for table", () => {
+    const node = createMockTableDependencyNode();
+    expect(getNodeLastEditedAt(node)).toBeNull();
+  });
+});
+
+describe("getNodeLastEditedBy", () => {
+  it("should return last edit info for card", () => {
+    const lastEditInfo = {
+      id: 1,
+      email: "test@example.com",
+      first_name: "Test",
+      last_name: "User",
+      timestamp: "2020-06-01T00:00:00Z",
+    };
+    const node = createMockCardDependencyNode({
+      data: createMockCardDependencyNodeData({
+        "last-edit-info": lastEditInfo,
+      }),
+    });
+    expect(getNodeLastEditedBy(node)).toEqual(lastEditInfo);
+  });
+
+  it("should return null for snippet", () => {
+    const node = createMockSnippetDependencyNode();
+    expect(getNodeLastEditedBy(node)).toBeNull();
+  });
+});
+
+describe("canNodeHaveViewCount", () => {
+  it.each<{ type: DependencyType; expected: boolean }>([
+    { type: "card", expected: true },
+    { type: "dashboard", expected: true },
+    { type: "document", expected: true },
+    { type: "table", expected: false },
+    { type: "transform", expected: false },
+    { type: "segment", expected: false },
+    { type: "measure", expected: false },
+    { type: "snippet", expected: false },
+    { type: "sandbox", expected: false },
+  ])("should return $expected for $type", ({ type, expected }) => {
+    expect(canNodeHaveViewCount(type)).toBe(expected);
+  });
+});
+
+describe("getNodeViewCount", () => {
+  it.each<{ node: DependencyNode; expected: number | null }>([
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          type: "question",
+          view_count: 100,
+        }),
+      }),
+      expected: 100,
+    },
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          type: "model",
+          view_count: 100,
+        }),
+      }),
+      expected: 100,
+    },
+    {
+      node: createMockDashboardDependencyNode({
+        data: createMockDashboardDependencyNodeData({
+          view_count: 50,
+        }),
+      }),
+      expected: 50,
+    },
+    {
+      node: createMockDocumentDependencyNode({
+        data: createMockDocumentDependencyNodeData({
+          view_count: 25,
+        }),
+      }),
+      expected: 25,
+    },
+    {
+      node: createMockTableDependencyNode(),
+      expected: null,
+    },
+  ])("should return view count for $node.type", ({ node, expected }) => {
+    expect(getNodeViewCount(node)).toBe(expected);
+  });
+});
+
+describe("getCardType", () => {
+  it.each<{ groupType: DependencyGroupType; expected: string | null }>([
+    { groupType: "question", expected: "question" },
+    { groupType: "model", expected: "model" },
+    { groupType: "metric", expected: "metric" },
+    { groupType: "table", expected: null },
+    { groupType: "dashboard", expected: null },
+  ])("should get card type for $groupType", ({ groupType, expected }) => {
+    expect(getCardType(groupType)).toBe(expected);
+  });
+});
+
+describe("getDependencyType", () => {
+  it.each<{ groupType: DependencyGroupType; expected: string }>([
+    { groupType: "question", expected: "card" },
+    { groupType: "model", expected: "card" },
+    { groupType: "metric", expected: "card" },
+    { groupType: "table", expected: "table" },
+    { groupType: "dashboard", expected: "dashboard" },
+    { groupType: "transform", expected: "transform" },
+  ])("should get dependency type for $groupType", ({ groupType, expected }) => {
+    expect(getDependencyType(groupType)).toBe(expected);
+  });
+});
+
+describe("getDependencyGroupType", () => {
+  it.each<{ node: DependencyNode; expected: DependencyGroupType }>([
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({ type: "question" }),
+      }),
+      expected: "question",
+    },
+    {
+      node: createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({ type: "model" }),
+      }),
+      expected: "model",
+    },
+    {
+      node: createMockTableDependencyNode(),
+      expected: "table",
+    },
+    {
+      node: createMockDashboardDependencyNode(),
+      expected: "dashboard",
+    },
+    {
+      node: createMockMeasureDependencyNode(),
+      expected: "measure",
+    },
+    {
+      node: createMockActionDependencyNode(),
+      expected: "action",
+    },
+    {
+      node: createMockDataAppDependencyNode(),
+      expected: "data-app",
+    },
+  ])("should get group type for $node.type", ({ node, expected }) => {
+    expect(getDependencyGroupType(node)).toBe(expected);
+  });
+});
+
+describe("getDependencyGroupTypeInfo", () => {
+  it.each<{
+    groupType: DependencyGroupType;
+    expected: DependencyGroupTypeInfo;
+  }>([
+    {
+      groupType: "question",
+      expected: { label: "Question", color: "text-secondary" },
+    },
+    { groupType: "model", expected: { label: "Model", color: "core-brand" } },
+    {
+      groupType: "action",
+      expected: { label: "Data action", color: "text-secondary" },
+    },
+    {
+      groupType: "data-app",
+      expected: { label: "Data app", color: "accent4" },
+    },
+    {
+      groupType: "metric",
+      expected: { label: "Metric", color: "core-summarize" },
+    },
+    { groupType: "table", expected: { label: "Table", color: "core-brand" } },
+    {
+      groupType: "dashboard",
+      expected: { label: "Dashboard", color: "core-filter" },
+    },
+    {
+      groupType: "sandbox",
+      expected: {
+        label: "Row and column security rule",
+        color: "feedback-negative",
+      },
+    },
+  ])("should get type info for $groupType", ({ groupType, expected }) => {
+    expect(getDependencyGroupTypeInfo(groupType)).toEqual(expected);
+  });
+});
+
+describe("getDependencyGroupIcon", () => {
+  it.each<{ groupType: DependencyGroupType; expected: IconName }>([
+    { groupType: "question", expected: "table2" },
+    { groupType: "model", expected: "model" },
+    { groupType: "metric", expected: "metric" },
+    { groupType: "table", expected: "table" },
+    { groupType: "dashboard", expected: "dashboard" },
+    { groupType: "transform", expected: "transform" },
+  ])("should get icon for $groupType", ({ groupType, expected }) => {
+    expect(getDependencyGroupIcon(groupType)).toBe(expected);
+  });
+});
+
+describe("getDependencyTypes", () => {
+  it("should convert group types to dependency types", () => {
+    const groupTypes: DependencyGroupType[] = ["question", "model", "table"];
+    expect(getDependencyTypes(groupTypes)).toEqual(["card", "table"]);
+  });
+
+  it("should deduplicate card types", () => {
+    const groupTypes: DependencyGroupType[] = ["question", "model", "metric"];
+    expect(getDependencyTypes(groupTypes)).toEqual(["card"]);
+  });
+});
+
+describe("getCardTypes", () => {
+  it("should extract card types from group types", () => {
+    const groupTypes: DependencyGroupType[] = ["question", "model", "table"];
+    expect(getCardTypes(groupTypes)).toEqual(["question", "model"]);
+  });
+
+  it("should return empty array for non-card types", () => {
+    const groupTypes: DependencyGroupType[] = ["table", "dashboard"];
+    expect(getCardTypes(groupTypes)).toEqual([]);
+  });
+});
+
+describe("getDependentGroups", () => {
+  it("should return non-zero dependent groups", () => {
+    const node = createMockCardDependencyNode({
+      dependents_count: { question: 5, model: 3, table: 0 },
+    });
+    const result = getDependentGroups(node);
+    expect(result).toEqual([
+      { type: "question", count: 5 },
+      { type: "model", count: 3 },
+    ]);
+  });
+
+  it("should return empty array when no dependents", () => {
+    const node = createMockCardDependencyNode({ dependents_count: {} });
+    expect(getDependentGroups(node)).toEqual([]);
+  });
+
+  it("should return the data apps that depend on the node", () => {
+    const node = createMockCardDependencyNode({
+      dependents_count: { "data-app": 2 },
+    });
+    expect(getDependentGroups(node)).toEqual([{ type: "data-app", count: 2 }]);
+  });
+});
+
+describe("getDependencyGroupTitle", () => {
+  it('should return "Restricts table data" for sandbox', () => {
+    const node = createMockSandboxDependencyNode();
+    expect(getDependencyGroupTitle(node, [])).toBe("Restricts table data");
+  });
+
+  it('should return "Nothing uses this" when no groups', () => {
+    const node = createMockCardDependencyNode();
+    expect(getDependencyGroupTitle(node, [])).toBe("Nothing uses this");
+  });
+
+  it('should return "Generates" for transform', () => {
+    const node = createMockTransformDependencyNode();
+    const groups: DependentGroup[] = [{ type: "table", count: 1 }];
+    expect(getDependencyGroupTitle(node, groups)).toBe("Generates");
+  });
+
+  it('should return "Used by" for other types with dependents', () => {
+    const node = createMockCardDependencyNode();
+    const groups: DependentGroup[] = [{ type: "question", count: 5 }];
+    expect(getDependencyGroupTitle(node, groups)).toBe("Used by");
+  });
+});
+
+describe("getDependentGroupLabel", () => {
+  it.each<{ type: DependencyGroupType; count: number; expected: string }>([
+    { type: "question", count: 1, expected: "1 question" },
+    { type: "question", count: 5, expected: "5 questions" },
+    { type: "model", count: 1, expected: "1 model" },
+    { type: "model", count: 3, expected: "3 models" },
+    { type: "dashboard", count: 1, expected: "1 dashboard" },
+    { type: "dashboard", count: 2, expected: "2 dashboards" },
+    { type: "data-app", count: 1, expected: "1 data app" },
+    { type: "data-app", count: 2, expected: "2 data apps" },
+  ])("should format $count $type", ({ type, count, expected }) => {
+    expect(getDependentGroupLabel({ type, count })).toBe(expected);
+  });
+});
+
+describe("getErrorTypeLabel", () => {
+  it.each<{ type: AnalysisFindingErrorType; count: number; expected: string }>([
+    { type: "missing-column", count: 1, expected: "Missing column" },
+    { type: "missing-column", count: 2, expected: "Missing columns" },
+    { type: "syntax-error", count: 1, expected: "Syntax error" },
+    { type: "duplicate-column", count: 3, expected: "Duplicate columns" },
+  ])("should format $type with count $count", ({ type, count, expected }) => {
+    expect(getErrorTypeLabel(type, count)).toBe(expected);
+  });
+});
+
+describe("getErrorTypeLabelWithCount", () => {
+  it.each<{ type: AnalysisFindingErrorType; count: number; expected: string }>([
+    { type: "missing-column", count: 1, expected: "1 missing column" },
+    { type: "missing-column", count: 3, expected: "3 missing columns" },
+    { type: "syntax-error", count: 2, expected: "2 syntax errors" },
+  ])("should format $count $type", ({ type, count, expected }) => {
+    expect(getErrorTypeLabelWithCount(type, count)).toBe(expected);
+  });
+});
+
+describe("getDependencyErrors", () => {
+  it("should deduplicate errors by type and detail", () => {
+    const errors: AnalysisFindingError[] = [
+      createMockAnalysisFindingError({
+        id: 1,
+        error_detail: "column_a",
+      }),
+      createMockAnalysisFindingError({
+        id: 2,
+        error_detail: "column_a",
+      }),
+      createMockAnalysisFindingError({
+        id: 3,
+        error_detail: "column_b",
+      }),
+    ];
+    const result = getDependencyErrors(errors);
+    expect(result).toEqual([
+      { type: "missing-column", detail: "column_a" },
+      { type: "missing-column", detail: "column_b" },
+    ]);
+  });
+});
+
+describe("getDependencyErrorGroups", () => {
+  it("should group errors by type", () => {
+    const errors: DependencyError[] = [
+      { type: "missing-column", detail: "col_a" },
+      { type: "missing-column", detail: "col_b" },
+      { type: "syntax-error", detail: "invalid" },
+    ];
+    const result = getDependencyErrorGroups(errors);
+    expect(result).toEqual([
+      {
+        type: "missing-column",
+        errors: [
+          { type: "missing-column", detail: "col_a" },
+          { type: "missing-column", detail: "col_b" },
+        ],
+      },
+      {
+        type: "syntax-error",
+        errors: [{ type: "syntax-error", detail: "invalid" }],
+      },
+    ]);
+  });
+});
+
+describe("getDependencyErrorInfo", () => {
+  it("should return undefined for empty errors", () => {
+    expect(getDependencyErrorInfo([])).toBeUndefined();
+  });
+
+  it("should return single error info with detail", () => {
+    const errors: DependencyError[] = [
+      { type: "missing-column", detail: "column_name" },
+    ];
+    const result = getDependencyErrorInfo(errors);
+    expect(result).toEqual({
+      label: "Missing column",
+      detail: "column_name",
+    });
+  });
+
+  it("should return count for multiple errors of same type", () => {
+    const errors: DependencyError[] = [
+      { type: "missing-column", detail: "col_a" },
+      { type: "missing-column", detail: "col_b" },
+    ];
+    const result = getDependencyErrorInfo(errors);
+    expect(result).toEqual({
+      label: "2 missing columns",
+      detail: null,
+    });
+  });
+
+  it("should return generic count for multiple error types", () => {
+    const errors: DependencyError[] = [
+      { type: "missing-column", detail: "col_a" },
+      { type: "syntax-error", detail: "invalid" },
+    ];
+    const result = getDependencyErrorInfo(errors);
+    expect(result).toEqual({
+      label: "2 problems",
+      detail: null,
+    });
+  });
+});
+
+describe("getDependentErrorNodesCount", () => {
+  it("should count unique nodes with errors", () => {
+    const errors: AnalysisFindingError[] = [
+      createMockAnalysisFindingError({
+        id: 1,
+        analyzed_entity_id: 1,
+        error_detail: "col_a",
+      }),
+      createMockAnalysisFindingError({
+        id: 2,
+        analyzed_entity_id: 1,
+        error_detail: "col_b",
+      }),
+      createMockAnalysisFindingError({
+        id: 3,
+        analyzed_entity_id: 2,
+        error_detail: "col_a",
+      }),
+    ];
+    expect(getDependentErrorNodesCount(errors)).toBe(2);
+  });
+});
+
+describe("getSearchQuery", () => {
+  it.each([
+    { value: "search term", expected: "search term" },
+    { value: "  trimmed  ", expected: "trimmed" },
+    { value: "", expected: undefined },
+    { value: "   ", expected: undefined },
+  ])("should process '$value'", ({ value, expected }) => {
+    expect(getSearchQuery(value)).toBe(expected);
+  });
+});
+
+describe("getDependentErrorNodesLabel", () => {
+  it.each<{ count: number; expected: string }>([
+    { count: 0, expected: "Broken dependents" },
+    { count: 1, expected: "Broken dependent" },
+    { count: 2, expected: "Broken dependents" },
+    { count: 10, expected: "Broken dependents" },
+  ])("should return '$expected' for count $count", ({ count, expected }) => {
+    expect(getDependentErrorNodesLabel(count)).toBe(expected);
+  });
+
+  it("should default to plural form when called without arguments", () => {
+    expect(getDependentErrorNodesLabel()).toBe("Broken dependents");
+  });
+});
+
+describe("getNodeDataSourceEntry", () => {
+  it.each<{
+    description: string;
+    node: DependencyNode;
+    expected: { id: number; type: string } | null;
+  }>([
+    {
+      description: "table node",
+      node: createMockTableDependencyNode({ id: 1 }),
+      expected: { id: 1, type: "table" },
+    },
+    {
+      description: "question card node",
+      node: createMockCardDependencyNode({
+        id: 2,
+        data: createMockCardDependencyNodeData({ type: "question" }),
+      }),
+      expected: { id: 2, type: "card" },
+    },
+    {
+      description: "model card node",
+      node: createMockCardDependencyNode({
+        id: 3,
+        data: createMockCardDependencyNodeData({ type: "model" }),
+      }),
+      expected: { id: 3, type: "card" },
+    },
+    {
+      description: "metric card node",
+      node: createMockCardDependencyNode({
+        id: 4,
+        data: createMockCardDependencyNodeData({ type: "metric" }),
+      }),
+      expected: null,
+    },
+    {
+      description: "dashboard node",
+      node: createMockDashboardDependencyNode({ id: 5 }),
+      expected: null,
+    },
+    {
+      description: "transform node",
+      node: createMockTransformDependencyNode({ id: 6 }),
+      expected: null,
+    },
+    {
+      description: "snippet node",
+      node: createMockSnippetDependencyNode({ id: 7 }),
+      expected: null,
+    },
+    {
+      description: "sandbox node",
+      node: createMockSandboxDependencyNode({ id: 8 }),
+      expected: null,
+    },
+  ])("should return $expected for $description", ({ node, expected }) => {
+    expect(getNodeSourceReplacementEntry(node)).toEqual(expected);
+  });
+
+  it.each<CardType>(["question", "model"])(
+    "should return null for a %s card in a data app's collection",
+    (type) => {
+      const node = createMockCardDependencyNode({
+        data: createMockCardDependencyNodeData({
+          type,
+          collection: createMockCollection({ namespace: "data-apps" }),
+        }),
+      });
+      expect(getNodeSourceReplacementEntry(node)).toBeNull();
+    },
+  );
+});

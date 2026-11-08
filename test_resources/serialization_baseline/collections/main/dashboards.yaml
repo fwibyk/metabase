@@ -1,0 +1,5 @@
+name: Dashboards
+entity_id: cOlDaShBoArDs0ExAmPlx
+slug: dashboards
+serdes/meta:
+- model: Collection

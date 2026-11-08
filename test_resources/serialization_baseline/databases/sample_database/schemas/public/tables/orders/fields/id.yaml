@@ -1,0 +1,17 @@
+name: ID
+display_name: ID
+visibility_type: normal
+table_id:
+- Sample Database
+- PUBLIC
+- ORDERS
+database_type: BIGINT
+base_type: type/BigInteger
+effective_type: type/BigInteger
+semantic_type: type/PK
+database_is_auto_increment: true
+position: 0
+database_position: 0
+serdes/meta:
+- model: Field
+database_indexed: true

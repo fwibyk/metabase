@@ -1,0 +1,173 @@
+import cx from "classnames";
+import { useMemo } from "react";
+
+import DashboardS from "metabase/css/dashboard.module.css";
+import { DashboardHeader } from "metabase/dashboard/components/DashboardHeader";
+import { SIDEBAR_NAME } from "metabase/dashboard/constants";
+import { useDashboardContext } from "metabase/dashboard/context";
+import { getIsHeaderVisible } from "metabase/dashboard/selectors";
+import { useDashboardTimelines } from "metabase/dashboard/timeline-events";
+import { isEmbeddingSdk } from "metabase/embedding-sdk/config";
+import EmbedFrameS from "metabase/embedding/theme.module.css";
+import { useSelector } from "metabase/redux";
+import { FullWidthContainer } from "metabase/styled-components/layout/FullWidthContainer";
+import { Box, Flex } from "metabase/ui";
+import { DASHBOARD_PDF_EXPORT_ROOT_ID } from "metabase/visualizations/lib/save-dashboard-pdf";
+import type { DashboardCard } from "metabase-types/api";
+
+import { DashboardArchivedEntityBanner } from "../DashboardArchivedEntityBanner";
+import {
+  DashboardInfoButton,
+  ExportAsPdfButton,
+  FullscreenToggle,
+} from "../DashboardHeader/buttons";
+import { DashboardParameterPanel } from "../DashboardParameterPanel";
+import { DashboardSidebars } from "../DashboardSidebars";
+import { DashboardTabs } from "../DashboardTabs";
+import { DashboardTitle } from "../DashboardTitle";
+import { FilterApplyToast } from "../FilterApplyToast";
+import { RefreshWidget } from "../RefreshWidget";
+
+import S from "./Dashboard.module.css";
+import { Grid, ParametersList } from "./components";
+import { useDashboardChartPaste } from "./use-dashboard-chart-paste";
+
+const DashboardDefaultView = ({ className }: { className?: string }) => {
+  const {
+    dashboard,
+    isEditing,
+    isFullscreen,
+    isSharing,
+    selectedTabId,
+    sidebar,
+  } = useDashboardContext();
+
+  const hasDockedSidebar = isSharing || sidebar.name === SIDEBAR_NAME.events;
+
+  useDashboardChartPaste();
+  useDashboardTimelines();
+
+  const isHeaderVisible = useSelector(getIsHeaderVisible);
+
+  const currentTabDashcards = useMemo(() => {
+    if (!dashboard || !Array.isArray(dashboard.dashcards)) {
+      return [];
+    }
+    if (!selectedTabId) {
+      return dashboard.dashcards;
+    }
+    return dashboard.dashcards.filter(
+      (dc: DashboardCard) => dc.dashboard_tab_id === selectedTabId,
+    );
+  }, [dashboard, selectedTabId]);
+
+  const tabHasCards = currentTabDashcards.length > 0;
+  const dashboardHasCards = dashboard && dashboard.dashcards.length > 0;
+
+  // While the dashboard loads, its header and grid render skeletons, so lay
+  // the page out as for a dashboard with cards.
+  const isEmpty = dashboard != null && (!dashboardHasCards || !tabHasCards);
+  const hasTabs = (dashboard?.tabs?.length ?? 0) > 1;
+
+  // Embedding SDK has parent containers that requires dashboard to be full height to avoid double scrollbars.
+  const isFullHeight = isEditing || hasDockedSidebar || isEmbeddingSdk();
+
+  return (
+    <Flex
+      className={cx(
+        className,
+        DashboardS.Dashboard,
+        S.DashboardLoadingAndErrorWrapper,
+        {
+          [DashboardS.DashboardFullscreen]: isFullscreen,
+          [S.isFullHeight]: isFullHeight,
+        },
+      )}
+      direction="column"
+      mih="100%"
+      w="100%"
+      flex="1 0 auto"
+      data-testid="dashboard"
+    >
+      {dashboard?.archived && <DashboardArchivedEntityBanner />}
+
+      <Box
+        component="header"
+        className={cx(
+          S.DashboardHeaderContainer,
+          EmbedFrameS.EmbedFrameHeader,
+          {
+            [S.isEmbeddingSdk]: isEmbeddingSdk(),
+            [S.isFullscreen]: isFullscreen,
+            // The tab row draws its own full-width bottom border, so drop the
+            // header container's border when tabs are shown to avoid a doubled line.
+            [S.noBorder]: hasTabs || isEditing || !isHeaderVisible,
+          },
+        )}
+        data-element-id="dashboard-header-container"
+        data-testid="dashboard-header-container"
+      >
+        <Dashboard.Header />
+      </Box>
+
+      <Flex
+        pos="relative"
+        miw={0}
+        mih={0}
+        className={cx(S.DashboardBody, {
+          [S.isHeightConstrained]: isEditing || hasDockedSidebar,
+          [S.isEmbeddingSdk]: isEmbeddingSdk(),
+        })}
+      >
+        <Box
+          className={cx(S.ParametersAndCardsContainer, {
+            [S.shouldMakeDashboardHeaderStickyAfterScrolling]:
+              !isFullscreen && (isEditing || hasDockedSidebar),
+            [S.notEmpty]: !isEmpty,
+          })}
+          id={DASHBOARD_PDF_EXPORT_ROOT_ID}
+          data-element-id="dashboard-parameters-and-cards"
+          data-testid="dashboard-parameters-and-cards"
+        >
+          <DashboardParameterPanel />
+          <FullWidthContainer
+            className={S.CardsContainer}
+            data-element-id="dashboard-cards-container"
+          >
+            <Dashboard.Grid />
+          </FullWidthContainer>
+        </Box>
+
+        <DashboardSidebars />
+      </Flex>
+
+      <FilterApplyToast />
+    </Flex>
+  );
+};
+
+type DashboardComponentType = typeof DashboardDefaultView & {
+  Header: typeof DashboardHeader;
+  Grid: typeof Grid;
+  Title: typeof DashboardTitle;
+  Tabs: typeof DashboardTabs;
+  ParametersList: typeof ParametersList;
+  FullscreenButton: typeof FullscreenToggle;
+  ExportAsPdfButton: typeof ExportAsPdfButton;
+  InfoButton: typeof DashboardInfoButton;
+  RefreshPeriod: typeof RefreshWidget;
+};
+
+// Unjustified type cast. FIXME
+const DashboardComponent = DashboardDefaultView as DashboardComponentType;
+DashboardComponent.Header = DashboardHeader;
+DashboardComponent.Grid = Grid;
+DashboardComponent.Title = DashboardTitle;
+DashboardComponent.Tabs = DashboardTabs;
+DashboardComponent.ParametersList = ParametersList;
+DashboardComponent.FullscreenButton = FullscreenToggle;
+DashboardComponent.ExportAsPdfButton = ExportAsPdfButton;
+DashboardComponent.InfoButton = DashboardInfoButton;
+DashboardComponent.RefreshPeriod = RefreshWidget;
+
+export const Dashboard = DashboardComponent;

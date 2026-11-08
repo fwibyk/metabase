@@ -1,0 +1,628 @@
+(ns lint-migrations-file-test
+  (:require
+   [clojure.java.io :as io]
+   [clojure.spec.alpha :as s]
+   [clojure.string :as str]
+   [clojure.test :refer :all]
+   [lint-migrations-file :as lint-migrations-file]))
+
+(set! *warn-on-reflection* true)
+
+(defn- mock-change-set
+  [& keyvals]
+  {:changeSet
+   (merge
+    {:id      "v49.2024-01-01T10:30:00"
+     :author  "camsaul"
+     :comment "Added x.49.0"
+     :changes [{:whatever {}}]
+     :rollback []}
+    (apply array-map keyvals))})
+
+(defn mock-column [& keyvals]
+  {:column (merge {:name "bird_count", :type "integer", :remarks "Whatever"}
+                  (apply array-map keyvals))})
+
+(defn- mock-add-column-changes [& keyvals]
+  {:addColumn (merge {:tableName "my_table"
+                      :columns   [(mock-column)]}
+                     (apply array-map keyvals))})
+
+(defn- mock-create-table-changes [& keyvals]
+  {:createTable (merge {:tableName "my_table"
+                        :columns   [(mock-column)]
+                        :remarks   "Wow"}
+                       (apply array-map keyvals))})
+
+(defn- validate-file [file & changes]
+  (#'lint-migrations-file/validate-migrations
+   {:databaseChangeLog changes}
+   file))
+
+(defn- get-001-update-migrations-file []
+  (first (filter #(str/ends-with? "001_update_migrations.yaml" (.getName %)) (#'lint-migrations-file/migration-files))))
+
+(defn- validate [& changes]
+  (#'lint-migrations-file/validate-migrations
+   {:databaseChangeLog changes}
+   (get-001-update-migrations-file)))
+
+(defn- validate-ex-info [& changes]
+  (try (#'lint-migrations-file/validate-migrations {:databaseChangeLog changes} (get-001-update-migrations-file))
+       (catch Exception e (ex-data e))))
+
+(defmacro is-thrown-with-error-info? [msg info & body]
+  `(let [exception# (try (do ~@body)
+                         nil
+                         (catch clojure.lang.ExceptionInfo e# e#)
+                         (catch Throwable t#
+                           (throw (ex-info "An unexpected exception type was thrown"
+                                           {:expected clojure.lang.ExceptionInfo
+                                            :actual t#}))))]
+     (is (instance? clojure.lang.ExceptionInfo exception#)
+         "Expected clojure.lang.ExceptionInfo but caught different type.")
+     (is (not (nil? exception#))
+         "No exception was thrown.")
+     (is (::lint-migrations-file/validation-error (ex-data exception#))
+         "The exception was not a validation error.")
+     (let [ex-msg# (.getMessage exception#)
+           ex-data# (dissoc (ex-data exception#) ::lint-migrations-file/validation-error)]
+       (is (= ~msg ex-msg#)
+           "Error message does not match expected.")
+       (is (= ~info ex-data#)
+           "Error info does not match expected."))))
+
+(deftest ^:parallel require-unique-ids-test
+  (testing "Make sure all migration IDs are unique"
+    (is-thrown-with-error-info?
+     "Change set IDs are not distinct."
+     {:duplicates ["v49.2024-01-01T10:30:00"]}
+     (validate
+      (mock-change-set :id "v49.2024-01-01T10:30:00")
+      (mock-change-set :id "v49.2024-01-01T10:30:00")))))
+
+(deftest ^:parallel require-migrations-in-order-test
+  (testing "Migrations must be in order"
+    (is-thrown-with-error-info?
+     "Change set IDs are not in order"
+     {:out-of-order-ids [["v45.00-002" "v45.00-001"]]}
+     (validate
+      (mock-change-set :id "v45.00-002")
+      (mock-change-set :id "v45.00-001")))
+    (is-thrown-with-error-info?
+     "Change set IDs are not in order"
+     {:out-of-order-ids [["v49.2023-12-14T08:54:54"
+                          "v49.2023-12-14T08:54:53"]]}
+     (validate
+      (mock-change-set :id "v49.2023-12-14T08:54:54")
+      (mock-change-set :id "v49.2023-12-14T08:54:53")))))
+
+(deftest ^:parallel only-one-column-per-add-column-test
+  (testing "we should only allow one column per addColumn change"
+    (doseq [id [1 200]]
+      (is (= :ok
+             (validate
+              (mock-change-set
+               :id (format "v45.00-%03d" id)
+               :changes [(mock-add-column-changes)]))))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"Invalid change set\."
+           (validate
+            (mock-change-set
+             :id (format "v45.00-%03d" id)
+             :changes [(mock-add-column-changes :columns [(mock-column :name "A")
+                                                          (mock-column :name "B")])])))))))
+
+(deftest ^:parallel one-change-per-change-set-test
+  (testing "only allow one change per change set"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"Invalid change set\."
+         (validate
+          (mock-change-set :changes [(mock-add-column-changes) (mock-add-column-changes)]))))))
+
+(deftest ^:parallel require-comment-test
+  (testing "require a comment for a change set"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"Invalid change set\."
+         (validate (update (mock-change-set) :changeSet dissoc :comment))))
+    (is (= :ok
+           (validate (mock-change-set :id "v49.2024-01-01T10:30:00", :comment "Added x.45.0"))))))
+
+(deftest ^:parallel no-on-delete-in-constraints-test
+  (testing "Make sure we don't use onDelete in constraints"
+    (doseq [id         [1 200]
+            change-set [(mock-change-set
+                         :id (str "v45.00-" id)
+                         :changes [(mock-add-column-changes
+                                    :columns [(mock-column :constraints {:onDelete "CASCADE"})])])
+                        (mock-change-set
+                         :id (str "v45.00-" id)
+                         :changes [(mock-create-table-changes
+                                    :columns [(mock-column :constraints {:onDelete "CASCADE"})])])]]
+      (testing (format "Change set =\n%s" (pr-str change-set))
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"Invalid change set\."
+             (validate change-set)))))))
+
+(deftest ^:parallel require-remarks-for-create-table-test
+  (testing "require remarks for newly created tables"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"Invalid change set\."
+         (validate
+          (mock-change-set
+           :id "v45.00-001"
+           :changes [(update (mock-create-table-changes) :createTable dissoc :remarks)]))))))
+
+(deftest ^:parallel allow-multiple-sql-changes-if-dbmses-are-different
+  (testing "Allow multiple SQL changes if DBMSes are different"
+    (is (= :ok
+           (validate
+            (mock-change-set
+             :changes
+             [{:sql {:dbms "h2", :sql "1"}}
+              {:sql {:dbms "postgresql", :sql "2"}}
+              {:sql {:dbms "mysql,mariadb", :sql "3"}}])))))
+  (testing "should fail if *any* change is missing dbms"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"Invalid change set\."
+         (validate
+          (mock-change-set
+           :changes
+           [{:sql {:dbms "h2", :sql "1"}}
+            {:sql {:sql "2"}}])))))
+  (testing "should fail if a DBMS is repeated"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"Invalid change set\."
+         (validate
+          (mock-change-set
+           :changes
+           [{:sql {:dbms "h2", :sql "1"}}
+            {:sql {:dbms "postgresql,h2", :sql "2"}}]))))))
+
+(deftest ^:parallel validate-id-test
+  (letfn [(validate-id [id]
+            (validate (mock-change-set :id id)))]
+    (testing "Valid old-style ID"
+      (is (= :ok
+             (validate-id "v42.00-000"))))
+    (testing "Valid new-style ID"
+      (is (= :ok
+             (validate-id "v49.2024-01-01T10:30:00"))))
+    (testing "invalid date components should throw an error"
+      (let [validate-id-strict (fn [id]
+                                 (validate-file (io/file "049_update_migrations.yaml")
+                                                (mock-change-set :id id)))]
+        (are [msg id]
+             (thrown-with-msg?
+              clojure.lang.ExceptionInfo
+              #"non-timestamp ID formats"
+              (validate-id-strict id))
+          "invalid month"  "v49.2024-13-01T10:30:00"
+          "invalid day"    "v49.2024-01-32T10:30:00"
+          "invalid hour"   "v49.2024-01-01T25:30:00"
+          "invalid minute" "v49.2024-01-01T10:60:00"
+          "invalid second" "v49.2024-01-01T10:30:60")))))
+
+(deftest ^:parallel ^:parallel validate-id-in-file-test
+  (letfn [(validate-id [id file]
+            (validate-file (io/file file) (mock-change-set :id id)))]
+    (testing "001_update_migrations.yaml"
+      (let [file "001_update_migrations.yaml"]
+        (is (= :ok
+               (validate-id "v42.00-000" file)))
+        (is (= :ok
+               (validate-id "v45.00-000" file)))
+        (is (= :ok
+               (validate-id "v55.2024-01-01T10:30:00" file)))
+        (is
+         (thrown-with-msg?
+          clojure.lang.ExceptionInfo
+          #"Change set IDs are in the wrong file"
+          (validate-id "v56.2024-01-01T10:30:00" file)))))
+    (testing "later versions"
+      (is (= :ok
+             (validate-id "v56.2024-01-01T10:30:00" "056_update_migrations.yaml")))
+      (is (= :ok
+             (validate-id "v60.2024-01-01T10:30:00" "060_update_migrations.yaml")))
+      (is (= :ok
+             (validate-id "v64.2024-01-01T10:30:00" "064_update_migrations.yaml")))
+      (is
+       (thrown-with-msg?
+        clojure.lang.ExceptionInfo
+        #"Change set IDs are in the wrong file"
+        (validate-id "v55.2024-01-01T10:30:00" "056_update_migrations.yaml")))
+      (is
+       (thrown-with-msg?
+        clojure.lang.ExceptionInfo
+        #"Change set IDs are in the wrong file"
+        (validate-id "v57.2024-01-01T10:30:00" "056_update_migrations.yaml"))))))
+
+(deftest ^:parallel no-versioned-changesets-from-first-versionless-major-test
+  (testing "v67+ changesets must be version-less in a year-based directory, whatever kind of file they are in"
+    (doseq [[file id] [["migrations/067/20270101_something.yaml" "v67.abc123"]
+                       ["067_update_migrations.yaml"             "v67.2027-01-01T12:00:00"]
+                       ["migrations/068/20270601_something.yaml" "v68.abc123"]]]
+      (is-thrown-with-error-info? (str "Versioned changesets are not allowed from v67 on; add new changesets to a "
+                                       "year-based directory (e.g. migrations/2026/) with version-less IDs: " id)
+                                  {:versioned-ids [id] :first-versionless-major 67}
+                                  (validate-file (io/file file) (mock-change-set :id id)))))
+  (testing "every offending id is reported"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"v67.abc123, v67.def456$"
+                          (validate-file (io/file "migrations/067/20270101_something.yaml")
+                                         (mock-change-set :id "v67.abc123")
+                                         (mock-change-set :id "v67.def456")))))
+  (testing "v66 and earlier versioned changesets are still allowed"
+    (is (= :ok (validate-file (io/file "migrations/066/20261101_something.yaml") (mock-change-set :id "v66.abc123"))))
+    (is (= :ok (validate-file (io/file "migrations/065/20260911_glossary_entity_id.yaml")
+                              (mock-change-set :id "v65.2026-09-11T12:00:00"))))
+    (is (= :ok (validate-file (io/file "056_update_migrations.yaml") (mock-change-set :id "v56.2024-01-01T10:30:00")))))
+  (testing "year-based directories are not versioned"
+    (is (= :ok (validate-file (io/file "migrations/2026/20261101_something.yaml")
+                              (mock-change-set :id "something_versionless"))))))
+
+(deftest ^:parallel versioned-and-version-less-layouts-do-not-mix-test
+  (testing "a version-less id may not sneak into the versioned 065/ file, nor a v65 id into 2026/"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (validate-file (io/file "migrations/065/20261012_glossary_entity_id.yaml")
+                                (mock-change-set :id "glossary_entity_id"))))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"look like dates or timestamps"
+                          (validate-file (io/file "migrations/2026/20261012_glossary_entity_id.yaml")
+                                         (mock-change-set :id "v65.2026-10-12T12:00:00"))))))
+
+(deftest ^:parallel year-dir-allows-version-less-ids-test
+  (testing "year-based directories allow version-less changeset IDs"
+    (is (= :ok
+           (validate-file (io/file "migrations/2026/20260616_workspaces.yaml")
+                          (mock-change-set :id "aeiagus09e"))))))
+
+(deftest ^:parallel versioned-dirs-reject-version-less-ids-test
+  (testing "version-numbered directories still reject version-less changeset IDs"
+    (is (thrown?
+         clojure.lang.ExceptionInfo
+         (validate-file (io/file "migrations/060/20260616_workspaces.yaml")
+                        (mock-change-set :id "aeiagus09e"))))
+    (testing "but still accept properly prefixed IDs"
+      (is (= :ok
+             (validate-file (io/file "migrations/060/20260616_workspaces.yaml")
+                            (mock-change-set :id "v60.aeiagus09e")))))))
+
+(deftest ^:parallel year-dir-accepts-valid-version-less-ids-test
+  (testing "year-based directories accept lowercase alphanumeric/underscore IDs with at least one letter"
+    (doseq [good-id ["aeiagus09e" "workspaces_init" "a1234567"]]
+      (is (= :ok
+             (validate-file (io/file "migrations/2026/20260616_workspaces.yaml")
+                            (mock-change-set :id good-id)))
+          good-id))))
+
+(deftest ^:parallel year-dir-rejects-invalid-version-less-ids-test
+  (testing "year-based directories reject invalid version-less IDs"
+    (doseq [bad-id ["foo-bar"             ; dash
+                    "v60.aeiagus09e"      ; version-prefixed
+                    "foo.bar"             ; dot
+                    "20260703"            ; all digits: looks like a pre-4.2 changeset id to decide-liquibase-file
+                    "12345"               ; all digits
+                    "v60abc"              ; leading v<digit>: pollutes old binaries' `id LIKE 'v%'` version scans
+                    "view_metrics"        ; any leading v: old binaries' max `id LIKE 'v%'` scan would pick it
+                    "Foo_bar"]]           ; uppercase
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"invalid changeset IDs"
+           (validate-file (io/file "migrations/2026/20260616_workspaces.yaml")
+                          (mock-change-set :id bad-id)))
+          bad-id))))
+
+(deftest ^:parallel year-dir-rejects-non-string-ids-test
+  (testing "an unquoted YAML id that parses as a number or boolean gets the validation error, not a ClassCastException"
+    (doseq [bad-id [20260703 true]]
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"invalid changeset IDs"
+           (validate-file (io/file "migrations/2026/20260616_workspaces.yaml")
+                          (mock-change-set :id bad-id)))
+          (pr-str bad-id)))))
+
+(deftest ^:parallel year-dir-rejects-date-like-ids-test
+  (testing "year-based directories reject the ISO date/timestamp ids the versioned changesets used"
+    (doseq [bad-id ["2026-02-09T12:00:00"   ; the old `vNN.` id body
+                    "2026-02-09t12:00:00"
+                    "2026-02-09"
+                    "widgets_2026-02-09"]]
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"look like dates or timestamps"
+           (validate-file (io/file "migrations/2026/20260616_workspaces.yaml")
+                          (mock-change-set :id bad-id)))
+          bad-id))
+    (testing "digits on their own are fine"
+      (doseq [good-id ["widgets_v2" "a1234567" "phase_2026" "table_1_2_3" "add_widgets_20260918"]]
+        (is (= :ok
+               (validate-file (io/file "migrations/2026/20260616_workspaces.yaml")
+                              (mock-change-set :id good-id)))
+            good-id)))))
+
+(deftest ^:parallel year-dir-requires-rollback-test
+  (testing "year-based directory migrations still require rollback for non-auto-rollback change types"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"Rollback is required but not present\."
+         (validate-file (io/file "migrations/2026/20260616_workspaces.yaml")
+                        (update (mock-change-set :id "aeiagus09e" :changes [{:sql {:sql "select 1"}}])
+                                :changeSet dissoc :rollback))))))
+(deftest ^:parallel year-dir-prevent-bare-types-test
+  ;; Regression: the bare-type checks filter changesets through changeset-version+id, which only parses `vNN.` ids --
+  ;; version-less year-dir ids returned nil and were silently EXEMPT from the boolean/datetime checks.
+  (let [year-file (io/file "migrations/2026/20260616_workspaces.yaml")]
+    (testing "year-dir migrations may use the parameterized types"
+      (is (= :ok
+             (validate-file year-file
+                            (mock-change-set
+                             :id "aeiagus09e"
+                             :changes [(mock-add-column-changes
+                                        :columns [(mock-column :type "${boolean.type}")])]))))
+      (is (= :ok
+             (validate-file year-file
+                            (mock-change-set
+                             :id "aeiagus09e"
+                             :changes [(mock-add-column-changes
+                                        :columns [(mock-column :type "${timestamp_type}")])])))))
+    (testing "year-dir migrations cannot add bare boolean columns"
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"uses invalid types"
+           (validate-file year-file
+                          (mock-change-set
+                           :id "aeiagus09e"
+                           :changes [(mock-add-column-changes
+                                      :columns [(mock-column :type "boolean")])])))))
+    (testing "year-dir migrations cannot add bare datetime/timestamp columns"
+      (doseq [bad-type ["datetime" "timestamp" "timestamp without time zone"]]
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"uses invalid types"
+             (validate-file year-file
+                            (mock-change-set
+                             :id "aeiagus09e"
+                             :changes [(mock-add-column-changes
+                                        :columns [(mock-column :type bad-type)])])))
+            bad-type)))))
+
+(deftest ^:parallel prevent-text-types-test
+  (testing "should allow \"${text.type}\" columns from being added"
+    (is (= :ok
+           (validate
+            (mock-change-set
+             :id "v49.2024-01-01T10:30:00"
+             :changes [(mock-add-column-changes :columns [(mock-column :type "${text.type}")])]))))
+    (doseq [problem-type ["blob" "text"]]
+      (testing (format "should prevent \"%s\" columns from being added after ID 320" problem-type)
+        (is-thrown-with-error-info?
+         "Migration(s) ['v49.2024-01-01T10:30:00'] uses invalid types (in 'blob','text')"
+         {:invalid-ids ["v49.2024-01-01T10:30:00"]
+          :target-types #{"blob" "text"}}
+         (validate
+          (mock-change-set
+           :id "v49.2024-01-01T10:30:00"
+           :changes [(mock-add-column-changes :columns [(mock-column :type problem-type)])])))))))
+
+(deftest ^:parallel prevent-bare-boolean-type-test
+  (testing "should allow adding \"${boolean.type}\" columns"
+    (is (= :ok
+           (validate
+            (mock-change-set
+             :id "v49.00-033"
+             :changes [(mock-add-column-changes :columns [(mock-column :type "${boolean.type}")])]))))
+    (testing "should prevent \"boolean\" columns from being added after ID v49.00-033"
+      (is-thrown-with-error-info?
+       "Migration(s) ['v49.00-033'] uses invalid types (in 'boolean')"
+       {:invalid-ids ["v49.00-033"]
+        :target-types #{"boolean"}}
+       (validate (mock-change-set
+                  :id "v49.00-033"
+                  :changes [(mock-add-column-changes :columns [(mock-column :type "boolean")])]))))))
+
+(defn- validate-065 [& changes]
+  (apply validate-file (io/file "065/20261019_test.yaml") changes))
+
+(defn- validate-065-older [& changes]
+  (apply validate-file (io/file "065/20261018_test.yaml") changes))
+
+(deftest ^:parallel require-entity-id-type-test
+  (testing "should allow \"${entity_id.type}\" entity_id columns"
+    (is (= :ok
+           (validate-065
+            (mock-change-set
+             :id "v65.2026-10-19T00:00:00"
+             :changes [(mock-add-column-changes :columns [(mock-column :name "entity_id" :type "${entity_id.type}")])])))))
+  (testing "should prevent bare char(21) entity_id columns in files from 20261019 on"
+    (doseq [change [(mock-add-column-changes :columns [(mock-column :name "entity_id" :type "char(21)")])
+                    (mock-create-table-changes :columns [(mock-column :name "entity_id" :type "CHAR(21)")])
+                    {:addNotNullConstraint {:tableName "my_table" :columnName "entity_id" :columnDataType "char(21)"}}
+                    {:modifyDataType {:tableName "my_table" :columnName "entity_id" :newDataType "char(21)"}}]]
+      (is-thrown-with-error-info?
+       "Migration(s) ['v65.2026-10-19T00:00:00'] give entity_id the bare char(21) type; use ${entity_id.type}"
+       {:invalid-ids ["v65.2026-10-19T00:00:00"]}
+       (validate-065 (mock-change-set :id "v65.2026-10-19T00:00:00" :changes [change] :rollback nil))))
+    (testing "but not in older migrations, nor for other columns or other entity_id types"
+      (is (= :ok (validate-065-older (mock-change-set
+                                      :id "v65.2026-10-18T00:00:00"
+                                      :changes [(mock-add-column-changes :columns [(mock-column :name "entity_id" :type "char(21)")])]))))
+      (doseq [column [(mock-column :name "other_id" :type "char(21)")
+                      (mock-column :name "entity_id" :type "bigint")]]
+        (is (= :ok (validate-065 (mock-change-set
+                                  :id "v65.2026-10-19T00:00:00"
+                                  :changes [(mock-add-column-changes :columns [column])]))))))))
+
+(deftest ^:parallel require-rollback-test
+  (testing "change types with no automatic rollback support"
+    (testing "missing rollback key fails"
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"Rollback is required but not present\."
+           (validate (update (mock-change-set :id "v49.2024-01-01T10:30:00" :changes [{:sql {:sql "select 1"}}])
+                             :changeSet dissoc :rollback)))))
+    (testing "nil rollback is allowed"
+      (is (= :ok (validate (mock-change-set :id "v49.2024-01-01T10:30:00"
+                                            :changes [{:sql {:sql "select 1"}}]
+                                            :rollback nil)))))
+    (testing "rollback values are allowed"
+      (is (= :ok (validate (mock-change-set :id "v49.2024-01-01T10:30:00"
+                                            :changes [{:sql {:sql "select 1"}}]
+                                            :rollback {:sql {:sql "select 1"}}))))))
+  (testing "change types with automatic rollback support are allowed"
+    (is (= :ok (validate (mock-change-set :id "v49.2024-01-01T10:30:00" :changes [(mock-add-column-changes)]))))))
+
+(deftest ^:parallel disallow-deletecascade-in-addcolumn-test
+  (testing "addColumn with deleteCascade fails"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"Invalid change set."
+         (validate (mock-change-set :id "v49.2024-01-01T10:30:00"
+                                    :changes [(mock-add-column-changes
+                                               :columns [(mock-column :constraints {:deleteCascade true})])]))))))
+
+(deftest ^:parallel custom-changes-test
+  (let [change-set (mock-change-set
+                    :changes
+                    [{:customChange {:class "metabase.app_db.custom_migrations.ReversibleUppercaseCards"}}])]
+    (is (= :ok
+           (validate change-set))))
+  (testing "missing value"
+    (let [change-set (mock-change-set
+                      :changes
+                      [{:customChange {}}])
+          ex-info    (validate-ex-info change-set)]
+      (is (not= :ok ex-info))))
+  (testing "invalid values"
+    (doseq [bad-value [nil 3 ""]]
+      (let [change-set (mock-change-set
+                        :changes
+                        [{:customChange {:class bad-value}}])
+            ex-info    (validate-ex-info change-set)
+            specific   (->> ex-info
+                            ::s/problems
+                            (some (fn [problem]
+                                    (when (= (:val problem) bad-value)
+                                      problem))))]
+        (is (not= :ok ex-info))
+        (is (= [:change.strict/customChange :custom-change/class]
+               (take-last 2 (:via specific))))))))
+
+(deftest ^:parallel forbidden-new-types-test
+  (testing "should throw if changes contains text type"
+    (is (is-thrown-with-error-info?
+         "Migration(s) ['v45.12-345'] uses invalid types (in 'blob','text')"
+         {:invalid-ids ["v45.12-345"]
+          :target-types #{"blob" "text"}}
+         (validate (mock-change-set :id "v45.12-345"
+                                    :changes [{:modifyDataType {:newDataType "text"}}]
+                                    :rollback nil))))
+    (is-thrown-with-error-info?
+     "Migration(s) ['v45.12-345'] uses invalid types (in 'blob','text')"
+     {:invalid-ids ["v45.12-345"]
+      :target-types #{"blob" "text"}}
+     (validate (mock-change-set :id "v45.12-345"
+                                :changes [{:createTable {:tableName "my_table"
+                                                         :remarks "meow"
+                                                         :columns [{:column {:name "foo"
+                                                                             :remarks "none"
+                                                                             :type "text"}}]}}]
+                                :rollback nil)))))
+
+(deftest ^:parallel forbidden-new-types-test-2
+  (testing "should throw if changes contains boolean type"
+    (is-thrown-with-error-info?
+     "Migration(s) ['v49.00-033'] uses invalid types (in 'boolean')"
+     {:invalid-ids ["v49.00-033"]
+      :target-types #{"boolean"}}
+     (validate (mock-change-set :id "v49.00-033"
+                                :changes [{:modifyDataType {:newDataType "boolean"}}]
+                                :rollback nil)))
+    (is-thrown-with-error-info?
+     "Migration(s) ['v49.00-033'] uses invalid types (in 'boolean')"
+     {:invalid-ids ["v49.00-033"]
+      :target-types #{"boolean"}}
+     (validate (mock-change-set :id "v49.00-033"
+                                :changes [{:createTable {:tableName "my_table"
+                                                         :remarks "meow"
+                                                         :columns [{:column {:name "foo"
+                                                                             :remarks "none"
+                                                                             :type "boolean"}}]}}])))
+    (testing "does not throw for older migrations"
+      (is (validate (mock-change-set :id "v45.00-033"
+                                     :changes [{:createTable {:tableName "my_table"
+                                                              :remarks "meow"
+                                                              :columns [{:column {:name "foo"
+                                                                                  :remarks "none"
+                                                                                  :type "boolean"}}]}}]))))))
+
+(deftest ^:parallel forbidden-new-types-test-3
+  (testing "should throw if changes contains datetime type"
+    (is-thrown-with-error-info?
+     "Migration(s) ['v49.00-033'] uses invalid types (in 'timestamp','timestamp without time zone','datetime')"
+     {:invalid-ids ["v49.00-033"]
+      :target-types #{"timestamp" "timestamp without time zone" "datetime"}}
+     (validate (mock-change-set :id "v49.00-033"
+                                :changes [{:modifyDataType {:newDataType "datetime"}}]
+                                :rollback nil)))
+    (testing "(but not if it's an older migration)"
+      (is (validate (mock-change-set :id "v45.12-345"
+                                     :changes [{:createTable {:tableName "my_table"
+                                                              :remarks "meow"
+                                                              :columns [{:column {:name "foo"
+                                                                                  :remarks "none"
+                                                                                  :type "timestamp with time zone"}}]}}]
+                                     :rollback nil))))))
+
+(deftest ^:parallel require-no-run-always-test
+  (testing "runAlways is rejected"
+    (is-thrown-with-error-info?
+     "Migration 'v49.2024-01-01T10:30:00' uses runAlways, which Metabase does not support: every boot would run it as a new migration, and with MB_DB_AUTOMIGRATE=false Metabase would never start. See require-no-run-always in bin/lint-migrations-file."
+     {:id "v49.2024-01-01T10:30:00"}
+     (validate (mock-change-set :runAlways true))))
+  (testing "runAlways: false and runOnChange pass"
+    (is (= :ok (validate (mock-change-set :runAlways false))))
+    (is (= :ok (validate (mock-change-set :runOnChange true))))))
+
+(deftest ^:parallel require-table-scoped-existence-preconditions-test
+  (testing "foreignKeyConstraintExists without foreignKeyTableName is rejected"
+    (is-thrown-with-error-info?
+     "Migration 'v49.2024-01-01T10:30:00' has foreignKeyConstraintExists precondition without foreignKeyTableName: without it Liquibase snapshots the entire schema to answer the check (~2s per precondition on a large postgres appdb)"
+     {:id "v49.2024-01-01T10:30:00"}
+     (validate
+      (mock-change-set
+       :preConditions [{:onFail "MARK_RAN"}
+                       {:not [{:foreignKeyConstraintExists {:foreignKeyName "fk_my_table_other_id"}}]}]))))
+  (testing "foreignKeyConstraintExists with foreignKeyTableName passes"
+    (is (= :ok
+           (validate
+            (mock-change-set
+             :preConditions [{:onFail "MARK_RAN"}
+                             {:not [{:foreignKeyConstraintExists {:foreignKeyName      "fk_my_table_other_id"
+                                                                  :foreignKeyTableName "my_table"}}]}])))))
+  (testing "indexExists without tableName is rejected, including in flat-map not form"
+    (is-thrown-with-error-info?
+     "Migration 'v49.2024-01-01T10:30:00' has indexExists precondition without tableName: without it Liquibase snapshots the entire schema to answer the check (~2s per precondition on a large postgres appdb)"
+     {:id "v49.2024-01-01T10:30:00"}
+     (validate
+      (mock-change-set
+       :preConditions [{:not {:indexExists {:indexName "idx_my_table_other_id"}}}]))))
+  (testing "indexExists with tableName passes"
+    (is (= :ok
+           (validate
+            (mock-change-set
+             :preConditions [{:not {:indexExists {:indexName "idx_my_table_other_id"
+                                                  :tableName "my_table"}}}])))))
+  (testing "primaryKeyExists without tableName is still rejected (previous rule subsumed)"
+    (is-thrown-with-error-info?
+     "Migration 'v49.2024-01-01T10:30:00' has primaryKeyExists precondition without tableName: without it Liquibase snapshots the entire schema to answer the check (~2s per precondition on a large postgres appdb)"
+     {:id "v49.2024-01-01T10:30:00"}
+     (validate
+      (mock-change-set
+       :preConditions [{:primaryKeyExists {:primaryKeyName "pk_my_table"}}])))))

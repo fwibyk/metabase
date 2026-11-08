@@ -1,0 +1,15 @@
+name: ADDRESS
+display_name: Address
+visibility_type: normal
+table_id:
+- Sample Database
+- PUBLIC
+- PEOPLE
+database_type: CHARACTER VARYING
+base_type: type/Text
+effective_type: type/Text
+position: 1
+database_position: 1
+serdes/meta:
+- model: Field
+database_indexed: false

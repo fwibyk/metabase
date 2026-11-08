@@ -1,0 +1,126 @@
+import { act, screen } from "@testing-library/react";
+import type { ComponentProps } from "react";
+
+import { renderWithProviders } from "__support__/ui";
+import { ThemeProvider } from "metabase/ui";
+
+import { GridLayout } from "./GridLayout";
+
+jest.mock("./GridLayout.module.css", () => ({
+  withoutTransitions: "withoutTransitions",
+}));
+
+// Sample items for testing
+const testItems = [
+  { id: 1, name: "Item 1" },
+  { id: 2, name: "Item 2" },
+];
+
+// Default props for tests
+const defaultProps = {
+  items: testItems,
+  itemRenderer: ({ item, gridItemWidth, breakpoint, totalNumGridCols }) => (
+    <div
+      key={item.id}
+      data-testid={`item-${item.id}`}
+      data-width={gridItemWidth}
+      data-breakpoint={breakpoint}
+      data-cols={totalNumGridCols}
+    >
+      {item.id}
+    </div>
+  ),
+  isEditing: false,
+  onLayoutChange: jest.fn(),
+  breakpoints: { desktop: 992, mobile: 768 },
+  layouts: {
+    desktop: [
+      { i: "1", x: 0, y: 0, w: 2, h: 2 },
+      { i: "2", x: 2, y: 0, w: 2, h: 2 },
+    ],
+    mobile: [
+      { i: "1", x: 0, y: 0, w: 1, h: 1 },
+      { i: "2", x: 0, y: 1, w: 1, h: 1 },
+    ],
+  },
+  cols: { desktop: 12, mobile: 6 },
+  width: 1200,
+  margin: {
+    // Unjustified type cast. FIXME
+    desktop: [10, 10] as [number, number],
+    // Unjustified type cast. FIXME
+    mobile: [5, 5] as [number, number],
+  },
+  rowHeight: 100,
+} as ComponentProps<typeof GridLayout>;
+
+function setup(props: Partial<ComponentProps<typeof GridLayout>> = {}) {
+  renderWithProviders(
+    <ThemeProvider>
+      <GridLayout {...defaultProps} {...props} />
+    </ThemeProvider>,
+  );
+
+  // eslint-disable-next-line testing-library/no-node-access -- react-grid-layout doesn't forward test ids to its root
+  const grid = screen.getByTestId("item-1").parentElement;
+  return { grid };
+}
+
+// Enough for the two animation frames GridLayout waits for after mounting
+const waitForPaint = () => act(() => jest.advanceTimersByTime(100));
+
+describe("GridLayout", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Mock window.innerHeight
+    Object.defineProperty(window, "innerHeight", {
+      value: 800,
+      writable: true,
+    });
+
+    // ReactGridLayout internally uses offsetParent, which is not supported by jsdom
+    // This is a workaround to make it work
+    Object.defineProperty(HTMLElement.prototype, "offsetParent", {
+      get() {
+        // eslint-disable-next-line testing-library/no-node-access
+        return this.parentNode;
+      },
+    });
+  });
+
+  test("renders all items correctly", () => {
+    renderWithProviders(
+      <ThemeProvider>
+        <GridLayout {...defaultProps} />,
+      </ThemeProvider>,
+    );
+
+    // Check if all items are rendered
+    expect(screen.getByTestId("item-1")).toBeInTheDocument();
+    expect(screen.getByTestId("item-2")).toBeInTheDocument();
+  });
+
+  describe("card transitions", () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    test("are disabled outside of edit mode", () => {
+      const { grid } = setup({ isEditing: false });
+      waitForPaint();
+      expect(grid).toHaveClass("withoutTransitions");
+    });
+
+    test("are disabled in edit mode until the grid has painted after mounting", () => {
+      const { grid } = setup({ isEditing: true });
+      expect(grid).toHaveClass("withoutTransitions");
+
+      waitForPaint();
+      expect(grid).not.toHaveClass("withoutTransitions");
+    });
+  });
+});

@@ -1,0 +1,7 @@
+.name {
+  &:hover,
+  &:focus-within {
+    position: relative;
+    z-index: 1; /* prevent focus state from being cut off after imitating collapsed borders */
+  }
+}

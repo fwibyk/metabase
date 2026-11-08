@@ -1,0 +1,215 @@
+import type { ChangeEventHandler } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { t } from "ttag";
+
+import { EmptyState } from "metabase/common/components/EmptyState";
+import { useDebouncedValue } from "metabase/common/hooks/use-debounced-value";
+import { useTranslateContent } from "metabase/content-translation/hooks";
+import { PLUGIN_CONTENT_TRANSLATION } from "metabase/content-translation/plugins";
+import { Box, Checkbox, Input, Text, TextInput } from "metabase/ui";
+import { delay } from "metabase/utils/delay";
+import type { RowValue } from "metabase-types/api";
+
+import S from "./ListField.module.css";
+import type { ListFieldProps, Option } from "./types";
+import {
+  createOptionsFromValuesWithoutOptions,
+  getOptionDisplayName,
+  normalizeValuesToOptionKeys,
+  optionItemEqualsFilter,
+  optionMatchesFilter,
+} from "./utils";
+
+const DEBOUNCE_FILTER_TIME = delay(100);
+
+export const ListField = ({
+  onChange,
+  value,
+  options,
+  optionRenderer,
+  placeholder,
+  isDashboardFilter,
+}: ListFieldProps) => {
+  const normalizedValue = useMemo(
+    () => normalizeValuesToOptionKeys(value, options),
+    [value, options],
+  );
+  const [selectedValues, setSelectedValues] = useState(
+    new Set(normalizedValue),
+  );
+  const initiallySelectedValuesRef = useRef(selectedValues);
+  const [addedOptions, setAddedOptions] = useState<Option[]>(() =>
+    createOptionsFromValuesWithoutOptions(normalizedValue, options),
+  );
+
+  const augmentedOptions = useMemo(() => {
+    return [...options.filter((option) => option[0] != null), ...addedOptions];
+  }, [addedOptions, options]);
+
+  const tc = useTranslateContent();
+  const sortByTranslation =
+    PLUGIN_CONTENT_TRANSLATION.useSortByContentTranslation();
+
+  const optionsHaveSomeTranslations = useMemo(
+    () => augmentedOptions.some(([option]) => tc(option) !== option),
+    [augmentedOptions, tc],
+  );
+
+  const sortOptions = useCallback(
+    (optionA: Option, optionB: Option) => {
+      const aSelected = initiallySelectedValuesRef.current.has(optionA[0]);
+      const bSelected = initiallySelectedValuesRef.current.has(optionB[0]);
+
+      if (aSelected && !bSelected) {
+        return -1;
+      }
+      if (!aSelected && bSelected) {
+        return 1;
+      }
+
+      // If no options have translations, rely on the sorting that was already
+      // done in the backend
+      if (!optionsHaveSomeTranslations) {
+        return 0;
+      }
+
+      const aName = getOptionDisplayName(optionA),
+        bName = getOptionDisplayName(optionB);
+      return typeof aName === "string" && typeof bName === "string"
+        ? sortByTranslation(aName, bName)
+        : 0;
+    },
+    [optionsHaveSomeTranslations, sortByTranslation],
+  );
+
+  const sortedOptions = useMemo(
+    () => [...augmentedOptions].sort(sortOptions),
+    [augmentedOptions, sortOptions],
+  );
+
+  const [filter, setFilter] = useState("");
+  const debouncedFilter = useDebouncedValue(filter, DEBOUNCE_FILTER_TIME);
+
+  const filteredOptions = useMemo(() => {
+    const formattedFilter = debouncedFilter.trim().toLowerCase();
+    if (formattedFilter.length === 0) {
+      return sortedOptions;
+    }
+    return sortedOptions.filter((option) =>
+      optionMatchesFilter(option, formattedFilter, tc),
+    );
+  }, [debouncedFilter, sortedOptions, tc]);
+
+  const selectedFilteredOptions = filteredOptions.filter(([value]) =>
+    selectedValues.has(value),
+  );
+  const isAll = selectedFilteredOptions.length === filteredOptions.length;
+  const isNone = selectedFilteredOptions.length === 0;
+
+  const shouldShowEmptyState =
+    augmentedOptions.length > 0 && filteredOptions.length === 0;
+
+  const handleToggleOption = (option: RowValue) => {
+    const newSelectedValues = selectedValues.has(option)
+      ? Array.from(selectedValues).filter((value) => value !== option)
+      : [...selectedValues, option];
+
+    setSelectedValues(new Set(newSelectedValues));
+    onChange(newSelectedValues);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent) => {
+    if (event.nativeEvent.isComposing) {
+      return;
+    }
+    if (
+      event.key === "Enter" &&
+      filter.trim().length > 0 &&
+      !augmentedOptions.some((option) =>
+        optionItemEqualsFilter(option[0], filter),
+      )
+    ) {
+      event.preventDefault();
+      setAddedOptions([...addedOptions, [filter]]);
+    }
+  };
+
+  const handleFilterChange: ChangeEventHandler<HTMLInputElement> = (e) =>
+    setFilter(e.target.value);
+
+  const handleToggleAll = () => {
+    const newSelectedValuesSet = new Set(selectedValues);
+    filteredOptions.forEach(([value]) => {
+      if (isAll) {
+        newSelectedValuesSet.delete(value);
+      } else {
+        newSelectedValuesSet.add(value);
+      }
+    });
+    onChange(Array.from(newSelectedValuesSet));
+    setSelectedValues(newSelectedValuesSet);
+  };
+
+  return (
+    <>
+      <TextInput
+        autoFocus
+        placeholder={placeholder}
+        value={filter}
+        onChange={handleFilterChange}
+        onKeyDown={handleKeyDown}
+        rightSectionPointerEvents="all"
+        rightSection={
+          filter.length > 0 ? (
+            <Input.ClearButton
+              c="text-secondary"
+              onClick={() => setFilter("")}
+            />
+          ) : null
+        }
+        mb={isDashboardFilter ? 0 : "sm"}
+        data-testid="list-field"
+      />
+
+      {shouldShowEmptyState && (
+        <Box pt="xxl" px="xxl">
+          <EmptyState message={t`Didn't find anything`} icon="search" />
+        </Box>
+      )}
+
+      <Box
+        component="ul"
+        className={S.optionsList}
+        mah={isDashboardFilter ? 300 : undefined}
+        pt={isDashboardFilter ? "sm" : undefined}
+        px={isDashboardFilter ? "sm" : undefined}
+      >
+        {filteredOptions.length > 0 && (
+          <Box component="li" py="sm" px="xxxs">
+            <Checkbox
+              variant="stacked"
+              label={
+                <Text c="text-secondary" lh="inherit">
+                  {debouncedFilter ? t`Select these` : t`Select all`}
+                </Text>
+              }
+              checked={isAll}
+              indeterminate={!isAll && !isNone}
+              onChange={handleToggleAll}
+            />
+          </Box>
+        )}
+        {filteredOptions.map((option, index) => (
+          <Box component="li" key={index} py="sm" px="xxxs">
+            <Checkbox
+              data-testid={`${option[0]}-filter-value`}
+              checked={selectedValues.has(option[0])}
+              label={optionRenderer(option)}
+              onChange={() => handleToggleOption(option[0])}
+            />
+          </Box>
+        ))}
+      </Box>
+    </>
+  );
+};

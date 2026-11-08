@@ -1,0 +1,65 @@
+import { useEffect, useMemo, useState } from "react";
+
+import {
+  useAddSampleDatabaseMutation,
+  useListDatabasesQuery,
+  useListEnginesQuery,
+} from "metabase/api";
+import { LoadingAndGenericErrorWrapper } from "metabase/common/components/LoadingAndGenericErrorWrapper";
+import { getUserIsAdmin } from "metabase/current-user";
+import { PLUGIN_FEATURE_LEVEL_PERMISSIONS } from "metabase/plugins";
+import { useSelector } from "metabase/redux";
+import { isSyncInProgress } from "metabase/utils/syncing";
+
+import { DatabaseList } from "../components/DatabaseList";
+import { getDeletes, getDeletionError } from "../selectors";
+
+interface DatabaseListAppProps {
+  children?: React.ReactNode;
+}
+
+export const DatabaseListApp = (props: DatabaseListAppProps) => {
+  const isAdmin = useSelector(getUserIsAdmin);
+  const deletes = useSelector(getDeletes);
+  const deletionError = useSelector(getDeletionError);
+  const { data: engines = {} } = useListEnginesQuery();
+
+  const [addSampleDb, addSampleDbResult] = useAddSampleDatabaseMutation();
+
+  const [pollingInterval, setPollingInterval] = useState<number>();
+
+  const databasesReq = useListDatabasesQuery(
+    {
+      ...PLUGIN_FEATURE_LEVEL_PERMISSIONS.databaseDetailsQueryProps,
+      include_stubs: true,
+    },
+    { pollingInterval },
+  );
+
+  const dbs = useMemo(() => databasesReq?.data?.data ?? [], [databasesReq]);
+  const isSyncing = useMemo(() => dbs.some(isSyncInProgress), [dbs]);
+
+  useEffect(() => {
+    setPollingInterval(isSyncing ? 2000 : undefined);
+  }, [isSyncing]);
+
+  return (
+    <LoadingAndGenericErrorWrapper
+      loading={databasesReq.isLoading}
+      error={databasesReq.error}
+      noWrapper
+    >
+      <DatabaseList
+        {...props}
+        databases={dbs}
+        addSampleDatabase={addSampleDb}
+        isAddingSampleDatabase={addSampleDbResult.isLoading}
+        addSampleDatabaseError={addSampleDbResult.isError}
+        engines={engines}
+        deletes={deletes}
+        deletionError={deletionError}
+        isAdmin={isAdmin}
+      />
+    </LoadingAndGenericErrorWrapper>
+  );
+};

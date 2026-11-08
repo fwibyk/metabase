@@ -1,0 +1,201 @@
+import cx from "classnames";
+import {
+  Children,
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+  isValidElement,
+  memo,
+  useMemo,
+} from "react";
+import { t } from "ttag";
+
+import { mbProtocolModelToSuggestionModel } from "metabase/rich_text_editing/tiptap/extensions/shared/suggestionUtils";
+import { ActionIcon, CopyButton, Icon, Tooltip } from "metabase/ui";
+import { parseMetabaseProtocolLink } from "metabase/urls";
+
+import S from "./AIMarkdown.module.css";
+import { StreamingMarkdown } from "./StreamingMarkdown";
+import { InternalLink } from "./components/InternalLink";
+import {
+  MarkdownSmartLink,
+  type MarkdownSmartLinkTarget,
+} from "./components/MarkdownSmartLink";
+import { parseEntityPath } from "./parseEntityPath";
+
+type AIMarkdownProps = {
+  children: string;
+  className?: string;
+  size?: "md" | "lg";
+  isStreaming?: boolean;
+  onInternalLinkClick?: (link: string) => void;
+  singleNewlinesAreParagraphs?: boolean;
+};
+
+const splitMessageLinesAsParagraphs = (message: string) =>
+  message.replaceAll(/\r?\n|\r/g, "\n\n");
+
+const getNodeText = (node: ReactNode): string =>
+  Children.toArray(node)
+    .map((child) => {
+      if (typeof child === "string" || typeof child === "number") {
+        return String(child);
+      }
+
+      if (isValidElement<{ children?: ReactNode }>(child)) {
+        return getNodeText(child.props.children);
+      }
+
+      return "";
+    })
+    .join("");
+
+const MarkdownCodeBlock = ({
+  children,
+  ...props
+}: ComponentPropsWithoutRef<"pre">) => {
+  const code = getNodeText(children);
+
+  return (
+    <div className={S.codeBlock}>
+      <pre {...props}>{children}</pre>
+      <CopyButton value={code}>
+        {({ copied, copy }: { copied: boolean; copy: () => void }) => (
+          <Tooltip
+            label={copied ? t`Copied!` : t`Copy code`}
+            opened={copied || undefined}
+          >
+            <ActionIcon
+              aria-label={t`Copy code`}
+              className={S.copyCodeButton}
+              data-testid="metabot-code-block-copy"
+              size="sm"
+              onClick={copy}
+            >
+              <Icon name="copy" size="1rem" />
+            </ActionIcon>
+          </Tooltip>
+        )}
+      </CopyButton>
+    </div>
+  );
+};
+
+const parseEntityLink = (
+  href: string | undefined,
+): MarkdownSmartLinkTarget | undefined => {
+  if (!href) {
+    return undefined;
+  }
+
+  const protocolLink = parseMetabaseProtocolLink(href);
+  if (protocolLink) {
+    return protocolLink.model === "chart"
+      ? protocolLink
+      : {
+          id: protocolLink.id,
+          model: mbProtocolModelToSuggestionModel(protocolLink.model),
+        };
+  }
+
+  const path = parseEntityPath(href);
+  return path && { ...path, href };
+};
+
+// Excludes `//host`, which browsers resolve to another origin
+const isRelativePath = (href?: string): href is string =>
+  href != null && /^\/(?!\/)/.test(href);
+
+const getComponents = ({
+  onInternalLinkClick,
+}: Pick<AIMarkdownProps, "onInternalLinkClick">) => ({
+  a: ({
+    href,
+    children,
+    node,
+    ...rest
+  }: {
+    href?: string;
+    children?: any;
+    node?: any;
+    [key: string]: any;
+  }) => {
+    const entity = parseEntityLink(node.properties.href);
+    if (entity) {
+      return (
+        <MarkdownSmartLink
+          onInternalLinkClick={onInternalLinkClick}
+          name={String(node.children?.[0]?.value ?? "")}
+          {...entity}
+        />
+      );
+    }
+
+    if (isRelativePath(href)) {
+      return (
+        <InternalLink
+          onInternalLinkClick={onInternalLinkClick}
+          href={href}
+          className={S.link}
+        >
+          {children}
+        </InternalLink>
+      );
+    }
+
+    // For external links, set target and rel explicitly
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        {...rest}
+        className={S.link}
+      >
+        {children}
+      </a>
+    );
+  },
+  table: ({ children, ...props }: ComponentPropsWithoutRef<"table">) => (
+    <div className={S.tableWrapper}>
+      <div className={S.tableContainer}>
+        <table {...props}>{children}</table>
+      </div>
+    </div>
+  ),
+  pre: MarkdownCodeBlock,
+});
+
+export const AIMarkdown = memo(
+  ({
+    className,
+    size = "md",
+    onInternalLinkClick,
+    children,
+    isStreaming = false,
+    singleNewlinesAreParagraphs = false,
+  }: AIMarkdownProps) => {
+    const components = useMemo(
+      () => getComponents({ onInternalLinkClick }),
+      [onInternalLinkClick],
+    );
+
+    const source = singleNewlinesAreParagraphs
+      ? splitMessageLinesAsParagraphs(children)
+      : children;
+
+    return (
+      <div
+        className={cx(S.aiMarkdownRoot, size === "lg" && S.large, className)}
+      >
+        <StreamingMarkdown
+          blockClassName={S.aiMarkdown}
+          components={components}
+          isStreaming={isStreaming}
+          source={source}
+        />
+      </div>
+    );
+  },
+);
+
+AIMarkdown.displayName = "AIMarkdown";

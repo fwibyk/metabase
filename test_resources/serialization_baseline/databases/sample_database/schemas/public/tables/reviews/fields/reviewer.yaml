@@ -1,0 +1,15 @@
+name: REVIEWER
+display_name: Reviewer
+visibility_type: normal
+table_id:
+- Sample Database
+- PUBLIC
+- REVIEWS
+database_type: CHARACTER VARYING
+base_type: type/Text
+effective_type: type/Text
+position: 2
+database_position: 2
+serdes/meta:
+- model: Field
+database_indexed: false

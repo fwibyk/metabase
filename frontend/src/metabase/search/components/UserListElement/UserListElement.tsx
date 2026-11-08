@@ -1,0 +1,32 @@
+import { Button, Text } from "metabase/ui";
+import type { UserListResult } from "metabase-types/api";
+
+import Styles from "./UserListElement.module.css";
+
+export type UserListElementProps = {
+  value: UserListResult;
+  onClick: (value: UserListResult) => void;
+  isSelected: boolean;
+};
+
+export const UserListElement = ({
+  value,
+  isSelected,
+  onClick,
+}: UserListElementProps) => (
+  <Button
+    data-testid="user-list-element"
+    onClick={() => onClick(value)}
+    data-is-selected={isSelected}
+    variant="subtle"
+    bg={isSelected ? "core-brand" : undefined}
+    justify="start"
+    classNames={{
+      root: Styles.Root,
+    }}
+  >
+    <Text fw={700} color={isSelected ? "core-brand" : undefined} truncate>
+      {value.common_name}
+    </Text>
+  </Button>
+);

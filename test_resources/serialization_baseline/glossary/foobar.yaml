@@ -1,0 +1,6 @@
+creator_id: internal@metabase.com
+definition: It's foobar2000 actually
+entity_id: fooBar2000gLossary001
+term: foobar
+serdes/meta:
+- model: Glossary

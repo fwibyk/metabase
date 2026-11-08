@@ -1,0 +1,143 @@
+(ns metabase.util.time
+  "Time parsing helper functions.
+  In Java these return [[OffsetDateTime]], in JavaScript they return Moments.
+  Most of the implementations are in the split CLJ/CLJS files [[metabase.util.time.impl-common]]."
+  (:require
+   [clojure.string :as str]
+   [metabase.util :as u]
+   [metabase.util.namespaces :as shared.ns]
+   [metabase.util.time.impl :as internal]
+   [metabase.util.time.impl-common :as common]))
+
+;; Importing and re-exporting some functions defined in each implementation.
+(shared.ns/import-fns
+ [common
+  local-date-regex
+  local-datetime-regex
+  local-time-regex
+  matches-date?
+  matches-date-time?
+  matches-time?
+  offset-datetime-regex
+  offset-time-regex
+  to-range
+  year-month-regex
+  year-regex
+  zone-offset-part-regex]
+ [internal
+  valid?
+  same-time?
+  same-day?
+  same-month?
+  same-year?
+  day-diff
+  unit-diff
+  truncate
+  add
+  extract
+  format-for-base-type
+  format-date-for-filter
+  local-date
+  local-date-time
+  local-time])
+
+(defn- prep-options [options]
+  (merge internal/default-options (u/normalize-map options)))
+
+(defn ^:export timestamp-coercible?
+  "Check whether value is coercible to timestamp. Condition resembles [[coerce-to-timestamp]]."
+  [value]
+  (or (internal/datetime? value)
+      (string? value)
+      (number? value)))
+
+(defn ^:export coerce-to-timestamp
+  "Parses a timestamp value into a date object. This can be a straightforward Unix timestamp or ISO format string.
+  But the `:unit` field can be used to alter the parsing to, for example, treat the input number as a day-of-week or
+  day-of-month number.
+  Returns Moments in JS and OffsetDateTimes in Java for coercible values, otherwise nil."
+  ([value] (coerce-to-timestamp value {}))
+  ([value options]
+   (when (timestamp-coercible? value)
+     (let [options (prep-options options)
+           base (cond
+                  ;; Just return an already-parsed value. (Moment in CLJS, DateTime classes in CLJ.)
+                  (internal/datetime? value)                        (internal/normalize value)
+                  ;; If there's a timezone offset, or Z for Zulu/UTC time, parse it directly.
+                  (and (string? value)
+                       (re-matches #".*(Z|[+-]\d\d:?\d\d)$" value)) (internal/parse-with-zone value)
+                  ;; Then we fall back to two multimethods for coercing strings and number to timestamps per the :unit.
+                  (string? value)                                   (common/string->timestamp value options)
+                  (number? value)                                   (common/number->timestamp value options))]
+       (if (:local options)
+         (internal/localize base)
+         base)))))
+
+(defn ^:export coerce-to-time
+  "Parses a standalone time, or the time portion of a timestamp.
+  Accepts a platform time value (eg. Moment, OffsetTime, LocalTime) or a string."
+  [value]
+  (cond
+    (internal/time? value) value
+    (string? value) (-> value common/drop-trailing-time-zone internal/parse-time-string)
+    :else           (throw (ex-info "Unknown input to coerce-to-time; expecting a string"
+                                    {:value value}))))
+
+(defn format-unit
+  "Formats a temporal-value (iso date/time string, int for hour/minute) given the temporal-bucketing unit.
+  If unit is nil, formats the full date/time.
+
+  `time-config` must include `:start-of-week`. `format-options` may include `:locale` to localize the formatter."
+  ([time-config temporal-value unit]
+   (format-unit time-config temporal-value unit {}))
+  ([time-config temporal-value unit format-options]
+   (internal/format-unit (common/require-time-config time-config) temporal-value unit format-options)))
+
+(defn parse-unit
+  "Parses a string given the unit of time to parse by."
+  ([str unit]
+   (internal/parse-unit str unit))
+  ([str unit locale]
+   (internal/parse-unit str unit locale)))
+
+(defn format-diff
+  "Formats a time difference between two temporal values.
+   Drops redundant information."
+  [temporal-value-1 temporal-value-2]
+  (internal/format-diff temporal-value-1 temporal-value-2))
+
+(defn format-relative-date-range
+  "Given a `n` `unit` time interval and the current date, return a string representing the date-time range.
+   `time-config` must contain `:start-of-week` as a weekday keyword.
+   When `n` is zero, return the current unit whether or not `:include-current` is true.
+   Provide an `offset-n` and `offset-unit` time interval to change the date used relative to the current date.
+   `options` is a map and supports `:include-current` to include the current given unit of time in the range."
+  ([time-config n unit]
+   (format-relative-date-range time-config n unit nil nil nil))
+  ([time-config n unit offset-n offset-unit]
+   (format-relative-date-range time-config n unit offset-n offset-unit nil))
+  ([time-config n unit offset-n offset-unit options]
+   (internal/format-relative-date-range (common/require-time-config time-config) n unit offset-n offset-unit options))
+  ([time-config t n unit offset-n offset-unit options]
+   (let [time-config (common/require-time-config time-config)]
+     (internal/format-relative-date-range time-config
+                                          (coerce-to-timestamp t)
+                                          n unit offset-n offset-unit options))))
+
+(defn yyyyMMddhhmmss->parts
+  "Generate parts vector for `yyyy-MM-ddThh:mm:ss` format `date-str`. Trailing parts, if not present in the string,
+  are added. Not compatile with strings containing milliseconds or timezone."
+  [date-str]
+  (let [parts (mapv #?(:clj #(Integer/parseInt %)
+                       :cljs js/parseInt)
+                    (str/split date-str #"-|:|T"))]
+    (into parts (repeat (- 6 (count parts)) 0))))
+
+#?(:cljs
+   (defn dayjs-utc->local-date
+     "Convert a dayjs UTC value to a JavaScript Date in local time, preserving the time values.
+      This is needed because coerce-to-timestamp returns dayjs objects in UTC mode, but the FE expects
+      Date objects in local time with the same year/month/day/hour/minute/second values.
+      dayjs.local(true) doesn't work like moment.local(true), so we format and reparse as local time."
+     [value]
+     (internal/dayjs-utc->local-date value)))

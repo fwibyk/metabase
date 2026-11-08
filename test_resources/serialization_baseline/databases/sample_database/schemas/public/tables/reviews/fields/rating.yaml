@@ -1,0 +1,17 @@
+name: RATING
+display_name: Rating
+visibility_type: normal
+table_id:
+- Sample Database
+- PUBLIC
+- REVIEWS
+database_type: INTEGER
+base_type: type/Integer
+effective_type: type/Integer
+semantic_type: type/Score
+position: 3
+database_position: 3
+has_field_values: auto-list
+serdes/meta:
+- model: Field
+database_indexed: false

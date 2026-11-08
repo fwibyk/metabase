@@ -1,0 +1,7 @@
+details:
+  auth-method: none
+  url: http://example.com
+name: HTTP Channel
+type: channel/http
+serdes/meta:
+- model: Channel

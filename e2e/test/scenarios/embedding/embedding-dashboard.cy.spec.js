@@ -1,0 +1,1886 @@
+const { H } = cy;
+import { SAMPLE_DATABASE } from "e2e/support/cypress_sample_database";
+import { ORDERS_DASHBOARD_ID } from "e2e/support/cypress_sample_instance_data";
+import { defer } from "metabase/utils/promise";
+import { createMockParameter } from "metabase-types/api/mocks";
+
+import { addWidgetStringFilter } from "../native/helpers/e2e-field-filter-helpers";
+
+import {
+  dashboardDetails,
+  mapParameters,
+  questionDetails,
+  questionDetailsWithDefaults,
+} from "./shared/embedding-dashboard";
+
+const { ORDERS, PEOPLE, PEOPLE_ID, PRODUCTS, PRODUCTS_ID, ORDERS_ID } =
+  SAMPLE_DATABASE;
+
+describe("scenarios > embedding > static embedding dashboard", () => {
+  beforeEach(() => {
+    H.restore();
+    cy.signInAsAdmin();
+    cy.request("PUT", `/api/dashboard/${ORDERS_DASHBOARD_ID}`, {
+      enable_embedding: true,
+    });
+  });
+
+  it("should not call `GET /api/database` and should return cache headers for the js bundle (metabase#63310, metabase#50373)", () => {
+    cy.intercept("GET", "/api/database").as("getDatabases");
+    cy.intercept(
+      {
+        method: "GET",
+        url: /^\/app\/dist\/(.*)\.js$/,
+      },
+      (req) => {
+        // When running in development (e.g. with `bun run dev`),
+        // the *.hot.bundle.js hot-reloaded file is served by the dev server.
+        if (req.url.includes("hot.bundle.js")) {
+          return;
+        }
+
+        req.on("response", (res) => {
+          expect(
+            res.headers["cache-control"],
+            `Invalid Cache-Control header for ${req.url}`,
+          ).to.equal("public, max-age=31536000");
+        });
+      },
+    );
+    const payload = {
+      resource: { dashboard: ORDERS_DASHBOARD_ID },
+      params: {},
+    };
+    H.visitEmbeddedPage(payload);
+
+    cy.findByRole("heading", { name: "Orders in a dashboard" }).should(
+      "be.visible",
+    );
+    cy.findByTestId("embed-frame").findAllByRole("gridcell").contains("37.65");
+    cy.log("GET /api/database should not be called");
+    cy.get("@getDatabases.all").should("have.length", 0);
+  });
+
+  it("static dashboard content shouldn't overflow its container (metabase#40660)", () => {
+    const questionDetails = {
+      name: "Products",
+      query: { "source-table": PRODUCTS_ID, limit: 2 },
+    };
+
+    const dashboardDetails = {
+      name: "long dashboard",
+      enable_embedding: true,
+    };
+
+    H.createQuestionAndDashboard({
+      questionDetails,
+      dashboardDetails,
+    }).then(({ body: { card_id, dashboard_id } }) => {
+      H.updateDashboardCards({
+        dashboard_id,
+        cards: [{ card_id }, { card_id }, { card_id }],
+      });
+
+      H.visitDashboard(dashboard_id);
+
+      H.openLegacyStaticEmbeddingModal({
+        resource: "dashboard",
+        resourceId: dashboard_id,
+        activeTab: "parameters",
+        previewMode: "preview",
+      });
+    });
+
+    H.getIframeBody().within(() => {
+      cy.findByText(dashboardDetails.name).should("be.visible");
+      cy.findByTestId("loading-indicator").should("not.exist");
+      cy.findAllByText("1018947080336").should("have.length", 3);
+      cy.findByTestId("embed-frame").scrollTo("bottom");
+
+      cy.findByRole("link", { name: "Powered by Metabase" })
+        .scrollIntoView()
+        .should("be.visible");
+    });
+  });
+});
+
+describe("scenarios > embedding > dashboard parameters", () => {
+  beforeEach(() => {
+    H.restore();
+    cy.signInAsAdmin();
+
+    cy.request("POST", `/api/field/${ORDERS.USER_ID}/dimension`, {
+      type: "external",
+      name: "User ID",
+      human_readable_field_id: PEOPLE.NAME,
+    });
+
+    [ORDERS.USER_ID, PEOPLE.NAME, PEOPLE.ID].forEach((id) =>
+      cy.request("PUT", `/api/field/${id}`, { has_field_values: "search" }),
+    );
+
+    H.createNativeQuestionAndDashboard({
+      questionDetails,
+      dashboardDetails,
+    }).then(({ body: { id, card_id, dashboard_id } }) => {
+      cy.wrap(dashboard_id).as("dashboardId");
+
+      mapParameters({ id, card_id, dashboard_id });
+    });
+  });
+
+  context("UI", () => {
+    it("should be disabled by default but able to be set to editable and/or locked (metabase#20357)", () => {
+      H.visitDashboard("@dashboardId");
+
+      cy.log(
+        "should render cursor pointer on hover over a toggle (metabase#46223)",
+      );
+      cy.findAllByTestId("parameter-value-widget-target")
+        .first()
+        .realHover()
+        .should("have.css", "cursor", "pointer");
+
+      cy.get("@dashboardId").then((dashboardId) => {
+        H.openLegacyStaticEmbeddingModal({
+          resource: "dashboard",
+          resourceId: dashboardId,
+          activeTab: "parameters",
+        });
+      });
+
+      cy.findByLabelText("Configuring parameters").as("allParameters");
+
+      cy.get("@allParameters").within(() => {
+        // verify that all the parameters on the dashboard are defaulted to disabled
+        cy.findAllByDisplayValue("Disabled").should(
+          "have.length",
+          dashboardDetails.parameters.length,
+        );
+
+        // open the dropdown next to the Name parameter so that we can set it to editable
+        cy.findByLabelText("Name").click();
+      });
+
+      H.selectDropdown().findByText("Editable").click();
+
+      cy.get("@allParameters").findByLabelText("Id").click();
+
+      H.selectDropdown().findByText("Locked").click();
+
+      H.modal().within(() => {
+        // set the locked parameter's value
+        cy.findByText("Previewing locked parameters")
+          .parent()
+          .findByText("Id")
+          .click();
+      });
+
+      H.popover().within(() => {
+        cy.findByPlaceholderText("Search by Name or enter an ID").type("1,3,");
+
+        cy.button("Add filter").click();
+      });
+
+      // publish the embedded dashboard so that we can directly navigate to its url
+      H.publishChanges("dashboard", ({ request }) => {
+        assert.deepEqual(request.body.embedding_params, {
+          id: "locked",
+          name: "enabled",
+          source: "disabled",
+          user_id: "disabled",
+          not_used: "disabled",
+        });
+      });
+
+      // directly navigate to the embedded dashboard
+      H.visitIframe();
+
+      // verify that the Id parameter doesn't show up but that its value is reflected in the dashcard
+      H.filterWidget().contains("Id").should("not.exist");
+
+      cy.findByTestId("scalar-value").invoke("text").should("eq", "2");
+
+      // verify that disabled filters don't show up
+      cy.findByTestId("dashboard-parameters-widget-container").within(() => {
+        cy.findByText("Source").should("not.exist");
+        cy.findByText("User").should("not.exist");
+      });
+
+      // only Name parameter should be visible
+      openFilterOptions("Name");
+
+      cy.findByPlaceholderText("Search by Name").type("L");
+      H.popover().findByText("Lina Heaney").click();
+
+      cy.button("Add filter").click();
+
+      cy.findByTestId("scalar-value").invoke("text").should("eq", "1");
+
+      cy.log(
+        "Sanity check: lets make sure we can disable all previously set parameters",
+      );
+      cy.signInAsAdmin();
+
+      H.visitDashboard("@dashboardId");
+
+      cy.get("@dashboardId").then((dashboardId) => {
+        H.openLegacyStaticEmbeddingModal({
+          resource: "dashboard",
+          resourceId: dashboardId,
+          activeTab: "parameters",
+          unpublishBeforeOpen: false,
+        });
+      });
+      cy.get("@allParameters").findByDisplayValue("Locked").click();
+      H.selectDropdown().findByText("Disabled").click();
+
+      cy.get("@allParameters").findByDisplayValue("Editable").click();
+      H.selectDropdown().findByText("Disabled").click();
+
+      H.publishChanges("dashboard", ({ request }) => {
+        assert.deepEqual(request.body.embedding_params, {
+          name: "disabled",
+          id: "disabled",
+          source: "disabled",
+          user_id: "disabled",
+          not_used: "disabled",
+        });
+      });
+
+      H.visitIframe();
+
+      cy.findByTestId("scalar-value").invoke("text").should("eq", "2,500");
+
+      H.filterWidget().should("not.exist");
+    });
+
+    it("should (dis)allow setting parameters as required for a published embedding", () => {
+      H.visitDashboard("@dashboardId");
+
+      cy.get("@dashboardId").then((dashboardId) => {
+        H.openLegacyStaticEmbeddingModal({
+          resource: "dashboard",
+          resourceId: dashboardId,
+          activeTab: "parameters",
+        });
+      });
+
+      H.setEmbeddingParameter("Name", "Editable");
+      H.setEmbeddingParameter("Source", "Locked");
+      H.publishChanges("dashboard", ({ request }) => {
+        assert.deepEqual(request.body.embedding_params, {
+          id: "disabled",
+          name: "enabled",
+          source: "locked",
+          user_id: "disabled",
+          not_used: "disabled",
+        });
+      });
+
+      H.closeStaticEmbeddingModal();
+      H.editDashboard();
+
+      assertRequiredEnabledForName({ name: "Name", enabled: true });
+      assertRequiredEnabledForName({ name: "Source", enabled: true });
+      assertRequiredEnabledForName({ name: "Id", enabled: false });
+      assertRequiredEnabledForName({ name: "User", enabled: false });
+      assertRequiredEnabledForName({ name: "Not Used Filter", enabled: false });
+    });
+
+    it("should handle required parameters", () => {
+      H.visitDashboard("@dashboardId");
+      H.editDashboard();
+
+      // Make one parameter required
+      getDashboardFilter("Name").click();
+      H.toggleRequiredParameter();
+      H.sidebar().findByText("Default value").next().click();
+      setRequiredParameterDefaultValue("Ferne Rosenbaum", {
+        buttonLabel: "Update filter",
+      });
+      H.saveDashboard();
+
+      cy.get("@dashboardId").then((dashboardId) => {
+        H.openLegacyStaticEmbeddingModal({
+          resource: "dashboard",
+          resourceId: dashboardId,
+          activeTab: "parameters",
+        });
+      });
+
+      // Check that parameter visibility is correct
+      H.assertEmbeddingParameter("Id", "Disabled");
+      H.assertEmbeddingParameter("Name", "Editable");
+      H.assertEmbeddingParameter("Source", "Disabled");
+      H.assertEmbeddingParameter("User", "Disabled");
+      H.assertEmbeddingParameter("Not Used Filter", "Disabled");
+
+      // We only expect name to be "enabled" because the rest
+      // weren't touched and therefore aren't changed, whereas
+      // "enabled" must be set by default for required params.
+      H.publishChanges("dashboard", ({ request }) => {
+        assert.deepEqual(request.body.embedding_params, {
+          id: "disabled",
+          name: "enabled",
+          source: "disabled",
+          user_id: "disabled",
+          not_used: "disabled",
+        });
+      });
+
+      H.visitIframe();
+
+      // Filter widget must be visible
+      H.filterWidget().contains("Name");
+      // Its default value must be in the URL
+      cy.location("search").should("contain", "name=Ferne+Rosenbaum");
+      // And the default should be applied giving us only 1 result
+      cy.findByTestId("scalar-value").invoke("text").should("eq", "1");
+    });
+
+    it("should not apply IsSticky class to the parameter panel before it actually becomes sticky (metabase#66742)", () => {
+      H.visitDashboard("@dashboardId");
+      H.editDashboard();
+
+      // Duplicating twice to make a scrollable dashboard
+      H.getDashboardCard(0)
+        .realHover({ scrollBehavior: "bottom" })
+        .findByLabelText("Duplicate")
+        .click();
+
+      H.getDashboardCard(0)
+        .realHover({ scrollBehavior: "bottom" })
+        .findByLabelText("Duplicate")
+        .click();
+
+      H.saveDashboard();
+
+      cy.get("@dashboardId").then((dashboardId) => {
+        H.openLegacyStaticEmbeddingModal({
+          resource: "dashboard",
+          resourceId: dashboardId,
+          activeTab: "parameters",
+        });
+      });
+
+      H.setEmbeddingParameter("Name", "Editable");
+
+      H.publishChanges("dashboard");
+
+      H.visitIframe();
+
+      // Scrolling duration is needed to let the time to React to update the className...
+      cy.findByTestId("embed-frame").scrollTo(0, 20, {
+        duration: 1000,
+      });
+
+      cy.findByTestId("dashboard-parameters-widget-container")
+        .invoke("attr", "class")
+        .should("not.contain", "IsSticky");
+    });
+  });
+
+  context("API", () => {
+    it("should work for all filters", () => {
+      cy.get("@dashboardId").then((dashboardId) => {
+        cy.request("PUT", `/api/dashboard/${dashboardId}`, {
+          embedding_params: {
+            id: "enabled",
+            name: "enabled",
+            source: "enabled",
+            user_id: "enabled",
+          },
+          enable_embedding: true,
+        });
+
+        cy.log(
+          "should render error message when `params` is not an object (metabase#14474)",
+        );
+        const invalidParamsValue = [];
+        H.visitEmbeddedPage({
+          resource: { dashboard: dashboardId },
+          params: invalidParamsValue,
+        });
+
+        H.getDashboardCard()
+          .findByText("There was a problem displaying this chart.")
+          .should("be.visible");
+
+        cy.log("should send 'X-Metabase-Client' header for api requests");
+        cy.intercept("GET", "api/embed/dashboard/*").as("getEmbeddedDashboard");
+
+        const payload = {
+          resource: { dashboard: dashboardId },
+          params: {},
+        };
+
+        H.visitEmbeddedPage(payload, {
+          onBeforeLoad: (window) => {
+            window.Cypress = undefined;
+          },
+        });
+
+        cy.wait("@getEmbeddedDashboard").then(({ request }) => {
+          expect(request?.headers?.["x-metabase-client"]).to.equal(
+            "embedding-iframe-static",
+          );
+        });
+
+        H.visitEmbeddedPage(payload);
+
+        // wait for the results to load
+        cy.contains("Test Dashboard");
+        cy.contains("2,500");
+      });
+
+      cy.log("should only display filters mapped to cards on the selected tab");
+      H.dashboardParametersContainer().within(() => {
+        cy.findByText("Id").should("be.visible");
+        cy.findByText("Name").should("be.visible");
+        cy.findByText("Source").should("be.visible");
+        cy.findByText("User").should("be.visible");
+        cy.findByText("Not Used Filter").should("not.exist");
+      });
+
+      cy.log(
+        "should hide filters that are not mapped to cards on the selected tab",
+      );
+      H.goToTab("Tab 2");
+      H.assertTabSelected("Tab 2");
+
+      H.dashboardParametersContainer().should("not.exist");
+      cy.findByTestId("embed-frame").within(() => {
+        cy.findByText("Id").should("not.exist");
+        cy.findByText("Name").should("not.exist");
+        cy.findByText("Source").should("not.exist");
+        cy.findByText("User").should("not.exist");
+        cy.findByText("Not Used Filter").should("not.exist");
+      });
+
+      H.goToTab("Tab 1");
+      H.assertTabSelected("Tab 1");
+      H.dashboardParametersContainer().findByText("Id").should("be.visible");
+
+      cy.log("should allow searching PEOPLE.ID by PEOPLE.NAME");
+
+      openFilterOptions("Id");
+      H.popover().within(() => {
+        H.fieldValuesCombobox().type("Aly");
+        cy.contains("Alycia McCullough");
+      });
+
+      // close the suggestions popover
+      H.popover()
+        .first()
+        .within(() => {
+          H.fieldValuesCombobox().blur();
+        });
+
+      cy.log("should allow searching PEOPLE.NAME by PEOPLE.NAME");
+
+      openFilterOptions("Name");
+      H.popover().within(() => {
+        H.fieldValuesCombobox().type("{backspace}Aly");
+        cy.findByText("Alycia McCullough").should("be.visible");
+      });
+
+      // close the suggestions popover
+      H.popover()
+        .first()
+        .within(() => {
+          H.fieldValuesCombobox().blur();
+        });
+
+      cy.log("should show values for PEOPLE.SOURCE");
+
+      openFilterOptions("Source");
+      H.popover().contains("Affiliate");
+
+      cy.log("should allow searching ORDER.USER_ID by PEOPLE.NAME");
+
+      openFilterOptions("User");
+      H.popover().within(() => {
+        H.fieldValuesCombobox().type("Aly");
+        cy.contains("Alycia McCullough");
+      });
+
+      // close the suggestions popover
+      H.popover()
+        .first()
+        .within(() => {
+          H.fieldValuesCombobox().blur();
+        });
+
+      cy.log("should accept url parameters");
+
+      cy.location().then((location) =>
+        cy.visit(`${location.origin}${location.pathname}?id=1&id=3`),
+      );
+
+      cy.findByTestId("scalar-value").invoke("text").should("eq", "2");
+    });
+  });
+
+  it("should render error without crashing when embed query returns error (metabase#34954)", () => {
+    const categoryTemplateTag = {
+      type: "text",
+      name: "category",
+      id: "377a4a4a-179e-4d86-8263-f3b3887df15f",
+      "display-name": "Category",
+    };
+    const createdAtTemplateTag = {
+      type: "dimension",
+      name: "createdAt",
+      id: "ae3bd89b-1b94-47db-9020-8ee74afdb67a",
+      "display-name": "CreatedAt",
+      dimension: ["field", PRODUCTS.CREATED_AT, null],
+      "widget-type": "date/month-year",
+    };
+    const questionDetails = {
+      native: {
+        query:
+          "Select * from products Where category = {{category}} [[and {{createdAt}}]]",
+        "template-tags": {
+          category: categoryTemplateTag,
+          createdAt: createdAtTemplateTag,
+        },
+      },
+    };
+
+    const dashboardCategoryParameter = createMockParameter({
+      name: "Category",
+      slug: "category",
+      id: "9cd1ee78",
+      type: "string/=",
+      sectionId: "string",
+      values_query_type: "none",
+    });
+    const dashboardCreatedAtParameter = createMockParameter({
+      name: "Created At",
+      slug: "createdAt",
+      id: "98831577",
+      type: "date/month-year",
+      sectionId: "date",
+    });
+    const dashboardDetails = {
+      name: "dashboard with parameters",
+      parameters: [dashboardCategoryParameter, dashboardCreatedAtParameter],
+    };
+
+    H.createNativeQuestionAndDashboard({
+      questionDetails,
+      dashboardDetails,
+    }).then(({ body: { card_id, dashboard_id } }) => {
+      cy.wrap(dashboard_id).as("dashboardId2");
+
+      H.addOrUpdateDashboardCard({
+        card_id,
+        dashboard_id,
+        card: {
+          parameter_mappings: [
+            {
+              parameter_id: dashboardCategoryParameter.id,
+              card_id,
+              target: ["variable", ["template-tag", categoryTemplateTag.name]],
+            },
+            {
+              parameter_id: dashboardCreatedAtParameter.id,
+              card_id,
+              target: [
+                "dimension",
+                ["template-tag", createdAtTemplateTag.name],
+              ],
+            },
+          ],
+          visualization_settings: {
+            "card.hide_empty": true,
+          },
+        },
+      });
+
+      cy.request("PUT", `/api/dashboard/${dashboard_id}`, {
+        embedding_params: {
+          category: "enabled",
+          createdAt: "enabled",
+        },
+        enable_embedding: true,
+      });
+
+      const payload = {
+        resource: { dashboard: dashboard_id },
+        params: {},
+      };
+
+      H.visitEmbeddedPage(payload);
+    });
+
+    cy.log("The whole page would have crashed before the fix at this point");
+    H.getDashboardCard()
+      .findByText("There was a problem displaying this chart.")
+      .should("be.visible");
+
+    cy.log("Add a filter to complete the query");
+    H.filterWidget().findByPlaceholderText("Category").type("Widget{enter}");
+
+    H.getDashboardCard()
+      .findByText("Practical Bronze Computer")
+      .should("be.visible");
+
+    cy.log("test downloading result (metabase#36721)");
+    H.getDashboardCard().realHover();
+    H.downloadAndAssert({
+      fileType: "csv",
+      isDashboard: true,
+      isEmbed: true,
+      downloadUrl: "/api/embed/dashboard/*/dashcard/*/card/*/csv*",
+      downloadMethod: "GET",
+    });
+
+    cy.log(
+      "The PDF download button should be clickable when there is no title, but has parameters (metabase#59503)",
+    );
+    cy.get("@dashboardId2").then((dashboardId) => {
+      const payload = {
+        resource: { dashboard: dashboardId },
+        params: {},
+      };
+      H.visitEmbeddedPage(payload, {
+        pageStyle: {
+          downloads: true,
+          titled: false,
+        },
+      });
+    });
+
+    cy.findByTestId("export-as-pdf-button").should("be.visible").click();
+  });
+});
+
+describe("scenarios > embedding > dashboard parameters with defaults", () => {
+  beforeEach(() => {
+    H.restore();
+    cy.signInAsAdmin();
+
+    H.createNativeQuestionAndDashboard({
+      questionDetails: questionDetailsWithDefaults,
+      dashboardDetails,
+    }).then(({ body: { id, card_id, dashboard_id } }) => {
+      cy.wrap(dashboard_id).as("dashboardId");
+
+      mapParameters({ id, card_id, dashboard_id });
+    });
+
+    H.visitDashboard("@dashboardId");
+  });
+
+  it("card parameter defaults should apply for disabled parameters, but not for editable or locked parameters", () => {
+    cy.get("@dashboardId").then((dashboardId) => {
+      H.openLegacyStaticEmbeddingModal({
+        resource: "dashboard",
+        resourceId: dashboardId,
+        activeTab: "parameters",
+      });
+    });
+
+    // ID param is disabled by default
+    H.setEmbeddingParameter("Name", "Editable");
+    H.setEmbeddingParameter("Source", "Locked");
+    H.publishChanges("dashboard", ({ request }) => {
+      assert.deepEqual(request.body.embedding_params, {
+        id: "disabled",
+        source: "locked",
+        name: "enabled",
+        user_id: "disabled",
+        not_used: "disabled",
+      });
+    });
+
+    cy.log(
+      "locked parameters should still render results in the preview by default (metabase#47570)",
+    );
+    H.visitDashboard("@dashboardId");
+
+    cy.get("@dashboardId").then((dashboardId) => {
+      H.openLegacyStaticEmbeddingModal({
+        resource: "dashboard",
+        resourceId: dashboardId,
+        activeTab: "parameters",
+        unpublishBeforeOpen: false,
+      });
+    });
+
+    H.visitIframe();
+
+    H.getDashboardCard().findByText("2").should("be.visible");
+    H.getDashboardCard().findByText("test question").should("be.visible");
+
+    cy.log("card parameter defaults should apply only for disabled parameters");
+    cy.get("@dashboardId").then((dashboardId) => {
+      const payload = {
+        resource: { dashboard: dashboardId },
+        params: { source: [] },
+      };
+
+      H.visitEmbeddedPage(payload);
+
+      // The ID default (1 and 2) should apply, because it is disabled.
+      // The Name default ('Lina Heaney') should not apply, because the Name param is editable and unset
+      // The Source default ('Facebook') should not apply because the param is locked but the value is unset
+      // If either the Name or Source default applied the result would be 0.
+
+      cy.contains("Test Dashboard");
+      cy.findByTestId("scalar-value").invoke("text").should("eq", "2");
+    });
+
+    cy.log("locked parameters require a value to be specified in the JWT");
+    cy.get("@dashboardId").then((dashboardId) => {
+      const payload = {
+        resource: { dashboard: dashboardId },
+        params: { source: null },
+      };
+
+      H.visitEmbeddedPage(payload);
+    });
+
+    // The Source parameter is 'locked', and no value has been specified in the token,
+    // thus the API responds with "You must specify a value for :source in the JWT."
+    // and the card will not display.
+    H.getDashboardCard()
+      .findByText("There was a problem displaying this chart.")
+      .should("be.visible");
+  });
+});
+
+describe("issue 20438", () => {
+  const questionDetails = {
+    name: "20438",
+    native: {
+      query:
+        "SELECT * FROM PRODUCTS\nWHERE true\n    [[AND {{CATEGORY}}]]\n limit 30",
+      "template-tags": {
+        CATEGORY: {
+          id: "24f69111-29f8-135f-9321-1ff94bbb31ad",
+          name: "CATEGORY",
+          "display-name": "Category",
+          type: "dimension",
+          dimension: ["field", PRODUCTS.CATEGORY, null],
+          "widget-type": "string/=",
+          default: null,
+        },
+      },
+    },
+  };
+
+  const filter = {
+    name: "Text",
+    slug: "text",
+    id: "b555d25b",
+    type: "string/=",
+    sectionId: "string",
+  };
+
+  const dashboardDetails = {
+    parameters: [filter],
+  };
+
+  beforeEach(() => {
+    cy.intercept("GET", "/api/embed/dashboard/**").as("getEmbed");
+
+    H.restore();
+    cy.signInAsAdmin();
+
+    H.createNativeQuestionAndDashboard({
+      questionDetails,
+      dashboardDetails,
+    }).then(({ body: { id, card_id, dashboard_id } }) => {
+      // Connect filter to the card
+      cy.request("PUT", `/api/dashboard/${dashboard_id}`, {
+        dashcards: [
+          {
+            id,
+            card_id,
+            row: 0,
+            col: 0,
+            size_x: 24,
+            size_y: 8,
+            parameter_mappings: [
+              {
+                parameter_id: filter.id,
+                card_id,
+                target: ["dimension", ["template-tag", "CATEGORY"]],
+              },
+            ],
+          },
+        ],
+      });
+
+      // Enable embedding and enable the "Text" filter
+      cy.request("PUT", `/api/dashboard/${dashboard_id}`, {
+        enable_embedding: true,
+        embedding_params: { [filter.slug]: "enabled" },
+      });
+
+      cy.wrap(card_id).as("questionId");
+      cy.wrap(dashboard_id).as("dashboardId");
+
+      H.visitDashboard(dashboard_id);
+    });
+  });
+
+  it("dashboard filter connected to the field filter should work with a single value in embedded dashboards (metabase#20438)", () => {
+    cy.get("@dashboardId").then((dashboardId) => {
+      H.openLegacyStaticEmbeddingModal({
+        resource: "dashboard",
+        resourceId: dashboardId,
+        activeTab: "parameters",
+        unpublishBeforeOpen: false,
+      });
+    });
+
+    H.visitIframe();
+
+    cy.wait("@getEmbed");
+
+    H.filterWidget().click();
+    cy.wait("@getEmbed");
+
+    H.popover().contains("Doohickey").click();
+    cy.wait("@getEmbed");
+
+    cy.button("Add filter").click();
+    cy.wait("@getEmbed");
+
+    cy.findAllByRole("gridcell")
+      // One of product titles for Doohickey
+      .should("contain", "Small Marble Shoes")
+      // One of product titles for Gizmo
+      .and("not.contain", "Rustic Paper Wallet");
+  });
+});
+
+describe("scenarios > embedding > dashboard locked numeric parameters (metabase#25031)", () => {
+  const dashboardFilter = {
+    name: "Equal to",
+    slug: "equal_to",
+    id: "c269ebe1",
+    type: "number/=",
+    sectionId: "number",
+  };
+
+  const dashboardDetails = {
+    name: "25031",
+    parameters: [dashboardFilter],
+    enable_embedding: true,
+    embedding_params: {
+      [dashboardFilter.slug]: "locked",
+    },
+  };
+
+  function getQuestionDetails(defaultValue = undefined) {
+    return {
+      name: "20845",
+      native: {
+        "template-tags": {
+          qty_locked: {
+            id: "6bd8d7be-bd5b-382c-cfa2-683461891663",
+            name: "qty_locked",
+            "display-name": "Qty locked",
+            type: "number",
+            required: defaultValue ? true : false,
+            default: defaultValue,
+          },
+        },
+        query:
+          "select count(*) from orders where true [[AND quantity={{qty_locked}}]]",
+      },
+    };
+  }
+
+  function createDashboard(defaultValue, alias) {
+    H.createNativeQuestionAndDashboard({
+      questionDetails: getQuestionDetails(defaultValue),
+      dashboardDetails,
+    }).then(({ body: { id, dashboard_id, card_id } }) => {
+      cy.wrap(dashboard_id).as(alias);
+
+      cy.request("PUT", `/api/dashboard/${dashboard_id}`, {
+        dashcards: [
+          {
+            card_id,
+            id,
+            row: 0,
+            col: 0,
+            size_x: 16,
+            size_y: 10,
+            parameter_mappings: [
+              {
+                parameter_id: dashboardFilter.id,
+                card_id,
+                target: ["variable", ["template-tag", "qty_locked"]],
+              },
+            ],
+          },
+        ],
+      });
+    });
+  }
+
+  beforeEach(() => {
+    H.restore();
+    cy.signInAsAdmin();
+  });
+
+  it("locked parameter should work with numeric values, with and without a required filter with a default value", () => {
+    createDashboard(undefined, "dashboardId");
+    createDashboard("10", "requiredDashboardId");
+
+    [
+      { alias: "@dashboardId", label: "without a default value" },
+      { alias: "@requiredDashboardId", label: "with a required default value" },
+    ].forEach(({ alias, label }) => {
+      cy.get(alias).then((dashboardId) => {
+        // This issue is not possible to reproduce using UI from this point on.
+        // We have to manually send the payload in order to make sure it works for both strings and integers.
+        ["string", "integer"].forEach((type) => {
+          cy.log(
+            `Make sure it works with ${type.toUpperCase()} in the payload ${label}`,
+          );
+
+          const payload = {
+            resource: { dashboard: dashboardId },
+            params: {
+              [dashboardFilter.slug]: type === "string" ? "15" : 15, // IMPORTANT: integer
+            },
+          };
+
+          H.visitEmbeddedPage(payload);
+
+          // wait for the results to load
+          cy.contains(dashboardDetails.name);
+          cy.get(".CardVisualization").should("contain", "COUNT(*)");
+          cy.get(".CardVisualization").findByText("5").should("be.visible");
+        });
+      });
+    });
+  });
+});
+
+describe("scenarios > embedding > dashboard appearance", () => {
+  const originalBaseUrl = Cypress.config("baseUrl");
+
+  beforeEach(() => {
+    // Reset the baseUrl to the default value
+    // needed because we do `Cypress.config("baseUrl", null);` in the iframe test
+    Cypress.config("baseUrl", originalBaseUrl);
+
+    H.restore();
+    cy.signInAsAdmin();
+    H.activateToken("pro-self-hosted");
+  });
+
+  it("should not rerender the static embed preview unnecessarily (metabase#38271)", () => {
+    const textFilter = createMockParameter({
+      id: "3",
+      name: "Text filter",
+      slug: "filter-text",
+      type: "string/contains",
+      sectionId: "string",
+    });
+
+    const dashboardDetails = {
+      name: "dashboard name",
+      enable_embedding: true,
+      embedding_params: {
+        /**
+         * Make sure the parameter is shown in embed preview, because it previously
+         * caused the iframe to rerender even when only the hash part of the embed
+         * preview URL is changed.
+         *
+         * @see useSyncedQueryString in frontend/src/metabase/hooks/use-synced-query-string.ts
+         */
+        [textFilter.slug]: "enabled",
+      },
+      parameters: [textFilter],
+    };
+
+    const questionDetails = {
+      name: "Orders",
+      query: {
+        "source-table": ORDERS_ID,
+      },
+    };
+    H.createQuestionAndDashboard({
+      questionDetails,
+      dashboardDetails,
+    }).then(({ body: { dashboard_id } }) => {
+      H.visitDashboard(dashboard_id);
+
+      cy.intercept(
+        "GET",
+        "api/preview_embed/dashboard/*",
+        cy.spy().as("previewEmbedSpy"),
+      ).as("previewEmbed");
+
+      H.openLegacyStaticEmbeddingModal({
+        resource: "dashboard",
+        resourceId: dashboard_id,
+        activeTab: "parameters",
+        previewMode: "preview",
+      });
+    });
+
+    cy.wait("@previewEmbed");
+
+    H.modal().within(() => {
+      cy.findByRole("tab", { name: "Look and Feel" }).click();
+      cy.get("@previewEmbedSpy").should("have.callCount", 1);
+
+      cy.log(
+        'Embed preview requests should not have "X-Metabase-Client: embedding-iframe" header (EMB-930)',
+      );
+      cy.get("@previewEmbed").then(({ request }) => {
+        expect(request?.headers?.["x-metabase-client"]).to.not.equal(
+          "embedding-iframe",
+        );
+      });
+
+      cy.log("Assert dashboard theme");
+      H.getIframeBody()
+        .findByTestId("embed-frame")
+        .invoke("attr", "data-embed-theme")
+        .then((embedTheme) => {
+          expect(embedTheme).to.eq("light"); // default value
+        });
+
+      // We're getting an input element which is 0x0 in size
+      cy.findByLabelText("Dark").click({ force: true });
+      cy.wait(1000);
+      H.getIframeBody()
+        .findByTestId("embed-frame")
+        .invoke("attr", "data-embed-theme")
+        .then((embedTheme) => {
+          expect(embedTheme).to.eq("night");
+        });
+
+      cy.get("@previewEmbedSpy").should("have.callCount", 1);
+
+      cy.log("Assert dashboard title");
+      H.getIframeBody().findByText(dashboardDetails.name).should("exist");
+      // We're getting an input element which is 0x0 in size
+      cy.findByLabelText("Dashboard title").click({ force: true });
+      H.getIframeBody().findByText(dashboardDetails.name).should("not.exist");
+      cy.get("@previewEmbedSpy").should("have.callCount", 1);
+
+      cy.log("Assert dashboard border");
+      H.getIframeBody()
+        .findByTestId("embed-frame")
+        .should("have.css", "border-top-width", "1px");
+      // We're getting an input element which is 0x0 in size
+      cy.findByLabelText("Dashboard border").click({ force: true });
+      H.getIframeBody()
+        .findByTestId("embed-frame")
+        .should("have.css", "border-top-width", "0px");
+      cy.get("@previewEmbedSpy").should("have.callCount", 1);
+
+      cy.log("Assert font");
+      H.getIframeBody().should(
+        "have.css",
+        "font-family",
+        "Lato, Arial, sans-serif",
+      );
+      cy.findByLabelText("Font").click();
+    });
+
+    // Since the select dropdown is rendered outside of the modal, we need to exit the modal context first.
+    H.selectDropdown().findByText("Oswald").click();
+    H.modal().within(() => {
+      H.getIframeBody().should(
+        "have.css",
+        "font-family",
+        'Oswald, "Roboto Condensed", sans-serif',
+      );
+      cy.get("@previewEmbedSpy").should("have.callCount", 1);
+    });
+  });
+
+  it("should not rerender the static dashboard with tabs preview unnecessarily (metabase#46378)", () => {
+    const textFilter = createMockParameter({
+      id: "3",
+      name: "Text filter",
+      slug: "filter-text",
+      type: "string/contains",
+      sectionId: "string",
+    });
+
+    const TAB_1 = { id: "11", name: "Tab 1" };
+    const TAB_2 = { id: "12", name: "Tab 2" };
+
+    const dashboardDetails = {
+      name: "dashboard name",
+      enable_embedding: true,
+      embedding_params: {
+        /**
+         * Make sure the parameter is shown in embed preview, because it previously
+         * caused the iframe to rerender even when only the hash part of the embed
+         * preview URL is changed.
+         *
+         * @see useSyncedQueryString in frontend/src/metabase/hooks/use-synced-query-string.ts
+         */
+        [textFilter.slug]: "enabled",
+      },
+      parameters: [textFilter],
+      tabs: [TAB_1, TAB_2],
+    };
+
+    const questionDetails = {
+      name: "Orders",
+      query: {
+        "source-table": ORDERS_ID,
+      },
+    };
+    H.createQuestion(questionDetails)
+      .then(({ body: { id: card_id } }) => {
+        H.createDashboardWithTabs({
+          ...dashboardDetails,
+          dashcards: [
+            {
+              id: -1,
+              card_id,
+              dashboard_tab_id: TAB_1.id,
+              row: 0,
+              col: 0,
+              size_x: 8,
+              size_y: 12,
+            },
+          ],
+        });
+      })
+      .then((dashboard) => {
+        H.visitDashboard(dashboard.id);
+
+        cy.intercept(
+          "GET",
+          "api/preview_embed/dashboard/*",
+          cy.spy().as("previewEmbedSpy"),
+        ).as("previewEmbed");
+
+        H.openLegacyStaticEmbeddingModal({
+          resource: "dashboard",
+          resourceId: dashboard.id,
+          activeTab: "parameters",
+          previewMode: "preview",
+        });
+      });
+
+    cy.wait("@previewEmbed");
+
+    H.modal().within(() => {
+      cy.findByRole("tab", { name: "Look and Feel" }).click();
+      cy.get("@previewEmbedSpy").should("have.callCount", 1);
+
+      cy.log("Assert dashboard theme");
+      H.getIframeBody()
+        .findByTestId("embed-frame")
+        .invoke("attr", "data-embed-theme")
+        .then((embedTheme) => {
+          expect(embedTheme).to.eq("light"); // default value
+        });
+
+      // We're getting an input element which is 0x0 in size
+      cy.findByLabelText("Dark").click({ force: true });
+      cy.wait(1000);
+      H.getIframeBody()
+        .findByTestId("embed-frame")
+        .invoke("attr", "data-embed-theme")
+        .then((embedTheme) => {
+          expect(embedTheme).to.eq("night");
+        });
+
+      cy.get("@previewEmbedSpy").should("have.callCount", 1);
+
+      cy.log("Assert dashboard title");
+      H.getIframeBody().findByText(dashboardDetails.name).should("exist");
+      // We're getting an input element which is 0x0 in size
+      cy.findByLabelText("Dashboard title").click({ force: true });
+      H.getIframeBody().findByText(dashboardDetails.name).should("not.exist");
+      cy.get("@previewEmbedSpy").should("have.callCount", 1);
+
+      cy.log("Assert dashboard border");
+      H.getIframeBody()
+        .findByTestId("embed-frame")
+        .should("have.css", "border-top-width", "1px");
+      // We're getting an input element which is 0x0 in size
+      cy.findByLabelText("Dashboard border").click({ force: true });
+      H.getIframeBody()
+        .findByTestId("embed-frame")
+        .should("have.css", "border-top-width", "0px");
+      cy.get("@previewEmbedSpy").should("have.callCount", 1);
+
+      cy.log("Assert font");
+      H.getIframeBody().should(
+        "have.css",
+        "font-family",
+        "Lato, Arial, sans-serif",
+      );
+      cy.findByLabelText("Font").click();
+    });
+
+    // Since the select dropdown is rendered outside of the modal, we need to exit the modal context first.
+    H.selectDropdown().findByText("Oswald").click();
+    H.modal().within(() => {
+      H.getIframeBody().should(
+        "have.css",
+        "font-family",
+        'Oswald, "Roboto Condensed", sans-serif',
+      );
+      cy.get("@previewEmbedSpy").should("have.callCount", 1);
+    });
+  });
+
+  it("should resize iframe to dashboard content size (metabase#47061)", () => {
+    const dashboardDetails = {
+      name: "dashboard name",
+      enable_embedding: true,
+    };
+
+    const questionDetails = {
+      name: "Line chart",
+      query: {
+        "source-table": ORDERS_ID,
+        aggregation: [["count"]],
+        breakout: [
+          [
+            "field",
+            ORDERS.CREATED_AT,
+            { "base-type": "type/DateTime", "temporal-unit": "month" },
+          ],
+        ],
+        limit: 5,
+      },
+      display: "bar",
+    };
+    H.createQuestion(questionDetails)
+      .then(({ body: { id: card_id } }) => {
+        H.createDashboardWithTabs({
+          ...dashboardDetails,
+          dashcards: [
+            {
+              id: -1,
+              card_id,
+              row: 0,
+              col: 0,
+              size_x: 8,
+              size_y: 20,
+            },
+          ],
+        });
+      })
+      .then((dashboard) => {
+        return H.getEmbeddedPageUrl({
+          resource: { dashboard: dashboard.id },
+          params: {},
+        });
+      })
+      .then((urlOptions) => {
+        const baseUrl = Cypress.config("baseUrl");
+        Cypress.config("baseUrl", null);
+        cy.visit(
+          `e2e/test/scenarios/embedding/embedding-dashboard.html?iframeUrl=${baseUrl + urlOptions.url}`,
+        );
+      });
+
+    H.getIframeBody().within(() => {
+      cy.findByText(questionDetails.name).should("exist");
+      cy.findByText("May 2025").should("exist");
+
+      // TODO: Enable this once we fix the flakiness https://app.trunk.io/metabase/flaky-tests/test/facb35f0-6d76-5e7d-b21c-40401bbc3ff6?repo=metabase%2Fmetabase
+      // (metabase#49537)
+      // chartPathWithFillColor("#509EE3").last().realHover();
+      // echartsTooltip().should("be.visible");
+      // assertEChartsTooltip({
+      //   header: "August 2025",
+      //   rows: [
+      //     {
+      //       name: "Count",
+      //       value: "79",
+      //       secondaryValue: "+23.44%",
+      //     },
+      //   ],
+      // });
+    });
+
+    cy.get("#iframe").should(($iframe) => {
+      const [iframe] = $iframe;
+      expect(iframe.clientHeight).to.be.greaterThan(1000);
+    });
+  });
+
+  it("should apply the `#locale`, `#font`, `#background` and `#theme` hash parameters to a static dashboard embed (metabase#50182, metabase#62391, metabase#66253)", () => {
+    const visitOrdersDashboard = (additionalHashOptions, onBeforeLoad) => {
+      H.visitEmbeddedPage(
+        {
+          resource: { dashboard: ORDERS_DASHBOARD_ID },
+          params: {},
+        },
+        { additionalHashOptions, onBeforeLoad },
+      );
+    };
+
+    const visitWithTheme = (theme) => {
+      cy.clearLocalStorage();
+
+      visitOrdersDashboard({ theme }, (win) => {
+        // a bit gross but other stub techniques don't reliably work in Cypress
+        cy.stub(win, "matchMedia").callsFake((query) => {
+          return {
+            matches: query === "(prefers-color-scheme: dark)",
+            media: query,
+            addEventListener: cy.stub(),
+            removeEventListener: cy.stub(),
+            addListener: cy.stub(), // deprecated but sometimes needed
+            removeListener: cy.stub(),
+            dispatchEvent: cy.stub(),
+          };
+        });
+      });
+    };
+
+    cy.request("PUT", `/api/dashboard/${ORDERS_DASHBOARD_ID}`, {
+      enable_embedding: true,
+    });
+    cy.signOut();
+
+    cy.log("Test `#locale`, `#font` and `#background=false` without an iframe");
+    // We don't have a de-CH.json file, so it should fallback to de.json, see metabase#51039 for more details
+    cy.intercept("GET", "**/locale-de-json*.js").as("deLocale");
+
+    visitOrdersDashboard({
+      locale: "de-CH",
+      font: "Roboto",
+      background: "false",
+    });
+
+    cy.wait("@deLocale");
+
+    H.main().findByText("Februar 11, 2028, 9:40 PM");
+
+    cy.findByRole("button", {
+      name: "Automatische Aktualisierung",
+    }).should("exist");
+
+    cy.url().should("include", "locale=de");
+
+    H.main().should(
+      "have.css",
+      "font-family",
+      'Roboto, "Noto Sans", sans-serif',
+    );
+
+    cy.findByTestId("embed-frame").should("exist");
+
+    cy.get("body.mb-wrapper").should(
+      "not.have.css",
+      "background-color",
+      "rgba(0, 0, 0, 0)",
+    );
+
+    cy.log("Test `#background=false` inside an iframe");
+    cy.visit("/");
+
+    visitOrdersDashboard({ background: "false" }, (window) => {
+      window.overrideIsWithinIframe = true;
+    });
+
+    cy.findByTestId("embed-frame").should("exist");
+
+    cy.get("body.mb-wrapper").should(
+      "have.css",
+      "background-color",
+      "rgba(0, 0, 0, 0)",
+    );
+
+    cy.window().then((win) => {
+      delete win.overrideIsWithinIframe;
+    });
+
+    cy.visit("/");
+
+    cy.log("Test default light theme behavior");
+    visitWithTheme();
+
+    // Test core functionality works with default theme
+    cy.get("[data-testid=embed-frame]").should("be.visible");
+    cy.get('html[data-mantine-color-scheme="light"]').should("exist");
+    cy.get('html[data-metabase-theme="light"]').should("exist");
+
+    cy.log("Test explicit dark theme via hash parameter");
+    visitWithTheme("dark");
+
+    // Test functionality still works with theme parameter
+    cy.get("[data-testid=embed-frame]").should("be.visible");
+    cy.get('html[data-mantine-color-scheme="dark"]').should("exist");
+    cy.get('html[data-metabase-theme="dark"]').should("exist");
+
+    // Verify theme parameter is in URL hash
+    cy.location("hash").should("include", "theme=dark");
+
+    cy.log("Test explicit light theme via hash parameter");
+    visitWithTheme("light");
+
+    // Test functionality still works with theme parameter
+    cy.get("[data-testid=embed-frame]").should("be.visible");
+    cy.get('html[data-mantine-color-scheme="light"]').should("exist");
+    cy.get('html[data-metabase-theme="light"]').should("exist");
+
+    // Verify theme parameter is in URL hash
+    cy.location("hash").should("include", "theme=light");
+  });
+
+  it("should use transparent pivot table cells in static embedding's dark mode (metabase#61741)", () => {
+    const testQuery = {
+      type: "query",
+      query: {
+        "source-table": ORDERS_ID,
+        aggregation: [["count"]],
+        breakout: [
+          [
+            "field",
+            PEOPLE.SOURCE,
+            { "base-type": "type/Text", "source-field": ORDERS.USER_ID },
+          ],
+          [
+            "field",
+            PRODUCTS.CATEGORY,
+            { "base-type": "type/Text", "source-field": ORDERS.PRODUCT_ID },
+          ],
+        ],
+      },
+      database: 1,
+    };
+
+    const pivotQuestionDetails = {
+      name: "Pivot Table Test",
+      query: testQuery.query,
+      display: "pivot",
+    };
+
+    const pivotDashboardDetails = {
+      name: "Pivot Dashboard Test",
+      enable_embedding: true,
+      embedding_params: {},
+    };
+
+    H.createQuestionAndDashboard({
+      questionDetails: pivotQuestionDetails,
+      dashboardDetails: pivotDashboardDetails,
+    }).then(({ body: { dashboard_id } }) => {
+      H.visitDashboard(dashboard_id);
+
+      H.openLegacyStaticEmbeddingModal({
+        resource: "dashboard",
+        resourceId: dashboard_id,
+        activeTab: "parameters",
+        previewMode: "preview",
+      });
+
+      H.modal().within(() => {
+        cy.findByRole("tab", { name: "Look and Feel" }).click();
+
+        cy.log("wait until we are at the night theme");
+        cy.findByLabelText("Dark").click({ force: true });
+        H.getIframeBody()
+          .findByTestId("embed-frame")
+          .invoke("attr", "data-embed-theme")
+          .should((embedTheme) => {
+            expect(embedTheme).to.eq("night");
+          });
+
+        H.getIframeBody().findByTestId("pivot-table").should("be.visible");
+
+        H.getIframeBody().within(() => {
+          cy.findAllByTestId("pivot-table-cell").should(
+            "have.length.greaterThan",
+            0,
+          );
+
+          cy.log("dashcard should have dark background");
+          cy.findByTestId("dashcard").should(
+            "have.css",
+            "background-color",
+            "rgb(12, 28, 39)",
+          );
+
+          cy.log("pivot table cell background should be transparent");
+          cy.findAllByRole("grid")
+            .first()
+            .findAllByTestId("pivot-table-cell")
+            .first()
+            .should("have.css", "background-color", "rgba(12, 28, 39, 0.1)");
+
+          cy.log("pivot table cell color should be white");
+          cy.findByText("Row totals")
+            .should("be.visible")
+            .should("have.css", "color", "rgba(255, 255, 255, 0.95)");
+        });
+      });
+    });
+  });
+
+  it("should not show raw parameter value in static-list filter dropdown when using initial-parameters", () => {
+    const staticListFilter = {
+      name: "Number",
+      slug: "number",
+      id: "static-list-id",
+      type: "number/=",
+      sectionId: "number",
+      values_source_type: "static-list",
+      values_source_config: {
+        values: [
+          ["1", "Option A"],
+          ["2", "Option B"],
+        ],
+      },
+    };
+
+    H.createQuestionAndDashboard({
+      questionDetails: {
+        name: "Static list filter question",
+        query: {
+          "source-table": PEOPLE_ID,
+          expressions: { Thing: ["*", 1, 1] },
+        },
+      },
+      dashboardDetails: {
+        parameters: [staticListFilter],
+        enable_embedding: true,
+        embedding_params: {
+          [staticListFilter.slug]: "enabled",
+        },
+      },
+    }).then(({ body: { id, card_id, dashboard_id } }) => {
+      cy.request("PUT", `/api/dashboard/${dashboard_id}`, {
+        dashcards: [
+          {
+            id,
+            card_id,
+            row: 0,
+            col: 0,
+            size_x: 24,
+            size_y: 9,
+            parameter_mappings: [
+              {
+                parameter_id: staticListFilter.id,
+                card_id,
+                target: [
+                  "dimension",
+                  ["expression", "Thing", { "base-type": "type/Integer" }],
+                  { "stage-number": 0 },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+
+      H.visitEmbeddedPage(
+        {
+          resource: { dashboard: dashboard_id },
+          params: {},
+        },
+        {
+          setFilters: { [staticListFilter.slug]: "1" },
+        },
+      );
+
+      H.filterWidget().findByText("Option A").should("be.visible");
+
+      H.filterWidget().findByText("Option A").click();
+      H.popover().within(() => {
+        cy.findByText("Option A").should("exist");
+        cy.findByText("Option B").should("exist");
+        // The raw numeric value "1" should NOT appear as a separate option
+        cy.findByText("1").should("not.exist");
+      });
+    });
+  });
+});
+
+describe("issue 8490", () => {
+  beforeEach(() => {
+    H.restore();
+    cy.signInAsAdmin();
+    H.activateToken("pro-self-hosted");
+
+    H.createDashboardWithQuestions({
+      dashboardDetails: {
+        name: "Dashboard to test locale",
+        enable_embedding: true,
+      },
+      questions: [
+        {
+          name: "Line chart",
+          query: {
+            "source-table": PRODUCTS_ID,
+            aggregation: [["count"]],
+            breakout: [
+              ["field", PRODUCTS.CATEGORY, { "base-type": "type/Text" }],
+              [
+                "field",
+                PRODUCTS.CREATED_AT,
+                { "base-type": "type/DateTime", "temporal-unit": "month" },
+              ],
+            ],
+            filter: [
+              "between",
+              ["field", PRODUCTS.CREATED_AT, { "base-type": "type/DateTime" }],
+              "2027-01-01",
+              "2028-01-01",
+            ],
+          },
+          limit: 100,
+          visualization_settings: {
+            "graph.dimensions": ["CREATED_AT", "CATEGORY"],
+            "graph.metrics": ["count"],
+          },
+          display: "bar",
+          enable_embedding: true,
+        },
+        {
+          name: "Order quantity trend",
+          query: {
+            "source-table": ORDERS_ID,
+            aggregation: [
+              [
+                "sum",
+                ["field", ORDERS.QUANTITY, { "base-type": "type/Integer" }],
+              ],
+            ],
+            breakout: [
+              [
+                "field",
+                ORDERS.CREATED_AT,
+                { "base-type": "type/DateTime", "temporal-unit": "month" },
+              ],
+            ],
+            filter: [
+              "and",
+              [
+                "between",
+                ["field", ORDERS.CREATED_AT, { "base-type": "type/DateTime" }],
+                "2027-10-01",
+                "2027-12-01",
+              ],
+              [
+                "=",
+                [
+                  "field",
+                  PRODUCTS.VENDOR,
+                  {
+                    "base-type": "type/Text",
+                    "source-field": ORDERS.PRODUCT_ID,
+                  },
+                ],
+                "Alfreda Konopelski II Group",
+              ],
+            ],
+          },
+          display: "smartscalar",
+        },
+        {
+          name: "Pie chart",
+          query: {
+            "source-table": ORDERS_ID,
+            aggregation: [["count"]],
+            breakout: [
+              [
+                "field",
+                PRODUCTS.VENDOR,
+                { "base-type": "type/Text", "source-field": ORDERS.PRODUCT_ID },
+              ],
+            ],
+            limit: 5,
+          },
+          visualization_settings: {
+            "pie.slice_threshold": 20,
+          },
+          display: "pie",
+        },
+      ],
+      cards: [{}, { col: 11 }],
+    }).then(({ dashboard, questions: [lineChartQuestion] }) => {
+      cy.wrap(dashboard.id).as("dashboardId");
+      cy.wrap(lineChartQuestion.id).as("lineChartQuestionId");
+    });
+  });
+
+  it("static embeddings should respect `#locale` hash parameter (metabase#8490, metabase#50182)", () => {
+    cy.log("test a static embedded dashboard");
+    const {
+      promise: dashboardLoaderPromise,
+      resolve: resolveDashboardLoaderPromise,
+    } = defer();
+    cy.intercept(
+      {
+        method: "GET",
+        url: "/api/embed/dashboard/*",
+      },
+      () => dashboardLoaderPromise,
+    ).as("dashboardRequest");
+
+    cy.get("@dashboardId").then((dashboardId) => {
+      H.visitEmbeddedPage(
+        {
+          resource: { dashboard: dashboardId },
+          params: {},
+        },
+        {
+          additionalHashOptions: {
+            locale: "ko",
+          },
+        },
+      );
+    });
+
+    cy.findByTestId("embed-frame").within(() => {
+      cy.log(
+        "static embeddings with `#locale` should show a translated the loading message",
+      );
+      // Loading...
+      cy.findByText("로드 중...")
+        .should("be.visible")
+        .then(resolveDashboardLoaderPromise);
+
+      cy.log("assert the line chart");
+      H.getDashboardCard(0).within(() => {
+        // X-axis labels: Jan 2024 (or some other year)
+        cy.findByText(/^1월 20\d\d\b/).should("be.visible");
+        // Aggregation "count"
+        cy.findByText("카운트").should("be.visible");
+      });
+    });
+
+    cy.findByTestId("embed-frame").within(() => {
+      cy.log("assert the trend chart");
+      H.getDashboardCard(2).within(() => {
+        // N/A (the comparison row combines it with the comparison description)
+        cy.findByText(/해당 없음/).should("be.visible");
+        // (No data)
+        cy.findByText("(데이터 없음)").should("be.visible");
+      });
+
+      cy.log("assert the pie chart");
+      H.getDashboardCard(1).within(() => {
+        // Total
+        cy.findByText("합계").should("be.visible");
+        // Other
+        cy.findByTestId("chart-legend").findByText("기타").should("be.visible");
+      });
+    });
+
+    cy.log("test a static embedded question");
+    const {
+      promise: questionLoaderPromise,
+      resolve: resolveQuestionLoaderPromise,
+    } = defer();
+    cy.intercept(
+      {
+        method: "GET",
+        url: "/api/embed/card/*",
+      },
+      () => questionLoaderPromise,
+    ).as("questionRequest");
+
+    cy.log("assert the line chart");
+    cy.get("@lineChartQuestionId").then((lineChartQuestionId) => {
+      H.visitEmbeddedPage(
+        {
+          resource: { question: lineChartQuestionId },
+          params: {},
+        },
+        {
+          additionalHashOptions: {
+            locale: "ko",
+          },
+        },
+      );
+    });
+
+    cy.findByTestId("embed-frame").within(() => {
+      cy.log(
+        "static embeddings with `#locale` should show a translated the loading message",
+      );
+      // Loading...
+      cy.findByText("로딩...")
+        .should("be.visible")
+        .then(resolveQuestionLoaderPromise);
+
+      // X-axis labels: Jan 2023 (or some other year)
+      cy.findByText(/11월 20\d\d\b/).should("be.visible");
+      // Aggregation "count"
+      cy.findByText("카운트").should("be.visible");
+    });
+  });
+});
+
+function openFilterOptions(name) {
+  H.filterWidget().contains(name).click();
+}
+
+function getDashboardFilter(name) {
+  return cy
+    .findByTestId("edit-dashboard-parameters-widget-container")
+    .findByText(name);
+}
+
+// The default-value picker for a field-based parameter can render as either
+// a search combobox or a checkbox list, depending on the field's values
+// configuration; handle both so the test isn't sensitive to which one shows.
+function setRequiredParameterDefaultValue(value, { buttonLabel } = {}) {
+  // The widget can still be loading (neither mode rendered yet) right after
+  // the popover opens; wait until one of them actually shows up before
+  // deciding which branch to take.
+  H.popover()
+    .first()
+    .should(($popover) => {
+      const hasList =
+        $popover.find('[placeholder="Search the list"]').length > 0;
+      const hasCombobox = $popover.find("input").length > 0;
+      expect(hasList || hasCombobox, "default value widget to be ready").to.be
+        .true;
+    });
+
+  cy.get("body").then(($body) => {
+    if ($body.find('[placeholder="Search the list"]').length > 0) {
+      H.popover()
+        .first()
+        .within(() => {
+          // The list can still be settling (e.g. a background values fetch
+          // replacing the initial options) right as we click, so retry the
+          // click itself until the checkbox actually ends up checked.
+          checkFilterValueCheckbox(value);
+          cy.button(buttonLabel).click();
+        });
+    } else {
+      addWidgetStringFilter(value, { buttonLabel });
+    }
+  });
+}
+
+function checkFilterValueCheckbox(value, attempt = 0) {
+  cy.findByTestId(`${value}-filter-value`).then(($checkbox) => {
+    if ($checkbox.prop("checked")) {
+      return;
+    }
+    if (attempt > 5) {
+      throw new Error(`Could not check the "${value}" filter value checkbox`);
+    }
+    cy.wrap($checkbox).click({ force: true });
+    checkFilterValueCheckbox(value, attempt + 1);
+  });
+}
+
+function assertRequiredEnabledForName({ name, enabled }) {
+  getDashboardFilter(name).click();
+  H.getRequiredToggle().should(enabled ? "be.enabled" : "not.be.enabled");
+}

@@ -1,0 +1,36 @@
+.SidebarContentMain {
+  overflow-y: auto;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.FooterButton {
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 0.5rem;
+  margin-bottom: 1rem;
+  padding-left: 4rem;
+  padding-right: 4rem;
+  border-radius: 99px;
+  box-shadow: 0 2px 2px rgb(0 0 0 / 13%);
+}
+
+.SidebarContentRoot {
+  height: 100%;
+}
+
+.SidebarContentHeader {
+  padding-top: 0.5rem;
+  margin: 1rem 1.5rem;
+}
+
+/* Set on an ancestor to keep the header in view while the content scrolls under it */
+.stickyHeader .SidebarContentHeader {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: 0;
+  padding: 1.5rem 1.5rem 0.5rem;
+  background-color: var(--mb-color-background_page-primary);
+}

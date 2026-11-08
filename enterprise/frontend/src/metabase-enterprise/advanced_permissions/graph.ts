@@ -1,0 +1,104 @@
+import _ from "underscore";
+
+import {
+  getEntityPermission,
+  getSchemasPermission,
+  hasPermissionValueInSubgraph,
+  isSchemaEntityId,
+  isTableEntityId,
+  updateEntityPermission,
+} from "metabase/permissions";
+import {
+  DataPermission,
+  DataPermissionValue,
+  type GroupsPermissions,
+  type PermissionEntityId,
+  type PermissionsDatabase,
+} from "metabase-types/api";
+
+export function shouldRestrictNativeQueryPermissions(
+  permissions: GroupsPermissions,
+  groupId: number,
+  entityId: PermissionEntityId,
+  _permission: DataPermission,
+  value: DataPermissionValue,
+  _database: PermissionsDatabase,
+) {
+  const currDbNativePermission = getSchemasPermission(
+    permissions,
+    groupId,
+    { databaseId: entityId.databaseId },
+    DataPermission.CREATE_QUERIES,
+  );
+
+  if (isTableEntityId(entityId)) {
+    return (
+      (value === DataPermissionValue.SANDBOXED ||
+        value === DataPermissionValue.BLOCKED) &&
+      currDbNativePermission === DataPermissionValue.QUERY_BUILDER_AND_NATIVE
+    );
+  }
+
+  if (isSchemaEntityId(entityId)) {
+    return (
+      value === DataPermissionValue.BLOCKED &&
+      currDbNativePermission === DataPermissionValue.QUERY_BUILDER_AND_NATIVE
+    );
+  }
+
+  return false;
+}
+
+export function upgradeViewPermissionsIfNeeded(
+  permissions: GroupsPermissions,
+  groupId: number,
+  entityId: PermissionEntityId,
+  value: DataPermissionValue,
+  database: PermissionsDatabase,
+) {
+  // get permission for item up one level or db if we're already at the top most entity:
+  // table -> schema, schema -> database, database -> database
+  const parentOrDbEntityId = isTableEntityId(entityId)
+    ? _.pick(entityId, ["databaseId", "schemaName"])
+    : _.pick(entityId, ["databaseId"]);
+
+  const parentOrDbPermission = getEntityPermission(
+    permissions,
+    groupId,
+    parentOrDbEntityId,
+    DataPermission.VIEW_DATA,
+  );
+
+  const isGrantingNativeQueryAccessWithoutProperViewAccess =
+    value === DataPermissionValue.QUERY_BUILDER_AND_NATIVE &&
+    parentOrDbPermission !== DataPermissionValue.UNRESTRICTED &&
+    parentOrDbPermission !== DataPermissionValue.IMPERSONATED;
+
+  const isGrantingQueryAccessWithBlockedChild =
+    value !== DataPermissionValue.NO &&
+    !isTableEntityId(entityId) &&
+    hasPermissionValueInSubgraph(
+      permissions,
+      groupId,
+      entityId,
+      database,
+      DataPermission.VIEW_DATA,
+      DataPermissionValue.BLOCKED,
+    );
+
+  if (
+    isGrantingNativeQueryAccessWithoutProperViewAccess ||
+    isGrantingQueryAccessWithBlockedChild
+  ) {
+    permissions = updateEntityPermission(
+      permissions,
+      groupId,
+      parentOrDbEntityId,
+      DataPermissionValue.UNRESTRICTED,
+      database,
+      DataPermission.VIEW_DATA,
+    );
+  }
+
+  return permissions;
+}

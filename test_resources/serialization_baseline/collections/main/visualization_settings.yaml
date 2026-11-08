@@ -1,0 +1,5 @@
+name: Visualization Settings
+entity_id: cOlViZsEtTiNgS0ExAmP1
+slug: visualization_settings
+serdes/meta:
+- model: Collection

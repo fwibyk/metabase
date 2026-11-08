@@ -1,0 +1,1160 @@
+(ns metabase.premium-features.token-check-test
+  (:require
+   [clj-http.client :as http]
+   [clj-http.core :as http.core]
+   [clojure.test :refer :all]
+   [java-time.api :as t]
+   [mb.hawk.parallel]
+   [metabase.app-db.connection :as mdb.connection]
+   [metabase.app-db.core :as mdb]
+   [metabase.premium-features.core :as premium-features]
+   [metabase.premium-features.db :as premium-features.db]
+   [metabase.premium-features.task.clear-token-cache]
+   [metabase.premium-features.test-util :as tu]
+   [metabase.premium-features.token-check :as token-check]
+   [metabase.startup.core :as startup]
+   [metabase.test :as mt]
+   [metabase.test.fixtures :as fixtures]
+   [metabase.util :as u]
+   [metabase.util.api-error :as api-error]
+   [metabase.util.json :as json]
+   [metabase.util.malli.registry :as mr]
+   [methodical.core :as methodical]
+   [toucan2.core :as t2]
+   [toucan2.pipeline :as t2.pipeline]))
+
+(set! *warn-on-reflection* true)
+
+(use-fixtures :once (fixtures/initialize :db))
+
+(defn- fresh-checker
+  "A token checker with production TTLs and no circuit breaker.
+  The global checker's breaker is shared across the JVM, and one tripped by an earlier test would fail every check here."
+  []
+  (binding [token-check/*customize-checker* true]
+    (token-check/make-checker {:local-ttl (t/seconds 5)
+                               :soft-ttl  (t/hours 12)
+                               :hard-ttl  (t/hours 36)})))
+
+(deftest log-tests
+  (let [token (tu/random-token)
+        print-token (apply str (concat (take 4 token) "..." (take-last 4 token)))]
+    (testing "Do not log the token (#18249)"
+      (mt/with-log-messages-for-level [messages :info]
+        (token-check/check-token (fresh-checker) token)
+        (let [logs (mapv :message (messages))]
+          (is (every? (complement #(re-find (re-pattern token) %)) logs))
+          (is (= 1 (count (filter #(re-find (re-pattern print-token) %) logs)))))))))
+
+(deftest fetch-token-caches-invalid-responses
+  (testing "For 4XX responses, the result is cached"
+    (let [call-count (atom 0)
+          token      (tu/random-token)]
+      (binding [http/request (fn [& _]
+                               (swap! call-count inc)
+                               {:status 400 :body "{\"valid\": false, \"status\": \"fake\"}"})]
+        (let [checker (fresh-checker)]
+          (dotimes [_ 10] (token-check/check-token checker token)))
+        (is (= 1 @call-count))))))
+
+(deftest fetch-token-does-not-cache-exceptions
+  (let [call-count (atom 0)
+        token      (tu/random-token)
+        response   (atom :error)
+        ;; no circuit breaker (carries state between blocks) and no local-ttl (it negative-caches
+        ;; failures) — this pins that the DURABLE tiers never store them
+        checker    (binding [token-check/*customize-checker* true]
+                     (token-check/make-checker {:soft-ttl (t/minutes 1)
+                                                :hard-ttl (t/minutes 2)}))]
+    (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _]
+                                                         (swap! call-count inc)
+                                                         (case @response
+                                                           :error     (throw (ex-info "kaboom" {:ka :boom}))
+                                                           :500       {:status 500}
+                                                           :400-empty {:status 400}
+                                                           :400-html  {:status 400 :body "<html>Bad Gateway</html>"}
+                                                           :200-empty {:status 200}))]
+      (testing "For timeouts, 5XX errors, etc. we don't cache the result"
+        (dotimes [_ 5] (token-check/check-token checker token))
+        (is (= 5 @call-count)))
+      (testing "Does not cache 500 responses"
+        (reset! call-count 0)
+        (reset! response :500)
+        (dotimes [_ 5] (token-check/check-token checker token))
+        (is (= 5 @call-count)))
+      (testing "A 4XX with no body is not a real answer from the store — treated as transient, not cached"
+        (reset! call-count 0)
+        (reset! response :400-empty)
+        (dotimes [_ 5] (token-check/check-token checker token))
+        (is (= 5 @call-count))
+        (is (= {:valid         false
+                :canonical?    false
+                :status        "Unable to validate token"
+                :error-details "Token validation provided no response."}
+               (token-check/check-token checker token))))
+      (testing "An unparseable body (e.g. a proxy's error page) is transient, not cached, and surfaces a legible error"
+        (reset! call-count 0)
+        (reset! response :400-html)
+        (dotimes [_ 5] (token-check/check-token checker token))
+        (is (= 5 @call-count))
+        (is (=? {:canonical?    false
+                 :error-details "Token validation provided no response."}
+                (token-check/check-token checker token))))
+      (testing "A 2XX with no body is transient, not cached, and surfaces a legible error"
+        (reset! call-count 0)
+        (reset! response :200-empty)
+        (dotimes [_ 5] (token-check/check-token checker token))
+        (is (= 5 @call-count))
+        (is (=? {:canonical?    false
+                 :error-details "Token validation provided no response."}
+                (token-check/check-token checker token)))))))
+
+(deftest not-found-test
+  (mt/with-log-level :fatal
+    (is (=? {:valid false, :status "Token does not exist."}
+            (token-check/check-token (fresh-checker) (tu/random-token))))))
+
+(deftest expired-token-status-is-authoritative-test
+  (testing "a 403 with a body is a real answer from the store: stored faithfully, marked canonical (EMB-2341)"
+    (let [token   (tu/random-token)
+          status  {:valid      false
+                   :status     "Token is expired."
+                   :features   ["sso" "snippet-collections" "database-routing"]
+                   :plan-alias "pro-self-hosted"
+                   :trial      false
+                   :valid-thru "2026-08-25T12:00:00Z"}
+          checker (binding [token-check/*customize-checker* true]
+                    (token-check/make-checker {:local-ttl (t/seconds 5)
+                                               :soft-ttl  (t/hours 12)
+                                               :hard-ttl  (t/hours 36)}))]
+      (try
+        (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _] {:status 403 :body (json/encode status)})]
+          (is (= (assoc status :canonical? true)
+                 (token-check/check-token checker token))))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest invalid-token-in-2xx-is-authoritative-test
+  (testing "an invalid verdict in a 2xx is a real answer: cached, and features gated the same as a 4xx"
+    (let [token      (tu/random-token)
+          call-count (atom 0)
+          body       (json/encode {:valid false :status "Token is expired." :features ["sso"]})
+          checker    (binding [token-check/*customize-checker* true]
+                       (token-check/make-checker {:local-ttl (t/seconds 5)
+                                                  :soft-ttl  (t/hours 12)
+                                                  :hard-ttl  (t/hours 36)}))]
+      (try
+        (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _]
+                                                             (swap! call-count inc)
+                                                             {:status 200 :body body})]
+          (is (= {:valid false :status "Token is expired." :features ["sso"] :canonical? true}
+                 (token-check/check-token checker token)))
+          (token-check/check-token checker token)
+          (is (= 1 @call-count) "authoritative answers are cached"))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest hung-request-times-out-test
+  (testing "a request that never returns times out with a legible error and is not cached"
+    (let [token      (tu/random-token)
+          call-count (atom 0)
+          checker    (binding [token-check/*customize-checker* true]
+                       (token-check/make-checker
+                        {:base            (reify token-check/TokenChecker
+                                            (-check-token [_ _]
+                                              (swap! call-count inc)
+                                              (Thread/sleep 5000))
+                                            (-clear-cache! [_])
+                                            (-clear-local-cache! [_]))
+                         :circuit-breaker {:failure-threshold-ratio-in-period [10 10 1000]
+                                           :delay-ms                          50
+                                           :success-threshold                 1}
+                         :timeout-ms      100
+                         :local-ttl       (t/millis 1)
+                         :soft-ttl        (t/minutes 1)
+                         :hard-ttl        (t/minutes 2)}))]
+      (try
+        (is (= {:valid         false
+                :canonical?    false
+                :status        "Unable to validate token"
+                :error-details "Token validation timed out."}
+               (token-check/check-token checker token)))
+        (Thread/sleep 5) ;; expire the local memoize layer
+        (token-check/check-token checker token)
+        (is (= 2 @call-count) "timeouts are not cached")
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest transient-failures-are-negative-cached-test
+  ;; timing rule: asserting behavior WITHIN a TTL window needs a TTL generous enough that test
+  ;; overhead can't overrun it (10s); sleeping PAST a tight TTL is deterministic (sleep ≥ duration)
+  (testing "a transient failure is memoized for local-ttl — an outage costs one attempt per TTL, not one per feature check"
+    (let [token      (tu/random-token)
+          call-count (atom 0)
+          checker    (binding [token-check/*customize-checker* true]
+                       (token-check/make-checker {:local-ttl (t/seconds 10)
+                                                  :soft-ttl  (t/minutes 1)
+                                                  :hard-ttl  (t/minutes 2)}))]
+      (try
+        (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _]
+                                                             (swap! call-count inc)
+                                                             (throw (ex-info "network failure!" {})))]
+          (dotimes [_ 5] (token-check/check-token checker token))
+          (is (= 1 @call-count) "failures within the TTL are served from the negative cache")
+          (is (=? {:valid false :canonical? false :error-details "network failure!"}
+                  (token-check/check-token checker token))))
+        (finally
+          (token-check/-clear-cache! checker)))))
+  (testing "the negative cache expires with the TTL — failures are retried"
+    (let [token      (tu/random-token)
+          call-count (atom 0)
+          checker    (binding [token-check/*customize-checker* true]
+                       (token-check/make-checker {:local-ttl (t/millis 50)
+                                                  :soft-ttl  (t/minutes 1)
+                                                  :hard-ttl  (t/minutes 2)}))]
+      (try
+        (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _]
+                                                             (swap! call-count inc)
+                                                             (throw (ex-info "network failure!" {})))]
+          (token-check/check-token checker token)
+          (is (= 1 @call-count))
+          (Thread/sleep 100)
+          (token-check/check-token checker token)
+          (is (= 2 @call-count)))
+        (finally
+          (token-check/-clear-cache! checker)))))
+  (testing "concurrent misses share a single attempt (core.memoize single-flights values, and failures are values here)"
+    (let [token      (tu/random-token)
+          call-count (atom 0)
+          checker    (binding [token-check/*customize-checker* true]
+                       (token-check/make-checker {:local-ttl (t/seconds 10)
+                                                  :soft-ttl  (t/minutes 1)
+                                                  :hard-ttl  (t/minutes 2)}))]
+      (try
+        (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _]
+                                                             (swap! call-count inc)
+                                                             (Thread/sleep 100)
+                                                             (throw (ex-info "network failure!" {})))]
+          (let [checks (mapv (fn [_] (future (token-check/check-token checker token))) (range 8))]
+            (is (every? #(false? (:valid %)) (mapv deref checks)))
+            (is (= 1 @call-count) "8 concurrent callers, one network attempt")))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest bare-rejection-is-transient-test
+  (doseq [http-status [403 404]]
+    (testing (format "a bare %d (no body) carries no verdict from the store: a proxy may have stripped it, so it is transient, not cached"
+                     http-status)
+      (let [token      (tu/random-token)
+            call-count (atom 0)
+            ;; no local-ttl: it negative-caches failures, and this pins that the durable tiers never store them
+            checker    (binding [token-check/*customize-checker* true]
+                         (token-check/make-checker {:soft-ttl (t/minutes 1)
+                                                    :hard-ttl (t/minutes 2)}))]
+        (try
+          (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _]
+                                                               (swap! call-count inc)
+                                                               {:status http-status})]
+            (dotimes [_ 5] (token-check/check-token checker token))
+            (is (= 5 @call-count) "not cached: every check goes back to the store")
+            (is (=? {:valid         false
+                     :canonical?    false
+                     :error-details "Token validation provided no response."}
+                    (token-check/check-token checker token))))
+          (finally
+            (token-check/-clear-cache! checker)))))))
+
+(deftest malformed-status-body-is-transient-test
+  (doseq [[description body] {"an empty object"            "{}"
+                              "an unrelated object"        "{\"foo\":1}"
+                              "a non-boolean valid"        "{\"valid\":\"yes\",\"status\":\"ok\"}"
+                              "a blank status"             "{\"valid\":false,\"status\":\"\"}"
+                              "features that aren't a list" "{\"valid\":true,\"status\":\"ok\",\"features\":\"sso\"}"
+                              "a JSON value, not an object" "[1,2,3]"}]
+    (testing (format "%s decodes as JSON but is not a token status: transient, never stamped canonical or cached" description)
+      (let [token      (tu/random-token)
+            call-count (atom 0)
+            checker    (binding [token-check/*customize-checker* true]
+                         (token-check/make-checker {:soft-ttl (t/minutes 1)
+                                                    :hard-ttl (t/minutes 2)}))]
+        (try
+          (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _]
+                                                               (swap! call-count inc)
+                                                               {:status 200 :body body})]
+            (dotimes [_ 3] (token-check/check-token checker token))
+            (is (= 3 @call-count) "not cached")
+            (is (=? {:valid         false
+                     :canonical?    false
+                     :error-details "Token validation provided no response."}
+                    (token-check/check-token checker token))))
+          (finally
+            (token-check/-clear-cache! checker)))))))
+
+(deftest do-refresh-refuses-non-canonical-test
+  (testing "the caching layer refuses to hold on to a result not marked :canonical?"
+    (let [token      (tu/random-token)
+          call-count (atom 0)
+          checker    (binding [token-check/*customize-checker* true]
+                       (token-check/make-checker
+                        {:base     (reify token-check/TokenChecker
+                                     (-check-token [_ _]
+                                       (swap! call-count inc)
+                                       {:valid true :status "fake" :features ["sso"]})
+                                     (-clear-cache! [_])
+                                     (-clear-local-cache! [_]))
+                         :soft-ttl (t/hours 12)
+                         :hard-ttl (t/hours 36)}))]
+      (try
+        (dotimes [_ 3] (token-check/check-token checker token))
+        (is (= 3 @call-count) "non-canonical results are not cached")
+        (is (=? {:valid         false
+                 :canonical?    false
+                 :error-details "Refusing to cache a non-authoritative token status"}
+                (token-check/check-token checker token)))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest token-features-honors-valid-test
+  (testing "*token-features* returns no features when the token status is not valid, even if features are present"
+    (mt/with-temporary-raw-setting-values [premium-embedding-token (tu/random-token)]
+      (mt/with-dynamic-fn-redefs [token-check/check-token (fn [_token] {:valid      false
+                                                                        :canonical? true
+                                                                        :status     "Token is expired."
+                                                                        :features   ["sso"]})]
+        (is (= #{} (token-check/*token-features*)))
+        (is (false? (token-check/has-feature? :sso)))
+        (is (false? (token-check/canonically-has-feature? :sso)))))))
+
+(deftest fetch-token-does-not-call-db-when-cached
+  (testing "No DB calls are made when checking token status if the status is in local cache"
+    (let [token (tu/random-token)
+          checker (fresh-checker)
+          _ (token-check/check-token checker token)
+          ;; The local cache has a 5s TTL, so repeated checks within that window should not hit the DB.
+          call-counts (repeatedly 3 (fn []
+                                      (t2/with-call-count [call-count]
+                                        (token-check/check-token checker token)
+                                        (call-count))))]
+      ;; At least some of these should be zero (served from local in-memory cache)
+      (is (some zero? call-counts)))))
+
+(deftest token-checker-test
+  (let [token          (tu/random-token)
+        behavior       (atom :success)
+        call-count     (atom 0)
+        good-response  {:valid      true
+                        :status     "fake"
+                        :features   ["feature1" "feature2"]
+                        :canonical? true}
+        token-response (fn [_token]
+                         (swap! call-count inc)
+                         (case @behavior
+                           :success good-response
+                           :error   (throw (ex-info "network issues!" {:ka :boom}))))
+        checker        (token-check/make-checker
+                        {:base            (reify token-check/TokenChecker
+                                            (-check-token [_ token]
+                                              (token-response token))
+                                            (-clear-cache! [_])
+                                            (-clear-local-cache! [_]))
+                         :circuit-breaker {:failure-threshold-ratio-in-period [4 4 1000]
+                                           :delay-ms                          50
+                                           :success-threshold                 1}
+                         :timeout-ms      100
+                         :local-ttl       (t/millis 50)
+                         :soft-ttl        (t/millis 200)
+                         :hard-ttl        (t/seconds 1)})]
+    (testing "when no information is present, hits the underlying"
+      (is (= good-response (token-check/-check-token checker token)))
+      (is (= 1 @call-count)))
+    (testing "hitting it again in the same timeperiod does not hit the underlying checker"
+      (is (= good-response (token-check/-check-token checker token)))
+      (is (= 1 @call-count)))
+    (testing "While it errors, we have circuit breaking"
+      (reset! behavior :error)
+      (Thread/sleep 200)
+      (dotimes [_ 1000] (token-check/-check-token checker token))
+      (is (< @call-count 50)))
+    (testing "When connectivity is restored we get successful token checks"
+      (reset! behavior :success)
+      (Thread/sleep 100) ;; wait for circuit breaker to open back up (also outlasts the 50ms negative cache)
+      (is (= good-response (token-check/-check-token checker token)))))
+  (testing "App db not setup yet does not invoke the circuit breaker (#65294), and the refusal is not cached past setup"
+    (let [token          (tu/random-token)
+          call-count     (atom 0)
+          good-response  {:valid      true
+                          :status     "fake"
+                          :features   ["feature1" "feature2"]
+                          :canonical? true}
+          checker        (token-check/make-checker
+                          {:base            (reify token-check/TokenChecker
+                                              (-check-token [_ _token]
+                                                (swap! call-count inc)
+                                                good-response)
+                                              (-clear-cache! [_])
+                                              (-clear-local-cache! [_]))
+                           :circuit-breaker {:failure-threshold-ratio-in-period [4 4 1000]
+                                             :delay-ms                          5000
+                                             :success-threshold                 1}
+                           :timeout-ms      100
+                           :local-ttl       (t/seconds 10)
+                           :soft-ttl        (t/millis 200)
+                           :hard-ttl        (t/seconds 1)})]
+      (mt/with-dynamic-fn-redefs [mdb/db-is-set-up? (constantly false)]
+        (is (= {:valid false
+                :canonical? false
+                :status "Unable to validate token"
+                :error-details "Metabase DB is not yet set up"}
+               (token-check/-check-token checker token)))
+        (dotimes [_ 50] (token-check/-check-token checker token))
+        (is (= {:valid false
+                :canonical? false
+                :status "Unable to validate token"
+                :error-details "Metabase DB is not yet set up"}
+               (token-check/-check-token checker token))))
+      (testing "When the db-is-set-up? we are not blocked by the circuit breaker, and the first check reaches the store"
+        (try
+          (mt/with-dynamic-fn-redefs [mdb/db-is-set-up? (constantly true)]
+            (is (= good-response (token-check/-check-token checker token)))
+            (is (= 1 @call-count)))
+          (finally
+            (token-check/-clear-cache! checker)))))))
+
+(defn- age-cache-entry!
+  "Rewrite the `updated_at` timestamp for `token` in the cache table to be `age-ms` milliseconds in the past.
+   Also ages the local cache entry if a `local-cache` atom is provided."
+  ([token age-ms]
+   (age-cache-entry! token age-ms nil))
+  ([token age-ms local-cache]
+   (let [token-hash (#'token-check/hash-token token)
+         new-ts     (t/minus (t/offset-date-time) (t/millis age-ms))]
+     (t2/update! :model/PremiumFeaturesCache :token_hash token-hash {:updated_at new-ts})
+     (when local-cache
+       (swap! local-cache update token-hash assoc :updated-at (t/minus (t/instant) (t/millis age-ms)))))))
+
+(deftest e2e-test
+  (testing "full stack: HTTP fetch → DB-hash-aware cache → error handling"
+    (let [token       (tu/random-token)
+          call-count  (atom 0)
+          good-body   "{\"valid\":true,\"status\":\"fake\",\"features\":[\"fake\",\"features\"]}"
+          good-resp   {:valid true, :status "fake", :features ["fake" "features"], :canonical? true}
+          local-cache (atom {})
+          ;; no circuit breaker — it carries state between runs and causes flakes
+          checker     (binding [token-check/*customize-checker* true]
+                        (token-check/make-checker {:local-ttl           (t/millis 50)
+                                                   :soft-ttl            (t/hours 12)
+                                                   :hard-ttl            (t/hours 36)
+                                                   :db-hash-local-cache local-cache}))]
+      (try
+        (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _]
+                                                             (swap! call-count inc)
+                                                             {:status 200 :body good-body})]
+          (is (= good-resp (token-check/check-token checker token)))
+          (is (= 1 @call-count)))
+        (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _]
+                                                             (swap! call-count inc)
+                                                             (throw (ex-info "network failure!" {})))]
+          (testing "Doesn't hit the network inside of cache duration"
+            ;; Wait for local-cached-token-checker TTL to expire, but DB-hash-aware cache is still fresh
+            (Thread/sleep 60)
+            (is (= good-resp (token-check/check-token checker token)))
+            (is (= 1 @call-count)))
+          (testing "Stale cache (past soft TTL, within hard TTL) still serves cached result"
+            (age-cache-entry! token (+ (u/hours->ms 12) 1000) local-cache)
+            (Thread/sleep 60) ;; expire local-cached-token-checker
+            (let [refresh-done (promise)]
+              (binding [token-check/*testing-only-call-after-refresh* #(deliver refresh-done true)]
+                (is (= good-resp (token-check/check-token checker token))))
+              ;; async refresh was attempted (and failed), but stale value was returned
+              (is (true? (deref refresh-done 5000 :timeout))))
+            (is (= 2 @call-count)))
+          (testing "Expired cache (past hard TTL) surfaces the error"
+            (age-cache-entry! token (+ (u/hours->ms 36) 1000) local-cache)
+            (Thread/sleep 60) ;; expire local-cached-token-checker
+            (is (= {:valid         false
+                    :canonical?    false
+                    :status        "Unable to validate token"
+                    :error-details "network failure!"}
+                   (token-check/check-token checker token)))))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest license-server-fields-we-do-not-read-test
+  (testing "a token status response carrying fields we don't read still validates the token"
+    (let [token   (tu/random-token)
+          body    {:valid       true
+                   :status      "ok"
+                   :features    ["sso-jwt"]
+                   :plan-alias  "pro-self-hosted"
+                   :new-field   "added by the license server"
+                   :store-users [{:email "owner@example.com" :id 42 :first-name "Owner" :last-name "Person"}]
+                   :quotas      [{:hosting-feature "metabase-ai-tokens"
+                                  :soft-limit      100
+                                  :usage           5
+                                  :locked          false
+                                  :updated-at      "2026-09-01T00:00:00Z"
+                                  :quota-type      "monthly"}]}
+          checker (fresh-checker)]
+      (try
+        (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _] {:status 200 :body (json/encode body)})]
+          (is (= (assoc body :canonical? true)
+                 (token-check/check-token checker token))))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest ^:parallel extract-locks-test
+  (testing "empty :meters map yields empty result"
+    (is (= {} (#'token-check/extract-locks {}))))
+  (testing "meters without :is-locked are filtered out"
+    (is (= {:transform-basic-runs true}
+           (#'token-check/extract-locks {:transform-basic-runs    {:is-locked    true
+                                                                   :meter-value  10}
+                                         :transform-advanced-runs {:meter-value  5}}))))
+  (testing "false :is-locked is preserved (only nil/missing is dropped)"
+    (is (= {:transform-basic-runs    false
+            :transform-advanced-runs true}
+           (#'token-check/extract-locks {:transform-basic-runs    {:is-locked false}
+                                         :transform-advanced-runs {:is-locked true}}))))
+  (testing "non-transform meter keys pass through (e.g. :metabase-ai-tokens)"
+    (is (= {:transform-basic-runs true
+            :metabase-ai-tokens    false}
+           (#'token-check/extract-locks {:transform-basic-runs {:is-locked true}
+                                         :metabase-ai-tokens   {:is-locked false}})))))
+
+(deftest do-refresh-writes-locked-meters-test
+  (testing "do-refresh! mirrors :meters → :locked-meters setting on every successful refresh"
+    (mt/with-temporary-setting-values [locked-meters {}]
+      (let [token       (tu/random-token)
+            response    (atom {:valid true :status "ok" :canonical? true})
+            local-cache (atom {})
+            checker     (binding [token-check/*customize-checker* true]
+                          (token-check/make-checker {:local-ttl           (t/millis 50)
+                                                     :soft-ttl            (t/hours 12)
+                                                     :hard-ttl            (t/hours 36)
+                                                     :db-hash-local-cache local-cache}))]
+        (try
+          (mt/with-dynamic-fn-redefs [token-check/http-fetch
+                                      (fn [& _] {:status 200 :body (json/encode @response)})]
+            (testing "successful response with :meters writes through"
+              (reset! response {:valid true :status "ok"
+                                :meters {:transform-basic-runs    {:is-locked true}
+                                         :transform-advanced-runs {:is-locked false}}})
+              (token-check/check-token checker token)
+              (is (= {:transform-basic-runs    true
+                      :transform-advanced-runs false}
+                     (premium-features/locked-meters))))
+            (testing "successful response WITHOUT :meters leaves the setting untouched"
+              (reset! response {:valid true :status "ok"})
+              (token-check/-clear-cache! checker)
+              (reset! local-cache {})
+              (token-check/check-token checker token)
+              (is (= {:transform-basic-runs    true
+                      :transform-advanced-runs false}
+                     (premium-features/locked-meters))
+                  "Setting should retain previous value when response omits :meters"))
+            (testing "successful response with empty :meters {} writes empty map (legitimate unlock)"
+              (reset! response {:valid true :status "ok" :meters {}})
+              (token-check/-clear-cache! checker)
+              (reset! local-cache {})
+              (token-check/check-token checker token)
+              (is (= {} (premium-features/locked-meters)))))
+          (finally
+            (token-check/-clear-cache! checker)))))))
+
+(deftest do-refresh-failure-leaves-locked-meters-untouched-test
+  (testing "Outage / 5xx / circuit breaker open → :locked-meters survives unchanged.
+            (Critical correctness property: a network blip MUST NOT accidentally unlock.)"
+    (mt/with-temporary-setting-values [locked-meters {:transform-basic-runs true}]
+      (let [token       (tu/random-token)
+            local-cache (atom {})
+            checker     (binding [token-check/*customize-checker* true]
+                          (token-check/make-checker {:local-ttl           (t/millis 50)
+                                                     :soft-ttl            (t/hours 12)
+                                                     :hard-ttl            (t/hours 36)
+                                                     :db-hash-local-cache local-cache}))]
+        (try
+          (mt/with-dynamic-fn-redefs [token-check/http-fetch
+                                      (fn [& _] (throw (ex-info "network failure!" {})))]
+            (token-check/check-token checker token)
+            (is (= {:transform-basic-runs true}
+                   (premium-features/locked-meters))
+                "Failed refresh must not touch :locked-meters"))
+          (finally
+            (token-check/-clear-cache! checker)))))))
+
+(deftest token-status-setting-test
+  (testing "If a `premium-embedding-token` has been set, the `token-status` setting should return the response
+            from the store.metabase.com endpoint for that token."
+    (is (= {:valid false, :status "Token does not exist.", :canonical? true}
+           (token-check/check-token (fresh-checker) (tu/random-token)))))
+  (testing "If premium-embedding-token is nil, the token-status setting should also be nil."
+    (mt/with-temporary-setting-values [premium-embedding-token nil]
+      (is (nil? (premium-features/token-status))))))
+
+(deftest active-users-count-setting-test
+  (testing "returns the number of active users"
+    (is (= (t2/count :model/User :is_active true :type :personal)
+           (premium-features/active-users-count))))
+  (testing "Default to 0 if db is not setup yet"
+    (binding [mdb.connection/*application-db* {:status (atom nil)}]
+      (is (zero? (premium-features/active-users-count))))))
+
+(deftest RemoteCheckedToken-regexp
+  (testing "valid tokens"
+    (is (mr/validate [:re @#'token-check/RemoteCheckedToken] (apply str (repeat 64 "a"))))
+    (is (mr/validate [:re @#'token-check/RemoteCheckedToken] (apply str "mb_dev_" (repeat 57 "a")))))
+  (testing "invalid tokens"
+    (is (not (mr/validate [:re @#'token-check/RemoteCheckedToken] (apply str (repeat 64 "x")))))
+    (is (not (mr/validate [:re @#'token-check/RemoteCheckedToken] (apply str (repeat 65 "a")))))
+    (is (not (mr/validate [:re @#'token-check/RemoteCheckedToken] (apply str (repeat 63 "a")))))
+    (is (not (mr/validate [:re @#'token-check/RemoteCheckedToken] (apply str "mb_dev_" (repeat 53 "a")))))))
+
+(deftest assert-valid-airgap-user-count-test
+  (testing "no limit set - no error"
+    (mt/with-dynamic-fn-redefs [token-check/max-users-allowed (constantly nil)]
+      (is (nil? (token-check/assert-valid-airgap-user-count!)))))
+  (testing "under limit - no error"
+    (mt/with-dynamic-fn-redefs [token-check/max-users-allowed    (constantly 10)
+                                token-check/active-user-count (constantly 5)]
+      (is (nil? (token-check/assert-valid-airgap-user-count!)))))
+  (testing "at limit - no error"
+    (mt/with-dynamic-fn-redefs [token-check/max-users-allowed    (constantly 10)
+                                token-check/active-user-count (constantly 10)]
+      (is (nil? (token-check/assert-valid-airgap-user-count!)))))
+  (testing "over limit - throws"
+    (mt/with-dynamic-fn-redefs [token-check/max-users-allowed    (constantly 10)
+                                token-check/active-user-count (constantly 11)]
+      (is (thrown-with-msg? Exception
+                            #"You have reached the maximum number of users"
+                            (token-check/assert-valid-airgap-user-count!))))))
+
+(deftest assert-airgap-allows-user-creation-test
+  (testing "no limit set - no error"
+    (mt/with-dynamic-fn-redefs [token-check/max-users-allowed (constantly nil)]
+      (is (nil? (token-check/assert-airgap-allows-user-creation!)))))
+  (testing "under limit - no error (room for one more)"
+    (mt/with-dynamic-fn-redefs [token-check/max-users-allowed    (constantly 10)
+                                token-check/active-user-count (constantly 9)]
+      (is (nil? (token-check/assert-airgap-allows-user-creation!)))))
+  (testing "at limit - throws (no room for another)"
+    (mt/with-dynamic-fn-redefs [token-check/max-users-allowed    (constantly 10)
+                                token-check/active-user-count (constantly 10)]
+      (is (thrown-with-msg? Exception
+                            #"Adding another user would exceed the maximum"
+                            (token-check/assert-airgap-allows-user-creation!)))))
+  (testing "over limit - throws"
+    (mt/with-dynamic-fn-redefs [token-check/max-users-allowed    (constantly 10)
+                                token-check/active-user-count (constantly 11)]
+      (is (thrown-with-msg? Exception
+                            #"Adding another user would exceed the maximum"
+                            (token-check/assert-airgap-allows-user-creation!))))))
+
+(deftest send-metering-events-test
+  (testing "send-metering-events! makes a POST request with correct data"
+    (let [request-data (atom nil)]
+      (mt/with-random-premium-token! [_token]
+        (mt/with-dynamic-fn-redefs [http/post (fn [url opts]
+                                                (reset! request-data {:url url :opts opts})
+                                                {:status 200 :body "{}"})]
+          (token-check/send-metering-events!)
+          (is (some? @request-data) "POST request should have been made")
+          (when @request-data
+            (is (re-find #"/v2/metering$" (:url @request-data))
+                "URL should end with /v2/metering")
+            (is (= :json (get-in @request-data [:opts :content-type]))
+                "Content-Type should be JSON")
+            (is (false? (get-in @request-data [:opts :throw-exceptions]))
+                "throw-exceptions should be false")
+            (let [body (json/decode (get-in @request-data [:opts :body]))]
+              (is (contains? body "site-uuid")
+                  "Request body should include site-uuid")
+              (is (contains? body "mb-version")
+                  "Request body should include mb-version")
+              (is (contains? body "users")
+                  "Request body should include users count"))))))))
+
+(deftest send-metering-events-preserves-value-types-test
+  (testing "metering values are not converted to strings before sending"
+    (let [fake-usage {"anthropic:claude-sonnet-4-6:tokens" 500
+                      "openai:gpt-4:tokens"                300}
+          request-data (atom nil)]
+      (mt/with-random-premium-token! [_token]
+        (mt/with-dynamic-fn-redefs [token-check/metering-stats (constantly {:users          10
+                                                                            :external-users 2
+                                                                            :internal-users 8
+                                                                            :domains        1
+                                                                            :metabot-usage  fake-usage
+                                                                            :metabot-tokens 800})
+                                    http/post                 (fn [_url opts]
+                                                                (reset! request-data opts)
+                                                                {:status 200 :body "{}"})]
+          (token-check/send-metering-events!)
+          (let [body (json/decode (:body @request-data) keyword)]
+            (is (= 10 (:users body))
+                "numeric values should remain numeric after JSON round-trip")
+            (is (map? (:metabot-usage body))
+                "map values should remain maps after JSON round-trip")
+            (is (= fake-usage
+                   (update-keys (:metabot-usage body) name))
+                "nested map values should round-trip intact")))))))
+
+(deftest send-metering-events-error-handling-test
+  (testing "send-metering-events! handles errors gracefully"
+    (mt/with-random-premium-token! [_token]
+      (mt/with-dynamic-fn-redefs [http.core/request (fn [& _] (throw (Exception. "Network error")))]
+        ;; Should not throw, just log the error
+        (is (nil? (token-check/send-metering-events!)))))))
+
+(deftest send-metering-events-no-token-test
+  (testing "send-metering-events! does nothing when no token is set"
+    (let [request-made (atom false)]
+      (mt/with-temporary-setting-values [premium-embedding-token nil]
+        (mt/with-dynamic-fn-redefs [http/post (fn [_url _opts]
+                                                (reset! request-made true)
+                                                {:status 200 :body "{}"})]
+          (token-check/send-metering-events!)
+          (is (false? @request-made) "No request should be made without a token"))))))
+
+(deftest send-metering-events-airgap-token-test
+  (testing "send-metering-events! does nothing for airgap tokens"
+    (let [;; This is a fake airgap token format (starts with "airgap_")
+          airgap-token "airgap_eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ90faketoken"
+          request-made (atom false)]
+      (mt/with-dynamic-fn-redefs [token-check/check-token
+                                  (constantly {:valid    true
+                                               :status   "fake"
+                                               :features ["test" "fixture"]
+                                               :trial    false})]
+        (mt/with-temporary-raw-setting-values [premium-embedding-token airgap-token]
+          (mt/with-dynamic-fn-redefs [http/post (fn [_url _opts]
+                                                  (reset! request-made true)
+                                                  {:status 200 :body "{}"})]
+            (token-check/send-metering-events!)
+            (is (false? @request-made) "No request should be made for airgap tokens")))))))
+
+(deftest metering-stats-test
+  (testing "metering-stats returns expected keys"
+    (let [stats (token-check/metering-stats)]
+      (is (map? stats))
+      (is (contains? stats :users))
+      (is (contains? stats :external-users))
+      (is (contains? stats :internal-users))
+      (is (contains? stats :domains))
+      (is (contains? stats :embedding-dashboard-count))
+      (is (contains? stats :embedding-question-count)))))
+
+(defn- capture-compiled-queries
+  "Call `f` and return every compiled `[sql & params]` query it ran against the app DB."
+  [f]
+  (let [queries (atom [])]
+    (methodical/add-aux-method-with-unique-key!
+     #'t2.pipeline/transduce-execute-with-connection
+     :around :default
+     (fn [next-method rf conn query-type model query]
+       (swap! queries conj query)
+       (next-method rf conn query-type model query))
+     ::query-capture)
+    (try
+      (f)
+      (finally
+        (methodical/remove-aux-method-with-unique-key!
+         #'t2.pipeline/transduce-execute-with-connection
+         :around :default
+         ::query-capture)))
+    @queries))
+
+(deftest metering-stats-uses-started-at-index-test
+  (testing "GHY-4651: the metering query on query_execution must use idx_query_execution_started_at, not a full table scan.
+            SendMeteringEvents runs this every 15 minutes, and query_execution can hold millions of rows."
+    ;; H2 names the access path in its EXPLAIN output, so the check does not depend on table size or planner costs.
+    (when (= :h2 (mdb/db-type))
+      (let [qe-queries (->> (capture-compiled-queries token-check/metering-stats)
+                            (filter (fn [[sql]] (re-find #"(?i)from\s+\"?query_execution\"?" sql))))]
+        (is (seq qe-queries))
+        (doseq [[sql & params] qe-queries
+                :let [plan (-> (t2/query (into [(str "EXPLAIN " sql)] params)) first :plan)]]
+          (is (re-find #"IDX_QUERY_EXECUTION_STARTED_AT: STARTED_AT" plan)))))))
+
+;;; ------------------------------------------------ db-hash-aware-token-checker ------------------------------------------------
+
+(defn- make-db-hash-aware-checker
+  "Helper: wraps a base token-response fn with DB-hash-aware caching. Returns the checker."
+  [token-response-fn {:keys [local-ttl soft-ttl hard-ttl]
+                      :or   {local-ttl (t/millis 50)}}]
+  (binding [token-check/*customize-checker* true]
+    (token-check/make-checker
+     {:base      (reify token-check/TokenChecker
+                   (-check-token [_ token] (token-response-fn token))
+                   (-clear-cache! [_])
+                   (-clear-local-cache! [_]))
+      :local-ttl local-ttl
+      :soft-ttl  soft-ttl
+      :hard-ttl  hard-ttl})))
+
+(deftest clear-local-cache-test
+  (testing "clear-local-cache! drops in-process memoization but leaves the shared DB row alone"
+    (let [token         (tu/random-token)
+          token-hash    (#'token-check/hash-token token)
+          call-count    (atom 0)
+          deletes       (atom 0)
+          good-response {:valid true :status "OK" :features ["sandboxes"] :canonical? true}
+          local-cache   (atom {})
+          checker       (binding [token-check/*customize-checker* true]
+                          (token-check/make-checker
+                           {:base                (reify token-check/TokenChecker
+                                                   (-check-token [_ _token]
+                                                     (swap! call-count inc)
+                                                     good-response)
+                                                   (-clear-cache! [_])
+                                                   (-clear-local-cache! [_]))
+                            ;; long enough that nothing expires during the test
+                            :local-ttl           (t/hours 1)
+                            :soft-ttl            (t/hours 12)
+                            :hard-ttl            (t/hours 36)
+                            :db-hash-local-cache local-cache}))]
+      (try
+        (is (= good-response (token-check/check-token checker token)))
+        (is (= 1 @call-count))
+        (mt/with-dynamic-fn-redefs [premium-features.db/delete-token-status-cache! (fn [] (swap! deletes inc))]
+          (token-check/-clear-local-cache! checker))
+        (is (zero? @deletes) "the shared DB row is never deleted")
+        (is (some? (t2/select-one :model/PremiumFeaturesCache :token_hash token-hash)))
+        (is (contains? @local-cache token-hash) "the DB-hash-validated local entry survives")
+        (testing "the next check re-validates against the DB hash and, since it matches, skips the MetaStore"
+          (is (= good-response (token-check/check-token checker token)))
+          (is (= 1 @call-count)))
+        (testing "but a refresh done by another instance (DB hash changed) is picked up"
+          (t2/update! :model/PremiumFeaturesCache :token_hash token-hash {:token_status_hash "refreshed-elsewhere"})
+          (testing "not while the in-process memo still holds"
+            (is (= good-response (token-check/check-token checker token)))
+            (is (= 1 @call-count)))
+          (token-check/-clear-local-cache! checker)
+          (is (= good-response (token-check/check-token checker token)))
+          (is (= 2 @call-count)))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest db-hash-aware-token-checker-fresh-hit-test
+  (testing "Fresh cache entry (< soft-ttl) is returned without hitting the underlying checker"
+    (let [call-count    (atom 0)
+          good-response {:valid true :status "OK" :features ["sandboxes"] :canonical? true}
+          checker       (make-db-hash-aware-checker
+                         (fn [_token]
+                           (swap! call-count inc)
+                           good-response)
+                         {:soft-ttl (t/minutes 1) :hard-ttl (t/minutes 2)})
+          token         (tu/random-token)]
+      (try
+        ;; First call: cache miss → delegate
+        (is (= good-response (token-check/-check-token checker token)))
+        (is (= 1 @call-count))
+        ;; Second call: fresh cache hit → no delegate
+        (is (= good-response (token-check/-check-token checker token)))
+        (is (= 1 @call-count))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest db-hash-aware-token-checker-stale-async-refresh-test
+  (testing "Stale entry (soft..hard) returns cached value and triggers async refresh"
+    (let [call-count       (atom 0)
+          good-response    {:valid true :status "OK" :features ["sandboxes"] :canonical? true}
+          updated-response {:valid true :status "OK" :features ["sandboxes" "audit-app"] :canonical? true}
+          response-atom    (atom good-response)
+          refresh-done     (promise)
+          checker          (make-db-hash-aware-checker
+                            (fn [_token]
+                              (swap! call-count inc)
+                              @response-atom)
+                            ;; soft=1ms so it's immediately stale, hard=10s so not expired
+                            {:local-ttl (t/millis 1) :soft-ttl (t/millis 1) :hard-ttl (t/seconds 10)})
+          token            (tu/random-token)]
+      (try
+        ;; First call: cache miss → delegate
+        (is (= good-response (token-check/-check-token checker token)))
+        (is (= 1 @call-count))
+        ;; Let the entry become stale (both local and DB)
+        (Thread/sleep 10)
+        ;; Switch to updated response for the async refresh
+        (reset! response-atom updated-response)
+        ;; Second call: stale → returns old cached value, kicks off async refresh
+        (binding [token-check/*testing-only-call-after-refresh* #(deliver refresh-done true)]
+          (is (= good-response (token-check/-check-token checker token)))
+          ;; bounded deref — unbounded hangs the whole run if the refresh never fires
+          (is (true? (deref refresh-done 5000 :timeout))))
+        ;; Expire local cache
+        (Thread/sleep 10)
+        ;; Third call: should now see the refreshed value
+        (is (= updated-response (token-check/-check-token checker token)))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest db-hash-aware-token-checker-expired-sync-test
+  (testing "Expired entry (> hard-ttl) delegates synchronously"
+    (let [call-count    (atom 0)
+          good-response {:valid true :status "OK" :features ["sandboxes"] :canonical? true}
+          checker       (make-db-hash-aware-checker
+                         (fn [_token]
+                           (swap! call-count inc)
+                           good-response)
+                         ;; Both TTLs = 1ms so entry expires immediately
+                         {:local-ttl (t/millis 1) :soft-ttl (t/millis 1) :hard-ttl (t/millis 1)})
+          token         (tu/random-token)]
+      (try
+        ;; First call: miss
+        (token-check/-check-token checker token)
+        (is (= 1 @call-count))
+        (Thread/sleep 5)
+        ;; Second call: expired → synchronous delegate
+        (token-check/-check-token checker token)
+        (is (= 2 @call-count))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest db-hash-aware-token-checker-multi-token-test
+  (testing "Different tokens are cached independently"
+    (let [call-count (atom 0)
+          checker    (make-db-hash-aware-checker
+                      (fn [token]
+                        (swap! call-count inc)
+                        {:valid true :status "OK" :features [(str "feat-" token)] :canonical? true})
+                      {:soft-ttl (t/minutes 1) :hard-ttl (t/minutes 2)})
+          token-a    (tu/random-token)
+          token-b    (tu/random-token)]
+      (try
+        (let [result-a (token-check/-check-token checker token-a)]
+          (is (= [(str "feat-" token-a)] (:features result-a))))
+        (let [result-b (token-check/-check-token checker token-b)]
+          (is (= [(str "feat-" token-b)] (:features result-b))))
+        (is (= 2 @call-count))
+        ;; Both cached now
+        (token-check/-check-token checker token-a)
+        (token-check/-check-token checker token-b)
+        (is (= 2 @call-count))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest db-hash-aware-token-checker-clear-cache-test
+  (testing "clear-cache! removes both local and DB cache"
+    (let [checker (make-db-hash-aware-checker
+                   (fn [_token]
+                     {:valid true :status "OK" :features ["sandboxes"] :canonical? true})
+                   {:soft-ttl (t/minutes 1) :hard-ttl (t/minutes 2)})
+          token   (tu/random-token)]
+      (token-check/-check-token checker token)
+      (let [token-hash (#'token-check/hash-token token)]
+        (is (some? (t2/select-one :model/PremiumFeaturesCache :token_hash token-hash)))
+        (token-check/-clear-cache! checker)
+        (is (nil? (t2/select-one :model/PremiumFeaturesCache :token_hash token-hash)))))))
+
+(deftest db-hash-aware-token-checker-invalid-cached-test
+  (testing "Invalid token responses are also cached in table to avoid hammering MetaStore"
+    (let [call-count (atom 0)
+          checker    (make-db-hash-aware-checker
+                      (fn [_token]
+                        (swap! call-count inc)
+                        {:valid false :status "Token does not exist." :canonical? true})
+                      {:soft-ttl (t/minutes 1) :hard-ttl (t/minutes 2)})
+          token      (tu/random-token)]
+      (try
+        (is (= {:valid false :status "Token does not exist." :canonical? true}
+               (token-check/-check-token checker token)))
+        (is (= 1 @call-count))
+        ;; Second call should use cache
+        (is (= {:valid false :status "Token does not exist." :canonical? true}
+               (token-check/-check-token checker token)))
+        (is (= 1 @call-count))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest db-hash-aware-token-checker-cross-instance-sync-test
+  (testing "When instance A refreshes and gets new features, instance B detects the hash mismatch and re-fetches"
+    (let [call-count-a     (atom 0)
+          call-count-b     (atom 0)
+          old-response     {:valid true :status "OK" :features ["sandboxes"] :canonical? true}
+          new-response     {:valid true :status "OK" :features ["sandboxes" "audit-app"] :canonical? true}
+          response-a       (atom old-response)
+          response-b       (atom old-response)
+          checker-a        (make-db-hash-aware-checker
+                            (fn [_token]
+                              (swap! call-count-a inc)
+                              @response-a)
+                            {:local-ttl (t/millis 1) :soft-ttl (t/millis 1) :hard-ttl (t/millis 1)})
+          checker-b        (make-db-hash-aware-checker
+                            (fn [_token]
+                              (swap! call-count-b inc)
+                              @response-b)
+                            {:local-ttl (t/millis 1) :soft-ttl (t/minutes 10) :hard-ttl (t/minutes 20)})
+          token            (tu/random-token)]
+      (try
+        ;; Both instances populate their caches with old-response
+        (is (= old-response (token-check/-check-token checker-a token)))
+        (is (= old-response (token-check/-check-token checker-b token)))
+        (is (= 1 @call-count-a))
+        (is (= 1 @call-count-b))
+        ;; Instance A gets new features and refreshes (expired TTL forces sync refresh)
+        (reset! response-a new-response)
+        (Thread/sleep 5) ;; expire checker-a's local + DB TTLs
+        (is (= new-response (token-check/-check-token checker-a token)))
+        (is (= 2 @call-count-a))
+        ;; Instance B has a long TTL, but the DB hash now differs from its local hash
+        ;; So it should detect the mismatch and do a synchronous re-fetch
+        (reset! response-b new-response)
+        (Thread/sleep 5) ;; expire local-cached-token-checker's 1ms TTL
+        (is (= new-response (token-check/-check-token checker-b token)))
+        (is (= 2 @call-count-b))
+        (finally
+          (token-check/-clear-cache! checker-a)
+          (token-check/-clear-cache! checker-b))))))
+
+(deftest db-hash-aware-token-checker-exception-propagation-test
+  (testing "When delegate throws on expired/missing, exception propagates through error-catching"
+    (let [checker (make-db-hash-aware-checker
+                   (fn [_token]
+                     (throw (ex-info "MetaStore unreachable" {})))
+                   {:soft-ttl (t/minutes 1) :hard-ttl (t/minutes 2)})
+          token   (tu/random-token)]
+      ;; error-catching wraps it, so we get the error-details response
+      (is (= {:valid false
+              :canonical? false
+              :status "Unable to validate token"
+              :error-details "MetaStore unreachable"}
+             (token-check/-check-token checker token))))))
+
+(deftest db-hash-aware-token-checker-tamper-resistance-test
+  (testing "Tampering with the DB hash triggers a re-fetch from MetaStore, not a cache hit"
+    (let [call-count    (atom 0)
+          good-response {:valid true :status "OK" :features ["sandboxes"] :canonical? true}
+          checker       (make-db-hash-aware-checker
+                         (fn [_token]
+                           (swap! call-count inc)
+                           good-response)
+                         {:local-ttl (t/millis 1) :soft-ttl (t/minutes 10) :hard-ttl (t/minutes 20)})
+          token         (tu/random-token)
+          token-hash    (#'token-check/hash-token token)]
+      (try
+        ;; Populate the cache
+        (is (= good-response (token-check/-check-token checker token)))
+        (is (= 1 @call-count))
+        ;; Tamper with the DB hash — simulate someone modifying the row
+        (t2/update! :model/PremiumFeaturesCache :token_hash token-hash
+                    {:token_status_hash "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"})
+        ;; Expire local-cached-token-checker
+        (Thread/sleep 5)
+        ;; Next check should detect hash mismatch and re-fetch from MetaStore
+        (is (= good-response (token-check/-check-token checker token)))
+        (is (= 2 @call-count))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest startup-clears-token-cache-test
+  (testing "The startup hook clears the token cache table so the first check after boot hits MetaStore"
+    (let [call-count    (atom 0)
+          good-response {:valid true :status "OK" :features ["sandboxes"] :canonical? true}
+          checker       (make-db-hash-aware-checker
+                         (fn [_token]
+                           (swap! call-count inc)
+                           good-response)
+                         {:soft-ttl (t/minutes 10) :hard-ttl (t/minutes 20)})
+          token         (tu/random-token)]
+      (try
+        ;; Populate the cache
+        (token-check/-check-token checker token)
+        (is (= 1 @call-count))
+        (let [token-hash (#'token-check/hash-token token)]
+          (is (some? (t2/select-one :model/PremiumFeaturesCache :token_hash token-hash)))
+          ;; Run the startup hook (clears the global token-checker's cache, including the table)
+          (startup/def-startup-logic! :metabase.premium-features.task.clear-token-cache/clear-token-cache)
+          ;; Table should be cleared
+          (is (nil? (t2/select-one :model/PremiumFeaturesCache :token_hash token-hash))))
+        (finally
+          (token-check/-clear-cache! checker))))))
+
+(deftest db-hash-aware-token-checker-db-not-set-up-test
+  (testing "When DB is not set up, delegates directly to inner checker without touching the DB"
+    (let [call-count    (atom 0)
+          good-response {:valid true :status "OK" :features ["sandboxes"] :canonical? true}
+          checker       (make-db-hash-aware-checker
+                         (fn [_token]
+                           (swap! call-count inc)
+                           good-response)
+                         {:soft-ttl (t/minutes 1) :hard-ttl (t/minutes 2)})
+          token         (tu/random-token)
+          bomb          (fn [& _] (throw (ex-info "DB should not be touched" {})))]
+      (mt/with-dynamic-fn-redefs [mdb/db-is-set-up? (constantly false)
+                                  token-check/read-cache-from-db bomb
+                                  token-check/write-cache-to-db! bomb
+                                  token-check/clear-db-cache! bomb]
+        (is (= good-response (token-check/-check-token checker token)))
+        (is (= 1 @call-count) "inner checker was called exactly once")
+        ;; clear-cache! should also skip DB without error
+        (token-check/-clear-cache! checker)))))
+
+;;; ------------------------------------------------ -set-premium-embedding-token! ------------------------------------------------
+
+(deftest set-premium-embedding-token-canonical-invalid-test
+  (testing "When MetaStore says the token is invalid (canonical), throws 400 with MetaStore's message"
+    (let [token (tu/random-token)]
+      (mt/with-dynamic-fn-redefs [token-check/check-token (constantly {:valid        false
+                                                                       :status       "Token expired"
+                                                                       :error-details "Expired 2024-01-01"
+                                                                       :canonical?   true})]
+        (let [e (try (token-check/-set-premium-embedding-token! token)
+                     nil
+                     (catch Exception e e))]
+          (is (some? e))
+          (is (= "Token expired" (ex-message e)))
+          (is (= 400 (:status-code (ex-data e))))
+          (is (= "Expired 2024-01-01" (:error-details (ex-data e)))))))))
+
+(deftest set-premium-embedding-token-non-canonical-failure-test
+  (testing "When token validation fails for non-canonical reasons (network etc), throws 503"
+    (let [token (tu/random-token)]
+      (mt/with-dynamic-fn-redefs [token-check/check-token (constantly {:valid         false
+                                                                       :status        "Unable to validate token"
+                                                                       :error-details "Connection refused"})]
+        (let [e (try (token-check/-set-premium-embedding-token! token)
+                     nil
+                     (catch Exception e e))]
+          (is (some? e))
+          (is (= "Unable to validate token" (ex-message e)))
+          (is (= 503 (:status-code (ex-data e))))
+          (is (= "Connection refused" (:error-details (ex-data e)))))))))
+
+(deftest set-premium-embedding-token-valid-test
+  (testing "When token is valid, no exception is thrown and setting is persisted"
+    (let [token (tu/random-token)]
+      (mt/with-dynamic-fn-redefs [token-check/check-token (constantly {:valid    true
+                                                                       :status   "OK"
+                                                                       :features ["test"]})]
+        (mt/with-temporary-setting-values [premium-embedding-token nil]
+          (token-check/-set-premium-embedding-token! token)
+          (is (= token (premium-features/premium-embedding-token))))))))
+
+(deftest set-premium-embedding-token-busts-stale-cache-test
+  (testing "re-entering a token after renewal revalidates with the store instead of a cached expired verdict (EMB-2341)"
+    (let [token   (tu/random-token)
+          expired (json/encode {:valid false :status "Token is expired."})
+          renewed (json/encode {:valid true :status "Token is valid." :features ["sso"]})
+          state   (atom :expired)]
+      (mt/with-dynamic-fn-redefs [token-check/http-fetch (fn [& _]
+                                                           (case @state
+                                                             :expired {:status 403 :body expired}
+                                                             :renewed {:status 200 :body renewed}))]
+        (try
+          ;; prime the cache with the expired verdict
+          (is (=? {:valid false :canonical? true} (token-check/check-token token)))
+          (reset! state :renewed)
+          (mt/with-temporary-setting-values [premium-embedding-token nil]
+            (token-check/-set-premium-embedding-token! token)
+            (is (= token (premium-features/premium-embedding-token))))
+          (finally
+            (token-check/clear-cache!)))))))
+
+(deftest invalid-token-error-response-test
+  (testing "an invalid token's error response carries its `:error-details`, and nothing else from the ex-data"
+    (let [data (try (token-check/-set-premium-embedding-token! "not-a-token")
+                    (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+      (is (= {:message       "Token format is invalid."
+              :error-details "Token should be 64 hexadecimal characters."}
+             (api-error/response-data data)))
+      (is (= 400 (:status-code data))))))

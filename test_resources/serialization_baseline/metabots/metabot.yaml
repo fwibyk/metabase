@@ -1,0 +1,6 @@
+name: Metabot
+description: Metabot instance for internal users.
+entity_id: metabotmetabotmetabot
+serdes/meta:
+- model: Metabot
+prompts: []

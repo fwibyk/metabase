@@ -1,0 +1,16 @@
+name: CREATED_AT
+display_name: Created At
+visibility_type: normal
+table_id:
+- Sample Database
+- PUBLIC
+- ORDERS
+database_type: TIMESTAMP WITH TIME ZONE
+base_type: type/DateTimeWithLocalTZ
+effective_type: type/DateTimeWithLocalTZ
+semantic_type: type/CreationTimestamp
+position: 7
+database_position: 7
+serdes/meta:
+- model: Field
+database_indexed: false

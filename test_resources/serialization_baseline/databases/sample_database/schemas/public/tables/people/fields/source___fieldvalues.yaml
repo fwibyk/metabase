@@ -1,0 +1,15 @@
+field_id:
+- Sample Database
+- PUBLIC
+- PEOPLE
+- SOURCE
+human_readable_values: []
+type: full
+values:
+- Affiliate
+- Facebook
+- Google
+- Organic
+- Twitter
+serdes/meta:
+- model: FieldValues

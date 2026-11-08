@@ -1,0 +1,71 @@
+(ns metabase-enterprise.database-routing.middleware
+  "MirrorDBs require two middleware to be executed. The first middleware is a pre-processing middleware that sets a key,
+  `:destination-database/id`, on the query if a destination database should be used. The second middleware runs around query
+  execution, and should be THE LAST middleware before we hit the database and query execution actually occurs."
+  (:require
+   [metabase-enterprise.database-routing.common :as common :refer [router-db->destination-db-id]]
+   [metabase.driver.util :as driver.u]
+   [metabase.lib.metadata :as lib.metadata]
+   [metabase.premium-features.core :as premium-features :refer [defenterprise]]
+   [metabase.query-processor.interface :as qp.i]
+   ;; legacy usage -- don't do things like this going forward
+   ^{:clj-kondo/ignore [:deprecated-namespace :discouraged-namespace]}
+   [metabase.query-processor.store :as qp.store]
+   [metabase.util.i18n :refer [tru]]))
+
+#_{:clj-kondo/ignore [:metabase/discourage-dynamic-vars]}
+(def ^:dynamic *destination-database-id*
+  "Bound to the destination database id during query execution when DB routing has swapped in a destination DB.
+  Mirrors the shape of [[metabase-enterprise.impersonation.driver/*impersonation-role*]]: analytics code reads it
+  from inside the postprocessing rff to record `is_db_routed` and the routed `database_id` on the
+  `query_execution` row."
+  nil)
+
+(defenterprise swap-destination-db
+  "Must be the last middleware before we actually hit the database. If a Router Database is specified, binds
+  [[*destination-database-id*]] for query logging; the connection itself is routed by
+  [[metabase.driver.connection/connection-database]]."
+  :feature :database-routing
+  [qp]
+  (fn [query rff]
+    (if-let [destination-db-id (:destination-database/id query)]
+      (binding [*destination-database-id* destination-db-id]
+        (qp query rff))
+      (qp query rff))))
+
+(defenterprise currently-db-routed?
+  "True when DB routing has swapped in a destination DB for the current query."
+  :feature :none
+  []
+  (some? *destination-database-id*))
+
+(defenterprise currently-destination-database-id
+  "Destination DB id when DB routing has swapped one in for the current query, else nil."
+  :feature :none
+  []
+  *destination-database-id*)
+
+(defenterprise attach-destination-db-middleware
+  "Pre-processing middleware. Calculates the destination database that should be used for this query, e.g. for caching
+  purposes. Does not make any changes to the query besides (possibly) adding a `:destination-database/id` key."
+  ;; run this even when the `:database-routing` feature is not enabled, so that we can assert that it *is* enabled if
+  ;; DB routing is configured. (Throwing here is better than silently ignoring the configured routing.)
+  :feature :none
+  [query]
+  (let [database (lib.metadata/database (qp.store/metadata-provider))
+        ;; both the assert and the routing computation hit the app-db, which skip-middleware contexts
+        ;; (e.g. the offline semantic checker) must not do; they never execute queries, so there is
+        ;; nothing for the assert to protect there.
+        destination-db-id (when-not qp.i/*skip-middleware-because-app-db-access*
+                            (common/assert-not-direct-destination-access! database)
+                            (router-db->destination-db-id database))]
+    (when destination-db-id
+      (premium-features/assert-has-feature :database-routing (tru "Database Routing"))
+      (when-not (driver.u/supports? (:engine (lib.metadata/database (qp.store/metadata-provider)))
+                                    :database-routing
+                                    database)
+        (throw (ex-info "Unsupported database for database routing" {}))))
+    ;; dissoc first: a client-supplied :destination-database/id must never survive preprocessing,
+    ;; since swap-destination-db trusts this key at execution time.
+    (cond-> (dissoc query :destination-database/id)
+      destination-db-id (assoc :destination-database/id destination-db-id))))

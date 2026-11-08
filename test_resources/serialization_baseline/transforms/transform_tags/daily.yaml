@@ -1,0 +1,5 @@
+built_in_type: daily
+entity_id: dUW7nvQHQBdA0Rx0gJckI
+name: daily
+serdes/meta:
+- model: TransformTag
