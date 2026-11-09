@@ -193,9 +193,15 @@
                  :login_attributes {kc-sub-attr sub}
                  :is_active        true})}))))
 
+;; UEBER DAS MODELL, nicht ueber die Rohtabelle (09.11.2026). Vorher stand hier
+;; `:permissions_group` -- damit liefen die Hooks von `:model/PermissionsGroup` nicht, also auch
+;; nicht `:hook/entity-id`. Seit 0.65 ist `entity_id` NOT NULL, und jede NEUE Gruppe brach mit
+;; "null value in column entity_id" ab: die Uebergabe endete im 500, der Nutzer kam nicht in die
+;; Analysen. Aufgefallen auf einer frischen Installation (STP ass-demo), wo es noch KEINE Gruppe
+;; zu den Rollen gab; bestehende Installationen trifft es bei jeder neuen Rolle.
 (defn- ensure-group! [group-name]
-  (or (t2/select-one :permissions_group :name group-name)
-      (t2/insert-returning-instance! :permissions_group {:name group-name})))
+  (or (t2/select-one :model/PermissionsGroup :name group-name)
+      (t2/insert-returning-instance! :model/PermissionsGroup {:name group-name})))
 
 ;; Gruppen, die aus einem Token NIE ansprechbar sind (Audit 04.08.2026).
 ;;

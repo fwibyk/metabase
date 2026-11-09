@@ -7,7 +7,8 @@
   eigener Fall festgehalten."
   (:require
    [clojure.test :refer :all]
-   [metabase.sso.local :as sso.local]))
+   [metabase.sso.local :as sso.local]
+   [metabase.test :as mt]))
 
 (def ^:private safe-return-to #'sso.local/safe-return-to)
 (def ^:private handle-sso-local #'sso.local/handle-sso-local)
@@ -150,6 +151,19 @@
   (testing "gewoehnliche Rollennamen sind es sehr wohl"
     (is (not (contains? gesperrte "analyst")))
     (is (not (contains? gesperrte "pruefer")))))
+
+;; Eine Rolle, zu der es noch keine Gruppe gibt (09.11.2026). Ueber die Rohtabelle lief der
+;; entity-id-Hook nicht, und seit 0.65 ist die Spalte NOT NULL -- die Uebergabe brach mit 500 ab.
+(def ^:private ensure-group! #'sso.local/ensure-group!)
+
+(deftest neue-gruppe-aus-rolle-bekommt-entity-id-test
+  (mt/with-model-cleanup [:model/PermissionsGroup]
+    (let [gruppe (ensure-group! "zz-neue-rolle-aus-dem-token")]
+      (testing "die Gruppe entsteht und traegt eine entity_id"
+        (is (pos-int? (:id gruppe)))
+        (is (string? (:entity_id gruppe))))
+      (testing "ein zweiter Aufruf findet dieselbe Gruppe statt eine neue anzulegen"
+        (is (= (:id gruppe) (:id (ensure-group! "zz-neue-rolle-aus-dem-token"))))))))
 
 ;;; ---- Kontozuordnung ueber die Keycloak-Kennung (04.08.2026) ----------------
 ;;

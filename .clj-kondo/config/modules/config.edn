@@ -2762,7 +2762,7 @@
               system
               util
               util.config}
-   :model-imports #{:model/AuthIdentity :model/PermissionsGroupMembership}}
+   :model-imports #{:model/AuthIdentity :model/PermissionsGroup :model/PermissionsGroupMembership}}
 
   sso.auth-identity
   {:team "UX West"
